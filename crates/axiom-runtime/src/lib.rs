@@ -15,7 +15,101 @@ pub mod fleet;
 use axiom_providers::message::{ContentBlock, Request, Role};
 use rig_core::client::{CompletionClient, ProviderClient};
 use rig_core::completion::Prompt;
-use rig_core::providers::deepseek;
+use rig_core::providers::{anthropic, deepseek, gemini, openai};
+
+/// A cloud model vendor the runtime can dispatch to. Keys are never in code: a
+/// client is built from the provider's standard env var (see [`Provider::env_var`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    Anthropic,
+    OpenAi,
+    DeepSeek,
+    Gemini,
+    /// Alibaba Qwen via the DashScope OpenAI-compatible endpoint (Chat Completions).
+    Qwen,
+}
+
+/// DashScope's OpenAI-compatible base URL (Chat Completions API), used for Qwen.
+const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
+impl Provider {
+    /// Parse a provider label (case-insensitive); `google` aliases Gemini,
+    /// `dashscope` aliases Qwen.
+    pub fn parse(s: &str) -> Option<Provider> {
+        match s.to_ascii_lowercase().as_str() {
+            "anthropic" => Some(Provider::Anthropic),
+            "openai" => Some(Provider::OpenAi),
+            "deepseek" => Some(Provider::DeepSeek),
+            "gemini" | "google" => Some(Provider::Gemini),
+            "qwen" | "dashscope" => Some(Provider::Qwen),
+            _ => None,
+        }
+    }
+    /// Canonical model-family name — the unit of cross-vendor independence.
+    pub fn family(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "anthropic",
+            Provider::OpenAi => "openai",
+            Provider::DeepSeek => "deepseek",
+            Provider::Gemini => "gemini",
+            Provider::Qwen => "qwen",
+        }
+    }
+    /// The env var its API key is read from.
+    pub fn env_var(self) -> &'static str {
+        match self {
+            Provider::Anthropic => "ANTHROPIC_API_KEY",
+            Provider::OpenAi => "OPENAI_API_KEY",
+            Provider::DeepSeek => "DEEPSEEK_API_KEY",
+            Provider::Gemini => "GEMINI_API_KEY",
+            Provider::Qwen => "QWEN_API_KEY",
+        }
+    }
+}
+
+fn anyerr<E: std::fmt::Display>(e: E) -> anyhow::Error {
+    anyhow::anyhow!(e.to_string())
+}
+
+/// Build an agent from a concrete provider client and run the canonical request
+/// through it. A macro (not a generic fn) keeps the client type CONCRETE per
+/// provider, sidestepping the trait-bound puzzle of `Agent<M, P>: Prompt`.
+macro_rules! run_provider_agent {
+    ($client:expr, $req:expr) => {{
+        let client = $client;
+        let mut b = client.agent(&$req.model);
+        if let Some(sys) = &$req.system {
+            b = b.preamble(sys);
+        }
+        let agent = b.build();
+        agent.prompt(last_user_text($req)).await.map_err(anyerr)
+    }};
+}
+
+/// Run a canonical [`Request`] against `provider`. The client is built from the
+/// provider's standard env var; a missing key surfaces as an error (the fleet
+/// treats that as fail-closed — a verifier that can't run can't corroborate).
+pub async fn complete_with(provider: Provider, req: &Request) -> anyhow::Result<String> {
+    match provider {
+        Provider::Anthropic => run_provider_agent!(anthropic::Client::from_env().map_err(anyerr)?, req),
+        Provider::OpenAi => run_provider_agent!(openai::Client::from_env().map_err(anyerr)?, req),
+        Provider::DeepSeek => run_provider_agent!(deepseek::Client::from_env().map_err(anyerr)?, req),
+        Provider::Gemini => run_provider_agent!(gemini::Client::from_env().map_err(anyerr)?, req),
+        // OpenAI-compatible (Chat Completions) at DashScope's endpoint.
+        Provider::Qwen => {
+            let key = std::env::var(Provider::Qwen.env_var())
+                .map_err(|_| anyhow::anyhow!("{} not set", Provider::Qwen.env_var()))?;
+            run_provider_agent!(
+                openai::CompletionsClient::builder()
+                    .api_key(&key)
+                    .base_url(QWEN_BASE_URL)
+                    .build()
+                    .map_err(anyerr)?,
+                req
+            )
+        }
+    }
+}
 
 /// Flatten the last user message's text blocks into a prompt string.
 /// (Multi-turn history, tool, and thinking blocks are TODO — P0.5.)
@@ -41,20 +135,7 @@ fn last_user_text(req: &Request) -> String {
 /// `DEEPSEEK_API_KEY`). `req.system` becomes the agent preamble; the last user
 /// turn's text becomes the prompt.
 pub async fn complete(req: &Request) -> anyhow::Result<String> {
-    let client = deepseek::Client::from_env().map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    let agent = {
-        let b = client.agent(&req.model);
-        let b = match &req.system {
-            Some(sys) => b.preamble(sys),
-            None => b,
-        };
-        b.build()
-    };
-    let reply = agent
-        .prompt(last_user_text(req))
-        .await
-        .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-    Ok(reply)
+    complete_with(Provider::DeepSeek, req).await
 }
 
 /// Minimal text completion (the original integration spike helper).
