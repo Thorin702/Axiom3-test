@@ -251,6 +251,14 @@ impl Checker for AbsoluteQuantifierChecker {
 }
 
 /// A quantitative claim (a value with a recognised unit) and no citation marker.
+///
+/// Denoised for results sections: a paper REPORTS its own measurements, and those
+/// are legitimately uncited — flagging every result-section number is pure noise
+/// (the original reviewer complaint). So the flag is suppressed when the sentence
+/// shows the study reporting its OWN data: first-person / self-reference, a table /
+/// figure pointer, or statistical-reporting machinery (mean ± SD, p-values, CIs, n=).
+/// The flag survives for a BARE borrowed statistic stated as established fact with no
+/// citation (e.g. a background claim "ankle sprains affect 25% of athletes").
 pub struct UncitedQuantitativeChecker;
 impl Checker for UncitedQuantitativeChecker {
     fn code(&self) -> &'static str {
@@ -259,7 +267,10 @@ impl Checker for UncitedQuantitativeChecker {
     fn check(&self, claim: &Claim, _ctx: &DraftContext) -> Vec<Finding> {
         // Gate on a real measurement (value + unit), so a bare year like "2021"
         // is not mistaken for an uncited statistic.
-        if !numeric_mentions(&claim.text).is_empty() && !has_citation_marker(&claim.text) {
+        if !numeric_mentions(&claim.text).is_empty()
+            && !has_citation_marker(&claim.text)
+            && !is_own_results_context(&claim.text)
+        {
             vec![Finding {
                 checker: "uncited_quantitative",
                 kind: FindingKind::Risk,
@@ -271,6 +282,37 @@ impl Checker for UncitedQuantitativeChecker {
         }
     }
 }
+
+/// Signals that a numeric sentence is the study reporting its OWN data (so an in-line
+/// citation is not expected): first-person / self-reference, a table/figure pointer,
+/// or statistical-reporting machinery. Deterministic substring + `±` check; markers
+/// are space-anchored where a bare token would over-match (e.g. ` n =` not `n =`).
+fn is_own_results_context(text: &str) -> bool {
+    if text.contains('±') {
+        return true;
+    }
+    let low = text.to_lowercase();
+    OWN_RESULTS_MARKERS.iter().any(|m| low.contains(m))
+}
+
+/// Markers of own-results / statistical-reporting context (case-insensitive).
+const OWN_RESULTS_MARKERS: &[&str] = &[
+    // first-person / self-reference — the authors' own measurements
+    "we ", "our ", "this study", "this paper", "present study", "results show",
+    "results showed", "results indicate", "results suggest", "we found", "we observed",
+    "we measured", "we report", "as shown in", "see table", "see fig", "table ",
+    "figure ", "fig.",
+    "本研究", "本文", "我们", "结果显示", "结果表明", "结果如", "测得", "测量",
+    "如表", "如图", "见表", "见图",
+    // statistical-reporting machinery
+    "p <", "p<", "p =", "p=", "p >", "p>", "p-value", "p值",
+    "95% ci", "95%ci", "confidence interval", "置信区间",
+    "mean", "median", "average", "std", " sd", " sem", "variance",
+    "标准差", "标准误", "均值", "中位数", "平均",
+    "anova", "t-test", "chi-square", "regression", "correlation", "odds ratio",
+    "hazard ratio", "significant", "显著",
+    " n =", " n=", "(n =", "(n=",
+];
 
 /// Two claims sharing a topic keyword but stating different values for the same
 /// unit. This is a RISK flag, not a refutation: different values can be perfectly
@@ -685,6 +727,44 @@ mod tests {
             0,
             "CJK bracket citation 〔n〕 suppresses the flag"
         );
+    }
+
+    #[test]
+    fn own_results_numbers_are_not_flagged_as_uncited() {
+        // A paper reporting its OWN measurements is legitimately uncited — these must
+        // NOT be flagged (the results-section noise the reviewer complained about).
+        let quiet = [
+            "We measured a mean dorsiflexion of 12.3 degrees.",
+            "The COP velocity was 2.4 cm/s ± 0.3 in the wedge condition.",
+            "The difference was significant (p < 0.05).",
+            "Group means differed by 8 percent (95% CI 3 to 13).",
+            "本研究测得踝关节背屈角度为 12.3 度。",
+            "结果显示落地冲击力下降了 15%。",
+        ];
+        for d in quiet {
+            let claims = extract_claims("p", d);
+            let ctx = ctx_of("", &claims);
+            let flagged: usize = claims
+                .iter()
+                .map(|c| UncitedQuantitativeChecker.check(c, &ctx).len())
+                .sum();
+            assert_eq!(flagged, 0, "own-results / statistical sentence must be quiet: {d:?}");
+        }
+    }
+
+    #[test]
+    fn bald_borrowed_statistic_is_still_flagged() {
+        // A background statistic stated as established fact, no citation, no own-results
+        // framing — the flag must SURVIVE the denoising.
+        for d in ["Ankle sprains affect 25% of all athletes.", "踝关节扭伤的复发率高达 70%。"] {
+            let claims = extract_claims("p", d);
+            let ctx = ctx_of("", &claims);
+            let flagged: usize = claims
+                .iter()
+                .map(|c| UncitedQuantitativeChecker.check(c, &ctx).len())
+                .sum();
+            assert_eq!(flagged, 1, "a bald uncited borrowed statistic is still flagged: {d:?}");
+        }
     }
 
     #[test]
