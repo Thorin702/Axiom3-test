@@ -38,6 +38,7 @@ type ClaimEntry = {
   reason: string | null;
   findings: FindingView[];
   fleet: FleetView | null;
+  evidence: string[];
 };
 type DraftCheck = {
   event_seq: number;
@@ -74,6 +75,7 @@ function App() {
   const [draft, setDraft] = useState(
     "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
+  const [references, setReferences] = useState("");
   const [check, setCheck] = useState<DraftCheck | null>(null);
   const [notableOnly, setNotableOnly] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -131,7 +133,7 @@ function App() {
     if (r) note(`${t(lang, "vector_self_test")} → ${r}`);
   }
 
-  async function importDocument() {
+  async function importInto(setter: (s: string) => void) {
     const path = await open({
       multiple: false,
       filters: [
@@ -141,7 +143,7 @@ function App() {
     if (typeof path === "string") {
       const text = await run(() => invoke<string>("import_document", { path }));
       if (text !== undefined) {
-        setDraft(text);
+        setter(text);
         note(
           `${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`
         );
@@ -151,7 +153,7 @@ function App() {
 
   async function checkDraft() {
     setProgress(null);
-    const c = await run(() => invoke<DraftCheck>("check_draft", { draft }));
+    const c = await run(() => invoke<DraftCheck>("check_draft", { draft, references }));
     setProgress(null);
     if (c) {
       setCheck(c);
@@ -255,7 +257,7 @@ function App() {
               style={{ width: "100%", fontFamily: "inherit", fontSize: 13, padding: 8 }}
             />
             <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
-              <button onClick={importDocument} disabled={busy}>
+              <button onClick={() => importInto(setDraft)} disabled={busy}>
                 {t(lang, "import_btn")}
               </button>
               <button onClick={checkDraft} disabled={busy || !draft.trim()}>
@@ -265,6 +267,33 @@ function App() {
                 {draft.length.toLocaleString()} {t(lang, "chars")}
               </span>
             </div>
+
+            <details style={{ marginTop: 12 }}>
+              <summary style={{ fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
+                {t(lang, "references_title")}
+              </summary>
+              <textarea
+                value={references}
+                onChange={(e) => setReferences(e.currentTarget.value)}
+                rows={6}
+                placeholder={t(lang, "references_placeholder")}
+                style={{
+                  width: "100%",
+                  fontFamily: "inherit",
+                  fontSize: 13,
+                  padding: 8,
+                  marginTop: 6,
+                }}
+              />
+              <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+                <button onClick={() => importInto(setReferences)} disabled={busy}>
+                  {t(lang, "import_refs")}
+                </button>
+                <span style={{ fontSize: 12, opacity: 0.6 }}>
+                  {references.length.toLocaleString()} {t(lang, "chars")}
+                </span>
+              </div>
+            </details>
             {busy && (
               <div
                 style={{
@@ -375,6 +404,20 @@ function App() {
                                   ) : null}
                                 </div>
                               ))}
+                            </div>
+                          )}
+                          {e.evidence.length > 0 && (
+                            <div style={{ margin: "6px 0 0 64px", fontSize: 12 }}>
+                              <div style={{ opacity: 0.7, marginBottom: 2 }}>
+                                {t(lang, "evidence_label")}
+                              </div>
+                              <ol style={{ margin: 0, paddingLeft: 18, opacity: 0.85 }}>
+                                {e.evidence.map((p, i) => (
+                                  <li key={i} style={{ marginBottom: 2 }}>
+                                    {p}
+                                  </li>
+                                ))}
+                              </ol>
                             </div>
                           )}
                         </div>

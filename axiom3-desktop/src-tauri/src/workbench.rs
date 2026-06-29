@@ -160,6 +160,9 @@ pub struct ClaimEntry {
     pub findings: Vec<FindingView>,
     /// Cross-vendor breakdown, when a bearing claim was fleet-verified.
     pub fleet: Option<FleetView>,
+    /// Evidence passages retrieved from the user's references for this claim
+    /// (what the fleet judged against). Empty if no references / not fleet-checked.
+    pub evidence: Vec<String>,
 }
 
 /// The result of checking a draft: the persisted claim ledger.
@@ -222,6 +225,7 @@ impl Workbench {
         &self,
         reports: Vec<ClaimReport>,
         fleet: HashMap<String, FleetVerdict>,
+        evidence: HashMap<String, Vec<String>>,
     ) -> anyhow::Result<DraftCheck> {
         let used_fleet = !fleet.is_empty();
         let verifier = Verifier {
@@ -317,6 +321,7 @@ impl Workbench {
                     // so a downgrade is explicit (not a hidden discrepancy).
                     "fleet_status": c.fleet.as_ref().map(|v| v.status.clone()),
                     "independence": c.independence.code(),
+                    "evidence_count": evidence.get(&c.report.claim.id).map(|e| e.len()).unwrap_or(0),
                     "vendors": c.fleet.as_ref().map(|v| v.vendors.iter()
                         .map(|x| json!({"family": x.family, "model": x.model, "status": x.status}))
                         .collect::<Vec<_>>()),
@@ -352,6 +357,7 @@ impl Workbench {
                         excerpt: f.excerpt.clone(),
                     })
                     .collect(),
+                evidence: evidence.get(&c.report.claim.id).cloned().unwrap_or_default(),
                 fleet: c.fleet,
             })
             .collect();
@@ -551,6 +557,7 @@ pub async fn check_draft(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     draft: String,
+    references: String,
 ) -> Result<DraftCheck, String> {
     use tauri::Emitter;
     let wb = state.get()?;
@@ -565,17 +572,31 @@ pub async fn check_draft(
             .map_err(|e| e.to_string())?
     };
 
-    // 2. Cross-vendor fleet verification for bearing claims — SUPERVISED: bounded
-    //    concurrency, live progress events, and cancellation. Needs ≥2 vendor keys.
+    // 2. Cross-vendor fleet verification for bearing claims — SUPERVISED (bounded
+    //    concurrency, live progress, cancellation), each GROUNDED in evidence
+    //    retrieved from the user's references. Needs ≥2 vendor keys.
     let members = std::sync::Arc::new(fleet_from_env());
     let mut fleet_verdicts = HashMap::new();
+    let mut evidence_map: HashMap<String, Vec<String>> = HashMap::new();
     if members.len() >= 2 {
-        // Owned (id, text) pairs so each future borrows nothing from this scope.
-        let bearing: Vec<(String, String)> = reports
+        let passages = axiom_core::evidence::split_passages("refs", &references);
+        // Owned (id, text, evidence) so each future borrows nothing from this scope.
+        let bearing: Vec<(String, String, Vec<String>)> = reports
             .iter()
             .filter(|r| r.claim.is_bearing)
             .take(max_fleet_claims())
-            .map(|r| (r.claim.id.clone(), r.claim.text.clone()))
+            .map(|r| {
+                let ev: Vec<String> = if passages.is_empty() {
+                    Vec::new()
+                } else {
+                    axiom_core::evidence::rank_passages(&r.claim.text, &passages, 3)
+                        .into_iter()
+                        .map(|s| passages[s.index].text.clone())
+                        .collect()
+                };
+                evidence_map.insert(r.claim.id.clone(), ev.clone());
+                (r.claim.id.clone(), r.claim.text.clone(), ev)
+            })
             .collect();
         let total = bearing.len();
         let _ = app.emit("check_progress", serde_json::json!({ "done": 0, "total": total }));
@@ -583,11 +604,11 @@ pub async fn check_draft(
             bearing,
             6,
             &cancel,
-            |(id, text)| {
+            |(id, text, ev)| {
                 let members = members.clone();
                 async move {
                     let backend = MultiProviderRigBackend;
-                    (id, verify_bearing_claim(&text, &members, &backend).await)
+                    (id, verify_bearing_claim(&text, &ev, &members, &backend).await)
                 }
             },
             |done, total| {
@@ -602,7 +623,7 @@ pub async fn check_draft(
 
     // 3. Combine + atomically persist — off the async runtime.
     let wb2 = wb.clone();
-    tauri::async_runtime::spawn_blocking(move || wb2.persist_check(reports, fleet_verdicts))
+    tauri::async_runtime::spawn_blocking(move || wb2.persist_check(reports, fleet_verdicts, evidence_map))
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
@@ -686,7 +707,7 @@ mod tests {
         let draft = "This is the first-ever room-temperature synthesis. The yield was 94%.";
         // Deterministic only (no fleet verdicts).
         let reports = wb.deterministic_reports(draft);
-        let check = wb.persist_check(reports, HashMap::new()).unwrap();
+        let check = wb.persist_check(reports, HashMap::new(), HashMap::new()).unwrap();
 
         assert_eq!(check.total, 2, "two claims extracted");
         assert!(check.flagged >= 1, "at least the over-claim is flagged");
@@ -719,7 +740,7 @@ mod tests {
                 judgements: vec![],
             },
         );
-        let check = wb.persist_check(reports, fleet).unwrap();
+        let check = wb.persist_check(reports, fleet, HashMap::new()).unwrap();
         assert_eq!(check.fleet_verified, 1);
         assert_eq!(check.entries[0].status, "verified", "a clean bearing claim takes the fleet verdict");
         assert!(check.entries[0].fleet.is_some());
@@ -742,7 +763,7 @@ mod tests {
                 judgements: vec![],
             },
         );
-        let check = wb.persist_check(reports, fleet).unwrap();
+        let check = wb.persist_check(reports, fleet, HashMap::new()).unwrap();
         // Models can't confirm a novelty claim from parametric knowledge → blocked.
         assert_eq!(check.entries[0].status, "uncertain");
         assert!(check.entries[0]
@@ -769,7 +790,7 @@ mod tests {
                 judgements: vec![],
             },
         );
-        let check = wb.persist_check(reports, fleet).unwrap();
+        let check = wb.persist_check(reports, fleet, HashMap::new()).unwrap();
         let reason = check.entries[0].reason.as_deref().unwrap();
         // Both the fleet reason AND the deterministic flag survive into the audit.
         assert!(reason.contains("insufficient_corroboration"), "fleet reason kept: {reason}");
