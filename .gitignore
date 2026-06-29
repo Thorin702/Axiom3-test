@@ -1,0 +1,19 @@
+# Rust / Cargo
+/target
+
+# Node
+node_modules/
+
+# Frontend build output
+dist/
+
+# Axiom3 per-project data store — NEVER commit research data
+.workbench/
+
+# Secrets / local config
+.env
+*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
