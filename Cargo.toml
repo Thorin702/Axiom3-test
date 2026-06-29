@@ -4,7 +4,7 @@
 # Dependency direction is one-way: the shell depends on axiom-core, never the reverse.
 [workspace]
 resolver = "2"
-members = ["axiom3-desktop/src-tauri", "crates/axiom-core", "crates/axiom-store"]
+members = ["axiom3-desktop/src-tauri", "crates/axiom-core", "crates/axiom-store", "crates/axiom-secrets", "crates/axiom-providers", "crates/axiom-runtime"]
 
 # NOTE: no `panic = "abort"` — axiom-core is the verification engine; we keep
 # unwind so the orchestrator can `catch_unwind` and isolate a single verifier's

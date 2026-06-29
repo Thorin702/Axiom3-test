@@ -1,0 +1,15 @@
+[package]
+name = "axiom-secrets"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Axiom3 secret storage: OS keychain (macOS Keychain / Windows Credential Manager) for the SQLCipher DB key and BYO-API keys, with an in-memory store for tests."
+
+[dependencies]
+# OS-native secret storage. macOS Keychain (apple-native) + Windows Credential
+# Manager (windows-native); the right backend is selected per-target at compile time.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+# `std` makes getrandom::Error implement std::error::Error so it can be a
+# typed `#[from]` source on SecretError (preserves the error kind, not just text).
+getrandom = { version = "0.2", features = ["std"] }
+thiserror = "2"
