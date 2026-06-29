@@ -251,6 +251,14 @@ impl Checker for AbsoluteQuantifierChecker {
 }
 
 /// A quantitative claim (a value with a recognised unit) and no citation marker.
+///
+/// Denoised for results sections: a paper REPORTS its own measurements, and those
+/// are legitimately uncited — flagging every result-section number is pure noise
+/// (the original reviewer complaint). So the flag is suppressed when the sentence
+/// shows the study reporting its OWN data: first-person / self-reference, a table /
+/// figure pointer, or statistical-reporting machinery (mean ± SD, p-values, CIs, n=).
+/// The flag survives for a BARE borrowed statistic stated as established fact with no
+/// citation (e.g. a background claim "ankle sprains affect 25% of athletes").
 pub struct UncitedQuantitativeChecker;
 impl Checker for UncitedQuantitativeChecker {
     fn code(&self) -> &'static str {
@@ -259,7 +267,10 @@ impl Checker for UncitedQuantitativeChecker {
     fn check(&self, claim: &Claim, _ctx: &DraftContext) -> Vec<Finding> {
         // Gate on a real measurement (value + unit), so a bare year like "2021"
         // is not mistaken for an uncited statistic.
-        if !numeric_mentions(&claim.text).is_empty() && !has_citation_marker(&claim.text) {
+        if !numeric_mentions(&claim.text).is_empty()
+            && !has_citation_marker(&claim.text)
+            && !is_own_results_context(&claim.text)
+        {
             vec![Finding {
                 checker: "uncited_quantitative",
                 kind: FindingKind::Risk,
@@ -271,6 +282,140 @@ impl Checker for UncitedQuantitativeChecker {
         }
     }
 }
+
+/// Signals that a numeric sentence is the study reporting its OWN data (so an in-line
+/// citation is not expected): first-person RESULTS framing, a table/figure pointer, or
+/// statistical-reporting machinery. Only HIGH-PRECISION markers qualify — polysemous
+/// words like "mean"/"average"/"significant"/平均/显著 are deliberately excluded, since
+/// they occur in borrowed background statistics too and would silently swallow the very
+/// claims this checker exists to flag. p-values and sample sizes use a STRUCTURAL check
+/// (a `p`/`n` token + comparator + number) so "temp = 20" / "region = 5" don't match.
+fn is_own_results_context(text: &str) -> bool {
+    if text.contains('±') {
+        return true;
+    }
+    let low = text.to_lowercase();
+    OWN_RESULTS_MARKERS.iter().any(|m| low.contains(m))
+        || has_p_value(&low)
+        || has_sample_size(text)
+        || has_float_label(&low)
+}
+
+/// A p-value report: a word-start `p` + comparator + a PROBABILITY (`0.x` or `.x`),
+/// e.g. `p < 0.05`, `p=0.001`, `p < .01`. Requiring a sub-1 value excludes pressure
+/// reports like `p = 4 atm` (where `p` is the symbol for pressure, not significance).
+fn has_p_value(low: &str) -> bool {
+    let c: Vec<char> = low.chars().collect();
+    for i in 0..c.len() {
+        if c[i] != 'p' || (i > 0 && c[i - 1].is_alphabetic()) {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < c.len() && c[j] == ' ' {
+            j += 1;
+        }
+        if j >= c.len() || !matches!(c[j], '<' | '=' | '>' | '≤' | '≥' | '≠') {
+            continue;
+        }
+        let mut k = j + 1;
+        while k < c.len() && c[k] == ' ' {
+            k += 1;
+        }
+        // A probability: ".05" or "0.05" — never a bare integer like "4".
+        if k < c.len() && (c[k] == '.' || (c[k] == '0' && k + 1 < c.len() && c[k + 1] == '.')) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A sample-size report: a word-start LOWERCASE `n` + `=` + a digit, e.g. `n = 24`,
+/// `(n=480)`. Checked CASE-SENSITIVELY: lowercase `n` is the sample-size convention,
+/// so this excludes an uppercase `N = 3` (a count / mole-number symbol in chemistry).
+fn has_sample_size(text: &str) -> bool {
+    let c: Vec<char> = text.chars().collect();
+    for i in 0..c.len() {
+        if c[i] != 'n' || (i > 0 && c[i - 1].is_alphabetic()) {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < c.len() && c[j] == ' ' {
+            j += 1;
+        }
+        if j >= c.len() || c[j] != '=' {
+            continue;
+        }
+        let mut k = j + 1;
+        while k < c.len() && c[k] == ' ' {
+            k += 1;
+        }
+        if k < c.len() && c[k].is_ascii_digit() {
+            return true;
+        }
+    }
+    false
+}
+
+/// A labeled-float reference — `Table 2`, `Fig. 3`, `Figure 1` — i.e. a word-start
+/// `table`/`figure`/`fig` followed by an optional `.`, spaces, then a digit. This is
+/// the own-data-presentation signal, and it does NOT fire on the everyday nouns
+/// "water table" / "this figure" (no following number).
+fn has_float_label(low: &str) -> bool {
+    let c: Vec<char> = low.chars().collect();
+    let kws: [&[char]; 3] = [
+        &['t', 'a', 'b', 'l', 'e'],
+        &['f', 'i', 'g', 'u', 'r', 'e'],
+        &['f', 'i', 'g'],
+    ];
+    for kw in kws {
+        'scan: for i in 0..c.len() {
+            if i + kw.len() > c.len() {
+                break;
+            }
+            for (o, &ch) in kw.iter().enumerate() {
+                if c[i + o] != ch {
+                    continue 'scan;
+                }
+            }
+            if i > 0 && c[i - 1].is_alphabetic() {
+                continue;
+            }
+            let mut k = i + kw.len();
+            if k < c.len() && c[k] == '.' {
+                k += 1;
+            }
+            while k < c.len() && c[k] == ' ' {
+                k += 1;
+            }
+            if k < c.len() && c[k].is_ascii_digit() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// HIGH-PRECISION own-results / statistical-reporting markers (case-insensitive). Each
+/// is specific enough that it rarely appears in a borrowed background statistic; bare
+/// polysemous words ("mean"/"average"/"significant"/平均/显著/我们) are excluded on
+/// purpose. p-values, sample sizes, and table/figure labels are detected structurally
+/// above, not as substrings, so "water table" / "p = 4 atm" / "N = 3" don't trigger.
+const OWN_RESULTS_MARKERS: &[&str] = &[
+    // first-person RESULTS framing (a specific verb, never a bare "we"/"our")
+    "we measured", "we found", "we observed", "we recorded", "we report",
+    "we obtained", "we calculated", "we assessed", "we computed", "we detected",
+    "this study", "this paper", "present study", "results show", "results showed",
+    "results indicate", "results suggest", "results demonstrate", "as shown in",
+    "as listed in", "as presented in", "see table", "see fig",
+    // statistical-reporting machinery (precise multi-char terms; " anova" anchored)
+    "95% ci", "95%ci", "confidence interval", "standard deviation", "standard error",
+    "interquartile", " anova", "t-test", "chi-square", "odds ratio", "hazard ratio",
+    "p-value", "p值",
+    // CJK — specific compounds (own-results framing + precise statistical terms)
+    "本研究", "本文", "测得", "测量", "结果显示", "结果表明", "结果如", "如表",
+    "如图", "见表", "见图", "标准差", "标准误", "均值", "中位数", "置信区间",
+    "方差", "回归分析",
+];
 
 /// Two claims sharing a topic keyword but stating different values for the same
 /// unit. This is a RISK flag, not a refutation: different values can be perfectly
@@ -685,6 +830,63 @@ mod tests {
             0,
             "CJK bracket citation 〔n〕 suppresses the flag"
         );
+    }
+
+    /// Count uncited-quantitative flags a draft produces (across all its claims).
+    fn uncited_flags(draft: &str) -> usize {
+        let claims = extract_claims("p", draft);
+        let ctx = ctx_of("", &claims);
+        claims.iter().map(|c| UncitedQuantitativeChecker.check(c, &ctx).len()).sum()
+    }
+
+    #[test]
+    fn own_results_numbers_are_not_flagged_as_uncited() {
+        // A paper reporting its OWN measurements is legitimately uncited — these must
+        // NOT be flagged (the results-section noise the reviewer complained about).
+        // Each sentence carries a RECOGNISED unit (so it would flag absent denoising)
+        // and a HIGH-PRECISION own-results marker.
+        let quiet = [
+            "We measured a peak COP velocity of 2.4 cm in the wedge condition.", // "we measured"
+            "The COP velocity reached 2.4 cm ± 0.3 across trials.",              // ±
+            "The impact force dropped by 8% (p < 0.05).",                       // p-value
+            "Group scores differed by 8% (95% CI 3 to 13).",                    // CI
+            "The cohort (n = 24) showed a 30% reduction in sway.",             // n =
+            "As shown in Table 2, the dorsiflexion was 12 cm.",                // labeled float
+            "本研究测得落地冲击力下降 15%。",                                    // 本研究 / 测得
+            "结果显示踝关节背屈角度减小 12%。",                                  // 结果显示
+        ];
+        for d in quiet {
+            assert_eq!(uncited_flags(d), 0, "own-results / statistical sentence must be quiet: {d:?}");
+        }
+    }
+
+    #[test]
+    fn bald_borrowed_statistic_is_still_flagged() {
+        // Background statistics stated as established fact, no citation, no own-results
+        // framing — the flag must SURVIVE the denoising. Includes the exact polysemous
+        // cases the review caught (mean/average/significant/correlation/我们/平均) that
+        // must NOT be silenced just because a common word appears.
+        let must_flag = [
+            "Ankle sprains affect 25% of all athletes.",
+            "On average, 70% of trials fail.",
+            "A significant 60% of patients relapse.",
+            "Government spending averaged 40% of GDP.",
+            "The mean annual rainfall exceeds 2000 mm.",
+            "A strong correlation exists: obesity affects 35% of adults.",
+            "Means of public transport carry 40% of commuters.",
+            // The re-review's structural edge cases: ordinary "table"/"figure" nouns,
+            // pressure p, and uppercase chemistry N must NOT be read as own-results.
+            "A water table drop of 5 cm was reported worldwide.",
+            "This figure exceeds the global average of 40%.",
+            "When p = 4 atm the boiling point rose by 5%.",
+            "At ratio N = 3 the compound is 40% nitrogen by mass.",
+            "踝关节扭伤的复发率高达 70%。",
+            "我们国家的森林覆盖率为 23%。",
+            "全球平均气温上升了 1.1 度。",
+        ];
+        for d in must_flag {
+            assert_eq!(uncited_flags(d), 1, "a bald uncited borrowed statistic must stay flagged: {d:?}");
+        }
     }
 
     #[test]
