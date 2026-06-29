@@ -1,0 +1,23 @@
+[package]
+name = "axiom-vector"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Axiom3 vector store — LanceDB-backed embedding index implementing axiom-core's VectorStore (sync trait bridged to LanceDB's async API via an owned runtime)."
+
+[dependencies]
+axiom-core = { path = "../axiom-core" }
+# Heavy dep tree (arrow/lance/object_store). We use LanceDB's own re-exported
+# arrow types to avoid an arrow version mismatch — no separate arrow-* deps.
+lancedb = "0.30"
+# lancedb 0.30 declares arrow-* = "58.0" (caret); our "58" and its pin both
+# resolve to the same 58.x, so there is ONE arrow in the graph. Matching the arrow
+# MAJOR (58) is what matters — a different major would not type-unify with
+# lancedb's RecordBatch / FixedSizeListArray.
+arrow-array = "58"
+arrow-schema = "58"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+futures = "0.3"
+
+[dev-dependencies]
+tempfile = "3"
