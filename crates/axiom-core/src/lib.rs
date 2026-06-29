@@ -14,6 +14,7 @@
 
 pub mod model;
 pub mod store;
+pub mod verify;
 
 pub use model::VerdictStatus;
 
