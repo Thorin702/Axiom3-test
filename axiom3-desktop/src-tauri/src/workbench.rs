@@ -33,9 +33,18 @@ const KEYCHAIN_SERVICE: &str = "axiom3";
 /// wiring survives the shell's `spawn_blocking` boundary.
 const SELFTEST_DIM: usize = 8;
 
-/// Cap on bearing claims given full cross-vendor fleet verification per check (each
-/// costs API calls across vendors). Beyond this, claims stay at the deterministic tier.
-const MAX_FLEET_CLAIMS: usize = 8;
+/// Default cap on bearing claims given full cross-vendor fleet verification per
+/// check (each costs API calls across vendors). Override with `AXIOM_FLEET_MAX`.
+/// Beyond the cap, claims stay at the deterministic tier.
+const DEFAULT_FLEET_MAX: usize = 24;
+
+fn max_fleet_claims() -> usize {
+    std::env::var("AXIOM_FLEET_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_FLEET_MAX)
+}
 
 /// Build the verification fleet from whichever providers have a key in the
 /// environment — a vendor with no key simply isn't in the fleet.
@@ -514,18 +523,32 @@ pub async fn check_draft(
 
     // 2. Cross-vendor fleet verification for bearing claims (async network I/O).
     //    Needs ≥2 vendor keys in the env; otherwise the gate keeps them Uncertain.
-    let members = fleet_from_env();
+    let members = std::sync::Arc::new(fleet_from_env());
     let mut fleet_verdicts = HashMap::new();
     if members.len() >= 2 {
-        let backend = MultiProviderRigBackend;
-        let mut budget = MAX_FLEET_CLAIMS;
-        for r in &reports {
-            if r.claim.is_bearing && budget > 0 {
-                budget -= 1;
-                let fv = verify_bearing_claim(&r.claim.text, &members, &backend).await;
-                fleet_verdicts.insert(r.claim.id.clone(), fv);
-            }
-        }
+        use futures::StreamExt;
+        // Owned (id, text) pairs so each future borrows nothing from this scope —
+        // the Tauri command macro needs the future general over lifetimes.
+        let bearing: Vec<(String, String)> = reports
+            .iter()
+            .filter(|r| r.claim.is_bearing)
+            .take(max_fleet_claims())
+            .map(|r| (r.claim.id.clone(), r.claim.text.clone()))
+            .collect();
+        // Verify up to 6 bearing claims concurrently (each fleets across vendors),
+        // so a whole paper's claims don't run strictly one-at-a-time.
+        let verdicts: Vec<(String, FleetVerdict)> = futures::stream::iter(bearing)
+            .map(|(id, text)| {
+                let members = members.clone();
+                async move {
+                    let backend = MultiProviderRigBackend;
+                    (id, verify_bearing_claim(&text, &members, &backend).await)
+                }
+            })
+            .buffer_unordered(6)
+            .collect()
+            .await;
+        fleet_verdicts.extend(verdicts);
     }
 
     // 3. Combine + atomically persist — off the async runtime.

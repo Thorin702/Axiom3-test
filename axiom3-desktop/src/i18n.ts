@@ -33,6 +33,8 @@ const UI: Record<string, Pair> = {
   check_btn: { zh: "校对草稿", en: "Check draft" },
   import_btn: { zh: "导入文档", en: "Import document" },
   imported: { zh: "已导入", en: "imported" },
+  chars: { zh: "字符", en: "chars" },
+  checking: { zh: "校对中…(承重断言跨厂商核验,可能要一会儿)", en: "checking… (cross-vendor verification of bearing claims may take a while)" },
   claims: { zh: "条断言", en: "claims" },
   flagged: { zh: "条已标记", en: "flagged" },
   cross_vendor_n: { zh: "条跨厂商核验", en: "cross-vendor" },

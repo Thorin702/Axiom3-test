@@ -674,6 +674,7 @@ dependencies = [
  "axiom-store",
  "axiom-vector",
  "blake3",
+ "futures",
  "serde",
  "serde_json",
  "tauri",
