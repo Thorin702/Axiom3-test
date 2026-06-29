@@ -25,16 +25,23 @@ pub enum Provider {
     OpenAi,
     DeepSeek,
     Gemini,
+    /// Alibaba Qwen via the DashScope OpenAI-compatible endpoint (Chat Completions).
+    Qwen,
 }
 
+/// DashScope's OpenAI-compatible base URL (Chat Completions API), used for Qwen.
+const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
 impl Provider {
-    /// Parse a provider label (case-insensitive); `google` aliases Gemini.
+    /// Parse a provider label (case-insensitive); `google` aliases Gemini,
+    /// `dashscope` aliases Qwen.
     pub fn parse(s: &str) -> Option<Provider> {
         match s.to_ascii_lowercase().as_str() {
             "anthropic" => Some(Provider::Anthropic),
             "openai" => Some(Provider::OpenAi),
             "deepseek" => Some(Provider::DeepSeek),
             "gemini" | "google" => Some(Provider::Gemini),
+            "qwen" | "dashscope" => Some(Provider::Qwen),
             _ => None,
         }
     }
@@ -45,6 +52,7 @@ impl Provider {
             Provider::OpenAi => "openai",
             Provider::DeepSeek => "deepseek",
             Provider::Gemini => "gemini",
+            Provider::Qwen => "qwen",
         }
     }
     /// The env var its API key is read from.
@@ -54,6 +62,7 @@ impl Provider {
             Provider::OpenAi => "OPENAI_API_KEY",
             Provider::DeepSeek => "DEEPSEEK_API_KEY",
             Provider::Gemini => "GEMINI_API_KEY",
+            Provider::Qwen => "QWEN_API_KEY",
         }
     }
 }
@@ -86,6 +95,19 @@ pub async fn complete_with(provider: Provider, req: &Request) -> anyhow::Result<
         Provider::OpenAi => run_provider_agent!(openai::Client::from_env().map_err(anyerr)?, req),
         Provider::DeepSeek => run_provider_agent!(deepseek::Client::from_env().map_err(anyerr)?, req),
         Provider::Gemini => run_provider_agent!(gemini::Client::from_env().map_err(anyerr)?, req),
+        // OpenAI-compatible (Chat Completions) at DashScope's endpoint.
+        Provider::Qwen => {
+            let key = std::env::var(Provider::Qwen.env_var())
+                .map_err(|_| anyhow::anyhow!("{} not set", Provider::Qwen.env_var()))?;
+            run_provider_agent!(
+                openai::CompletionsClient::builder()
+                    .api_key(&key)
+                    .base_url(QWEN_BASE_URL)
+                    .build()
+                    .map_err(anyerr)?,
+                req
+            )
+        }
     }
 }
 

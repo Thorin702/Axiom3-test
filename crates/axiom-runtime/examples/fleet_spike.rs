@@ -20,6 +20,7 @@ async fn main() -> anyhow::Result<()> {
         (Provider::OpenAi, "gpt-4o-mini"),
         (Provider::DeepSeek, "deepseek-chat"),
         (Provider::Gemini, "gemini-1.5-flash"),
+        (Provider::Qwen, "qwen-plus"),
     ];
 
     let fleet: Vec<FleetMember> = candidates
