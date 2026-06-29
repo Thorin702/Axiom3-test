@@ -256,10 +256,10 @@ impl EventLog for SqliteStore {
 
     fn verify_chain(&self) -> Result<bool> {
         let mut prev = GENESIS_PREV_HASH.to_string();
-        let mut expected_seq: i64 = 1;
-        for e in self.replay()? {
+        for (i, e) in self.replay()?.into_iter().enumerate() {
             // seq must be a dense 1..N run — catches deleted/reordered rows that
             // hash linkage alone would miss.
+            let expected_seq = i as i64 + 1;
             if e.seq != expected_seq {
                 return Ok(false);
             }
@@ -271,7 +271,6 @@ impl EventLog for SqliteStore {
                 return Ok(false);
             }
             prev = e.entry_hash;
-            expected_seq += 1;
         }
         Ok(true)
     }

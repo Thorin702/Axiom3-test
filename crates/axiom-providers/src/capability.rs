@@ -55,7 +55,7 @@ impl ModelCapability {
     /// Usable right now: Available and not past its sunset.
     pub fn is_usable(&self, now_ms: i64) -> bool {
         self.status == ModelStatus::Available
-            && self.sunset_date.map_or(true, |s| now_ms < s)
+            && self.sunset_date.is_none_or(|s| now_ms < s)
     }
     pub fn supports_input(&self, m: Modality) -> bool {
         self.input_modalities.contains(&m)
