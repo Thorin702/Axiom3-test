@@ -1,0 +1,16 @@
+[package]
+name = "axiom-ingest"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Axiom3 document text extraction (txt/md, docx, pdf) for the reading pipeline."
+
+[dependencies]
+thiserror = "2"
+quick-xml = "0.40"
+# Only DEFLATE is needed for docx (an Office Open XML zip).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+pdf-extract = "0.12"
+
+[dev-dependencies]
+tempfile = "3"

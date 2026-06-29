@@ -536,6 +536,17 @@ pub async fn check_draft(
         .map_err(|e| e.to_string())
 }
 
+/// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can
+/// be dropped into the draft checker. Pure file work — runs off the async runtime.
+#[tauri::command]
+pub async fn import_document(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        axiom_ingest::extract_text(std::path::Path::new(&path)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 pub fn close_project(state: tauri::State<'_, AppState>) {
     state.clear();

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   Lang,
   t,
@@ -127,6 +128,22 @@ function App() {
     if (r) note(`${t(lang, "vector_self_test")} → ${r}`);
   }
 
+  async function importDocument() {
+    const path = await open({
+      multiple: false,
+      filters: [
+        { name: "Documents", extensions: ["pdf", "docx", "txt", "md", "markdown"] },
+      ],
+    });
+    if (typeof path === "string") {
+      const text = await run(() => invoke<string>("import_document", { path }));
+      if (text !== undefined) {
+        setDraft(text);
+        note(`${t(lang, "imported")}: ${path.split(/[/\\]/).pop()}`);
+      }
+    }
+  }
+
   async function checkDraft() {
     const c = await run(() => invoke<DraftCheck>("check_draft", { draft }));
     if (c) {
@@ -217,9 +234,14 @@ function App() {
               placeholder={t(lang, "check_placeholder")}
               style={{ width: "100%", fontFamily: "inherit", fontSize: 13, padding: 8 }}
             />
-            <button onClick={checkDraft} disabled={busy || !draft.trim()} style={{ marginTop: 6 }}>
-              {t(lang, "check_btn")}
-            </button>
+            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+              <button onClick={importDocument} disabled={busy}>
+                {t(lang, "import_btn")}
+              </button>
+              <button onClick={checkDraft} disabled={busy || !draft.trim()}>
+                {t(lang, "check_btn")}
+              </button>
+            </div>
 
             {check && (
               <div style={{ marginTop: 12 }}>

@@ -31,6 +31,8 @@ const UI: Record<string, Pair> = {
     en: "Paste a draft… each sentence becomes a claim and is verified.",
   },
   check_btn: { zh: "校对草稿", en: "Check draft" },
+  import_btn: { zh: "导入文档", en: "Import document" },
+  imported: { zh: "已导入", en: "imported" },
   claims: { zh: "条断言", en: "claims" },
   flagged: { zh: "条已标记", en: "flagged" },
   cross_vendor_n: { zh: "条跨厂商核验", en: "cross-vendor" },
