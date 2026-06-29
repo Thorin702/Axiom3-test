@@ -43,6 +43,7 @@ const UI: Record<string, Pair> = {
   references_placeholder: { zh: "粘贴或导入参考文献文本…承重断言会被对照这些来源核验。", en: "Paste or import reference text… bearing claims are verified against these sources." },
   import_refs: { zh: "导入参考", en: "Import refs" },
   evidence_label: { zh: "证据", en: "evidence" },
+  injection_evidence_label: { zh: "可疑参考(已拦截)", en: "flagged reference (blocked)" },
   claims: { zh: "条断言", en: "claims" },
   flagged: { zh: "条已标记", en: "flagged" },
   cross_vendor_n: { zh: "条跨厂商核验", en: "cross-vendor" },
@@ -92,6 +93,8 @@ const CODE: Record<string, Pair> = {
   single_family_independence_unmet: { zh: "独立性不足(单厂商)", en: "single-family (independence unmet)" },
   insufficient_corroboration: { zh: "佐证不足", en: "insufficient corroboration" },
   deterministic_flags_block_verify: { zh: "确定性标记阻止核实", en: "deterministic flags block verify" },
+  shared_evidence: { zh: "共享证据(独立性仅限模型)", en: "shared evidence (models, not evidence, are independent)" },
+  evidence_injection_neutralized: { zh: "参考文本疑似注入,已中和", en: "reference text looks injected — neutralized" },
   clean_pending: { zh: "无确定性问题(待外部核验)", en: "no deterministic issue (pending)" },
 };
 

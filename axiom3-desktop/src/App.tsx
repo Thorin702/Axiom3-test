@@ -52,6 +52,7 @@ function statusColor(s: string): string {
   if (s === "verified") return "var(--text-success, green)";
   if (s === "refuted") return "var(--text-danger, crimson)";
   if (s === "uncertain") return "#b8860b";
+  if (s === "injection_neutralized" || s === "quarantined") return "#7b2fbe";
   return "gray";
 }
 
@@ -180,6 +181,9 @@ function App() {
   // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
   function entryStatus(e: ClaimEntry): { label: string; color: string } {
     if (e.fleet) return { label: verdictLabel(lang, e.status), color: statusColor(e.status) };
+    // A neutralized injection is a terminal verdict in its own right (no fleet ran).
+    if (e.status === "injection_neutralized")
+      return { label: verdictLabel(lang, e.status), color: statusColor(e.status) };
     if (e.findings.length > 0)
       return { label: verdictLabel(lang, "uncertain"), color: statusColor("uncertain") };
     return { label: t(lang, "unchecked"), color: "gray" };
@@ -361,7 +365,13 @@ function App() {
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {check.entries
-                    .filter((e) => !notableOnly || e.findings.length > 0 || e.fleet)
+                    .filter(
+                      (e) =>
+                        !notableOnly ||
+                        e.findings.length > 0 ||
+                        e.fleet ||
+                        e.status === "injection_neutralized"
+                    )
                     .map((e) => {
                       const st = entryStatus(e);
                       return (
@@ -406,10 +416,16 @@ function App() {
                               ))}
                             </div>
                           )}
-                          {e.evidence.length > 0 && (
+                          {e.evidence.length > 0 &&
+                            (e.fleet || e.status === "injection_neutralized") && (
                             <div style={{ margin: "6px 0 0 64px", fontSize: 12 }}>
                               <div style={{ opacity: 0.7, marginBottom: 2 }}>
-                                {t(lang, "evidence_label")}
+                                {t(
+                                  lang,
+                                  e.status === "injection_neutralized"
+                                    ? "injection_evidence_label"
+                                    : "evidence_label"
+                                )}
                               </div>
                               <ol style={{ margin: 0, paddingLeft: 18, opacity: 0.85 }}>
                                 {e.evidence.map((p, i) => (
