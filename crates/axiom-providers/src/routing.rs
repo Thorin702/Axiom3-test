@@ -71,12 +71,27 @@ pub fn route(matrix: &CapabilityMatrix, req: &RouteRequest, now_ms: i64) -> Rout
 /// gate blocks either way). To distinguish "nothing connected" from "one vendor"
 /// when setting an `uncertain_reason`, callers check [`CapabilityMatrix::has_usable`].
 pub fn independence(matrix: &CapabilityMatrix, now_ms: i64) -> Independence {
-    let fams = matrix.usable_families(now_ms);
-    match fams.len() {
-        0 => Independence::SingleFamily, // nothing connected → conservative
-        1 if is_local_family(&fams[0]) => Independence::LocalOnly,
-        1 => Independence::SingleFamily,
-        _ => Independence::MultiFamily,
+    independence_of_families(&matrix.usable_families(now_ms))
+}
+
+/// Classify the cross-vendor independence of a SET of model families (deduped).
+/// Independence comes only from distinct CLOUD vendors — a local/offline model is
+/// the user's own and provides no third-party corroboration. So: ≥2 distinct CLOUD
+/// families → `MultiFamily`; exactly 1 cloud family → `SingleFamily`; 0 cloud but a
+/// local family present → `LocalOnly`; nothing → `SingleFamily` (conservative).
+/// Shared by [`independence`] (over the connected matrix) and the verification
+/// fleet (over the families that actually weighed in on a claim).
+pub fn independence_of_families(families: &[String]) -> Independence {
+    let mut uniq: Vec<&str> = families.iter().map(|s| s.as_str()).collect();
+    uniq.sort_unstable();
+    uniq.dedup();
+    let cloud = uniq.iter().filter(|f| !is_local_family(f)).count();
+    let has_local = uniq.iter().any(|f| is_local_family(f));
+    match (cloud, has_local) {
+        (c, _) if c >= 2 => Independence::MultiFamily,
+        (1, _) => Independence::SingleFamily,
+        (0, true) => Independence::LocalOnly,
+        _ => Independence::SingleFamily, // nothing usable → conservative
     }
 }
 
@@ -166,5 +181,22 @@ mod tests {
             cap("gpt-oss", "ollama", ModelStatus::Available, &[], &[Modality::Text]),
         ]);
         assert_eq!(independence(&one_local, 0), Independence::LocalOnly);
+    }
+
+    #[test]
+    fn local_family_does_not_grant_cross_vendor_independence() {
+        // One cloud + one local must NOT be MultiFamily — a local model provides no
+        // third-party corroboration, so a bearing claim can't verify on this alone.
+        assert_eq!(
+            independence_of_families(&["anthropic".into(), "ollama".into()]),
+            Independence::SingleFamily
+        );
+        // Two distinct CLOUD families IS multi-family.
+        assert_eq!(
+            independence_of_families(&["anthropic".into(), "openai".into()]),
+            Independence::MultiFamily
+        );
+        // Local-only stays LocalOnly.
+        assert_eq!(independence_of_families(&["ollama".into()]), Independence::LocalOnly);
     }
 }
