@@ -109,10 +109,12 @@ coded_enum! {
 }
 
 coded_enum! {
-    /// Whether a verifier is a human or a model.
+    /// What kind of agent produced a verdict: a human, a model, or a deterministic
+    /// rule engine (the always-on checker tier — neither human nor model).
     VerifierKind {
         Human => "human",
         Model => "model",
+        Deterministic => "deterministic",
     }
 }
 
@@ -224,6 +226,8 @@ mod tests {
         assert_eq!(ClaimType::from_code("synthesized"), Some(ClaimType::Synthesized));
         assert_eq!(ClaimType::from_code("non_retrievable"), Some(ClaimType::NonRetrievable));
         assert_eq!(Independence::SingleFamily.code(), "single_family");
+        assert_eq!(VerifierKind::Deterministic.code(), "deterministic");
+        assert_eq!(VerifierKind::from_code("model"), Some(VerifierKind::Model));
     }
 
     #[test]
