@@ -31,6 +31,8 @@ axiom-core = { path = "../../crates/axiom-core" }
 axiom-store = { path = "../../crates/axiom-store" }
 axiom-secrets = { path = "../../crates/axiom-secrets" }
 axiom-vector = { path = "../../crates/axiom-vector" }
+# Agent runtime: the model-verification fleet (cross-vendor) for bearing claims.
+axiom-runtime = { path = "../../crates/axiom-runtime" }
 
 # Single-instance guard (desktop only) — prevents two processes racing first-run
 # DB-key creation for the same project (see axiom-secrets::get_or_create_db_key).

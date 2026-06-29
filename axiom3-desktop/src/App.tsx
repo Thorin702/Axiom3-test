@@ -20,6 +20,15 @@ type EventInfo = {
 
 type FindingView = { checker: string; message: string; excerpt: string | null };
 
+type VendorView = { family: string; model: string; status: string };
+
+type FleetView = {
+  status: string;
+  independence: string;
+  reason: string;
+  vendors: VendorView[];
+};
+
 type ClaimEntry = {
   claim_id: string;
   text: string;
@@ -28,12 +37,14 @@ type ClaimEntry = {
   status: string;
   reason: string | null;
   findings: FindingView[];
+  fleet: FleetView | null;
 };
 
 type DraftCheck = {
   event_seq: number;
   total: number;
   flagged: number;
+  fleet_verified: number;
   entries: ClaimEntry[];
 };
 
@@ -225,8 +236,8 @@ function App() {
             {check && (
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontSize: 13, marginBottom: 8 }}>
-                  {check.total} claims · <b>{check.flagged} flagged</b> · recorded as event #
-                  {check.event_seq}
+                  {check.total} claims · <b>{check.flagged} flagged</b> ·{" "}
+                  {check.fleet_verified} cross-vendor · event #{check.event_seq}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {check.entries.map((e) => (
@@ -260,6 +271,19 @@ function App() {
                             </li>
                           ))}
                         </ul>
+                      )}
+                      {e.fleet && (
+                        <div style={{ margin: "6px 0 0 78px", fontSize: 12 }}>
+                          <span style={{ opacity: 0.7 }}>
+                            cross-vendor ({e.fleet.independence}):{" "}
+                          </span>
+                          {e.fleet.vendors.map((v, i) => (
+                            <span key={i} style={{ marginRight: 10 }}>
+                              {v.family}/{v.model}{" "}
+                              <b style={{ color: statusColor(v.status) }}>{v.status}</b>
+                            </span>
+                          ))}
+                        </div>
                       )}
                     </div>
                   ))}
