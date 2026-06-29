@@ -17,6 +17,11 @@ pub enum StoreError {
     Serde(#[from] serde_json::Error),
     #[error("integrity error: {0}")]
     Integrity(String),
+    /// A uniqueness / constraint conflict (e.g. inserting a duplicate immutable
+    /// verdict, or an FK/CHECK violation) — distinguishable from a generic backend
+    /// error so callers can tell an expected conflict from a real failure.
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
@@ -24,14 +29,47 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 /// Genesis previous-hash for the first event in a project's chain.
 pub const GENESIS_PREV_HASH: &str = "0";
 
-/// Canonical JSON for hashing.
+/// Canonical JSON for hashing — object keys EXPLICITLY sorted at every depth.
 ///
-/// `serde_json::Map` is a `BTreeMap` unless the `preserve_order` feature is on
-/// (it is not, here), so object keys already serialize in sorted order — i.e.
-/// `to_string` is canonical. Centralised here so the invariant is explicit and
-/// the whole codebase hashes payloads the same way.
+/// We do not rely on `serde_json::Map` being a `BTreeMap`: if any crate in the
+/// workspace enabled serde_json's `preserve_order` feature, Cargo feature
+/// unification would make `to_string` emit insertion order and silently break the
+/// event-hash chain. Sorting here makes the canonical form independent of that.
 pub fn canonical_json(payload: &Value) -> Result<String> {
-    Ok(serde_json::to_string(payload)?)
+    let mut out = String::new();
+    write_canonical(payload, &mut out)?;
+    Ok(out)
+}
+
+fn write_canonical(v: &Value, out: &mut String) -> Result<()> {
+    match v {
+        Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort_unstable();
+            out.push('{');
+            for (i, k) in keys.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(k)?); // JSON-escaped key
+                out.push(':');
+                write_canonical(&map[*k], out)?;
+            }
+            out.push('}');
+        }
+        Value::Array(arr) => {
+            out.push('[');
+            for (i, e) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                write_canonical(e, out)?;
+            }
+            out.push(']');
+        }
+        scalar => out.push_str(&serde_json::to_string(scalar)?),
+    }
+    Ok(())
 }
 
 /// `entry_hash = BLAKE3(prev_hash ‖ 0x1f ‖ canonical(payload))` (SSOT §一 1.2).
@@ -68,9 +106,12 @@ pub trait DurableStore {
     fn put_claim(&self, c: &Claim) -> Result<()>;
     fn get_claim(&self, id: &str) -> Result<Option<Claim>>;
     fn put_evidence(&self, e: &EvidenceSpan) -> Result<()>;
+    fn get_evidence(&self, id: &str) -> Result<Option<EvidenceSpan>>;
     fn put_verifier(&self, v: &Verifier) -> Result<()>;
+    fn get_verifier(&self, id: &str) -> Result<Option<Verifier>>;
     /// Insert an immutable verdict row. A re-judgement is a NEW row linked via
-    /// `revises_verdict_id`; this never updates an existing verdict.
+    /// `revises_verdict_id`; this never updates an existing verdict. A duplicate
+    /// `verdict_id` (or FK/CHECK violation) surfaces as [`StoreError::Conflict`].
     fn insert_verdict(&self, v: &Verdict) -> Result<()>;
     fn verdicts_for_claim(&self, claim_id: &str) -> Result<Vec<Verdict>>;
 }

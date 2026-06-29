@@ -126,6 +126,18 @@ fn backend<E: std::fmt::Display>(e: E) -> StoreError {
     StoreError::Backend(e.to_string())
 }
 
+/// Classify a rusqlite error: constraint violations (PRIMARY KEY / UNIQUE / FK /
+/// CHECK) become [`StoreError::Conflict`] so callers can distinguish an expected
+/// conflict (e.g. a duplicate immutable verdict) from a real backend failure.
+fn map_sqlite(e: rusqlite::Error) -> StoreError {
+    if let rusqlite::Error::SqliteFailure(err, msg) = &e {
+        if err.code == rusqlite::ErrorCode::ConstraintViolation {
+            return StoreError::Conflict(msg.clone().unwrap_or_else(|| e.to_string()));
+        }
+    }
+    StoreError::Backend(e.to_string())
+}
+
 fn decode<T>(field: &str, v: Option<T>) -> Result<T> {
     v.ok_or_else(|| StoreError::Integrity(format!("invalid coded value in column `{field}`")))
 }
@@ -244,7 +256,13 @@ impl EventLog for SqliteStore {
 
     fn verify_chain(&self) -> Result<bool> {
         let mut prev = GENESIS_PREV_HASH.to_string();
+        let mut expected_seq: i64 = 1;
         for e in self.replay()? {
+            // seq must be a dense 1..N run — catches deleted/reordered rows that
+            // hash linkage alone would miss.
+            if e.seq != expected_seq {
+                return Ok(false);
+            }
             if e.prev_hash != prev {
                 return Ok(false);
             }
@@ -253,6 +271,7 @@ impl EventLog for SqliteStore {
                 return Ok(false);
             }
             prev = e.entry_hash;
+            expected_seq += 1;
         }
         Ok(true)
     }
@@ -369,8 +388,40 @@ impl DurableStore for SqliteStore {
                     e.verbatim_text, e.parse_trust, e.redaction_state.code()
                 ],
             )
-            .map_err(backend)?;
+            .map_err(map_sqlite)?; // a bad source_id (FK) surfaces as Conflict
         Ok(())
+    }
+
+    fn get_evidence(&self, id: &str) -> Result<Option<EvidenceSpan>> {
+        self.lock()
+            .query_row(
+                "SELECT evidence_id, source_id, blake3_hash, start_offset, end_offset,
+                        verbatim_text, parse_trust, redaction_state
+                 FROM evidence_span WHERE evidence_id = ?1",
+                params![id],
+                |r| {
+                    Ok((
+                        EvidenceSpan {
+                            id: r.get(0)?,
+                            source_id: r.get(1)?,
+                            blake3_hash: r.get(2)?,
+                            start_offset: r.get(3)?,
+                            end_offset: r.get(4)?,
+                            verbatim_text: r.get(5)?,
+                            parse_trust: r.get(6)?,
+                            redaction_state: RedactionState::Present, // replaced below
+                        },
+                        r.get::<_, String>(7)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|(mut e, rs)| {
+                e.redaction_state = decode("redaction_state", RedactionState::from_code(&rs))?;
+                Ok(e)
+            })
+            .transpose()
     }
 
     fn put_verifier(&self, v: &Verifier) -> Result<()> {
@@ -383,6 +434,36 @@ impl DurableStore for SqliteStore {
             )
             .map_err(backend)?;
         Ok(())
+    }
+
+    fn get_verifier(&self, id: &str) -> Result<Option<Verifier>> {
+        self.lock()
+            .query_row(
+                "SELECT verifier_id, kind, model_id, model_family, version, prompt_hash, role
+                 FROM verifier WHERE verifier_id = ?1",
+                params![id],
+                |r| {
+                    Ok((
+                        Verifier {
+                            id: r.get(0)?,
+                            kind: VerifierKind::Model, // replaced below
+                            model_id: r.get(2)?,
+                            model_family: r.get(3)?,
+                            version: r.get(4)?,
+                            prompt_hash: r.get(5)?,
+                            role: r.get(6)?,
+                        },
+                        r.get::<_, String>(1)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?
+            .map(|(mut v, k)| {
+                v.kind = decode("kind", VerifierKind::from_code(&k))?;
+                Ok(v)
+            })
+            .transpose()
     }
 
     fn insert_verdict(&self, v: &Verdict) -> Result<()> {
@@ -401,7 +482,7 @@ impl DurableStore for SqliteStore {
                     v.independence.map(|i| i.code()), v.revises_verdict_id, v.created_event_seq
                 ],
             )
-            .map_err(backend)?;
+            .map_err(map_sqlite)?; // duplicate verdict_id / FK / CHECK -> Conflict
         Ok(())
     }
 
@@ -579,6 +660,119 @@ mod tests {
         assert!(
             SqliteStore::open(&path, "wrong-key").is_err(),
             "wrong SQLCipher key must fail to open (proves at-rest encryption)"
+        );
+    }
+
+    #[test]
+    fn verify_chain_detects_seq_gap() {
+        let s = mkstore();
+        s.append_event("system", "a", &json!({"n": 1})).unwrap();
+        s.append_event("system", "b", &json!({"n": 2})).unwrap();
+        s.append_event("system", "c", &json!({"n": 3})).unwrap();
+        // Delete the middle event → replay yields seq [1, 3], a gap.
+        s.lock().execute("DELETE FROM event WHERE seq = 2", []).unwrap();
+        assert!(!s.verify_chain().unwrap(), "a seq gap must fail verification");
+    }
+
+    #[test]
+    fn evidence_and_verifier_roundtrip() {
+        let s = mkstore();
+        let src = Source {
+            id: new_id(),
+            project_id: "p".into(),
+            blake3_hash: "h".into(),
+            uri: None,
+            mime: None,
+            acquisition_channel: Some("oa-cc".into()),
+            license: None,
+            source_locale: Some("en".into()),
+            data_class: None,
+            retracted_status: RetractedStatus::Clean,
+            cas_state: CasState::Present,
+            created_at: now_ms(),
+        };
+        s.put_source(&src).unwrap();
+        let ev = EvidenceSpan {
+            id: new_id(),
+            source_id: src.id.clone(),
+            blake3_hash: "h".into(),
+            start_offset: Some(0),
+            end_offset: Some(12),
+            verbatim_text: Some("hello world".into()),
+            parse_trust: Some(0.9),
+            redaction_state: RedactionState::Present,
+        };
+        s.put_evidence(&ev).unwrap();
+        let got = s.get_evidence(&ev.id).unwrap().expect("evidence exists");
+        assert_eq!(got.source_id, src.id);
+        assert_eq!(got.verbatim_text.as_deref(), Some("hello world"));
+        assert!(s.get_evidence("nope").unwrap().is_none());
+
+        let v = Verifier {
+            id: new_id(),
+            kind: VerifierKind::Human,
+            model_id: None,
+            model_family: None,
+            version: None,
+            prompt_hash: None,
+            role: Some("reviewer".into()),
+        };
+        s.put_verifier(&v).unwrap();
+        let gv = s.get_verifier(&v.id).unwrap().expect("verifier exists");
+        assert_eq!(gv.kind, VerifierKind::Human);
+        assert_eq!(gv.role.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn orphan_evidence_violates_fk() {
+        let s = mkstore();
+        let ev = EvidenceSpan {
+            id: new_id(),
+            source_id: "does-not-exist".into(),
+            blake3_hash: "h".into(),
+            start_offset: None,
+            end_offset: None,
+            verbatim_text: None,
+            parse_trust: None,
+            redaction_state: RedactionState::Present,
+        };
+        let err = s.put_evidence(&ev).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Conflict(_)),
+            "orphan evidence (bad source FK) must be a Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_verdict_is_conflict() {
+        let s = mkstore();
+        s.lock()
+            .execute(
+                "INSERT INTO claim (claim_id, project_id, text, claim_type, is_bearing, created_at)
+                 VALUES ('c','p','t','citation',1,0)",
+                [],
+            )
+            .unwrap();
+        s.lock()
+            .execute("INSERT INTO verifier (verifier_id, kind) VALUES ('v','model')", [])
+            .unwrap();
+        let mk = |id: &str| Verdict {
+            id: id.into(),
+            claim_id: "c".into(),
+            verifier_id: "v".into(),
+            status: VerdictStatus::Verified,
+            evidence_redacted: false,
+            calibrated_confidence: None,
+            uncertain_reason: None,
+            independence: None,
+            revises_verdict_id: None,
+            created_event_seq: 1,
+        };
+        s.insert_verdict(&mk("vd1")).unwrap();
+        let err = s.insert_verdict(&mk("vd1")).unwrap_err();
+        assert!(
+            matches!(err, StoreError::Conflict(_)),
+            "re-inserting an immutable verdict_id must be a Conflict, got {err:?}"
         );
     }
 }
