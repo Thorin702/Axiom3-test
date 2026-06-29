@@ -11,12 +11,14 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use axiom_core::store::{EventLog, VectorStore};
+use axiom_core::model::{new_id, Independence, Verdict, Verifier, VerifierKind};
+use axiom_core::store::{DurableStore, EventLog, VectorStore};
+use axiom_core::verify::verify_draft;
 use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
 use axiom_vector::LanceStore;
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::Manager;
 
 /// Keychain service name under which all Axiom3 secrets live.
@@ -56,6 +58,39 @@ pub struct EventInfo {
     pub entry_hash: String,
 }
 
+/// One deterministic checker observation, for the UI.
+#[derive(Serialize)]
+pub struct FindingView {
+    pub checker: String,
+    pub message: String,
+    pub excerpt: Option<String>,
+}
+
+/// One adjudicated claim in the ledger.
+#[derive(Serialize)]
+pub struct ClaimEntry {
+    pub claim_id: String,
+    pub text: String,
+    pub claim_type: String,
+    pub is_bearing: bool,
+    /// 5-state verdict code (deterministic tier: always `uncertain`).
+    pub status: String,
+    /// Stable machine reason code(s).
+    pub reason: Option<String>,
+    pub findings: Vec<FindingView>,
+}
+
+/// The result of checking a draft: the persisted claim ledger.
+#[derive(Serialize)]
+pub struct DraftCheck {
+    /// The event seq that recorded this check (audit anchor).
+    pub event_seq: i64,
+    pub total: usize,
+    /// How many claims carry at least one risk flag.
+    pub flagged: usize,
+    pub entries: Vec<ClaimEntry>,
+}
+
 impl Workbench {
     /// Open (creating if needed) the project at `root`, sealing `durable.db` with
     /// the project's keychain-managed SQLCipher key from `secrets`.
@@ -77,6 +112,80 @@ impl Workbench {
 
     pub fn verify_chain(&self) -> anyhow::Result<bool> {
         Ok(self.durable.verify_chain()?)
+    }
+
+    /// Run the deterministic verification engine over a draft and PERSIST the
+    /// result: one `draft.checked` event anchors a batch of immutable claims +
+    /// verdicts in the encrypted store. Returns the ledger for the UI.
+    pub fn check_draft(&self, draft: &str) -> anyhow::Result<DraftCheck> {
+        let reports = verify_draft(&self.project_id, draft);
+
+        // A deterministic verifier identity for this run (engine version recorded).
+        let verifier = Verifier {
+            id: new_id(),
+            kind: VerifierKind::Deterministic,
+            model_id: None,
+            model_family: None,
+            version: Some(axiom_core::version().to_string()),
+            prompt_hash: None,
+            role: Some("routine_verify".to_string()),
+        };
+
+        // Build (claim, verdict) pairs. `created_event_seq` is assigned atomically
+        // by record_verification from the event it mints.
+        let items: Vec<(axiom_core::model::Claim, Verdict)> = reports
+            .iter()
+            .map(|r| {
+                let verdict = Verdict {
+                    id: new_id(),
+                    claim_id: r.claim.id.clone(),
+                    verifier_id: verifier.id.clone(),
+                    status: r.status,
+                    evidence_redacted: false,
+                    calibrated_confidence: None,
+                    uncertain_reason: r.reason.clone(),
+                    // Single local engine, no cross-vendor corroboration.
+                    independence: Some(Independence::LocalOnly),
+                    revises_verdict_id: None,
+                    created_event_seq: 0, // assigned atomically below
+                };
+                (r.claim.clone(), verdict)
+            })
+            .collect();
+
+        // Atomic: the audit-anchor event + verifier + all claims + all verdicts
+        // commit together, or not at all.
+        let event = self.durable.record_verification(
+            "engine",
+            "draft.checked",
+            &json!({ "claims": reports.len(), "draft_chars": draft.chars().count() }),
+            &verifier,
+            &items,
+        )?;
+
+        let entries: Vec<ClaimEntry> = reports
+            .iter()
+            .map(|r| ClaimEntry {
+                claim_id: r.claim.id.clone(),
+                text: r.claim.text.clone(),
+                claim_type: r.claim.claim_type.code().to_string(),
+                is_bearing: r.claim.is_bearing,
+                status: r.status.code().to_string(),
+                reason: r.reason.clone(),
+                findings: r
+                    .findings
+                    .iter()
+                    .map(|f| FindingView {
+                        checker: f.checker.to_string(),
+                        message: f.message.clone(),
+                        excerpt: f.excerpt.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let flagged = entries.iter().filter(|e| !e.findings.is_empty()).count();
+        Ok(DraftCheck { event_seq: event.seq, total: entries.len(), flagged, entries })
     }
 
     pub fn status(&self) -> anyhow::Result<ProjectStatus> {
@@ -247,6 +356,17 @@ pub async fn vector_self_test(state: tauri::State<'_, AppState>) -> Result<Strin
 }
 
 #[tauri::command]
+pub async fn check_draft(
+    state: tauri::State<'_, AppState>,
+    draft: String,
+) -> Result<DraftCheck, String> {
+    let wb = state.get()?;
+    tauri::async_runtime::spawn_blocking(move || wb.check_draft(&draft).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 pub fn close_project(state: tauri::State<'_, AppState>) {
     state.clear();
 }
@@ -292,6 +412,32 @@ mod tests {
         let st = wb.status().unwrap();
         assert_eq!(st.event_count, 1, "event survived reopen");
         assert!(st.chain_ok);
+    }
+
+    #[test]
+    fn check_draft_persists_claims_and_verdicts() {
+        let dir = tempdir().unwrap();
+        let wb = Workbench::open(
+            dir.path().join("proj"),
+            "draft-test".into(),
+            &MemorySecretStore::default(),
+        )
+        .unwrap();
+
+        let draft = "This is the first-ever room-temperature synthesis. The yield was 94%.";
+        let check = wb.check_draft(draft).unwrap();
+
+        assert_eq!(check.total, 2, "two claims extracted");
+        assert!(check.flagged >= 1, "at least the over-claim is flagged");
+        // deterministic tier: every verdict is uncertain
+        assert!(check.entries.iter().all(|e| e.status == "uncertain"));
+        // the check is recorded in the audit chain and the chain stays intact
+        assert!(check.event_seq >= 1);
+        assert!(wb.verify_chain().unwrap());
+        // verdicts were persisted and are retrievable per claim
+        let first = &check.entries[0];
+        let verdicts = wb.durable.verdicts_for_claim(&first.claim_id).unwrap();
+        assert_eq!(verdicts.len(), 1, "one verdict persisted per claim");
     }
 
     #[test]

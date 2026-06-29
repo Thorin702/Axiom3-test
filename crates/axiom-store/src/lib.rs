@@ -142,6 +142,83 @@ fn decode<T>(field: &str, v: Option<T>) -> Result<T> {
     v.ok_or_else(|| StoreError::Integrity(format!("invalid coded value in column `{field}`")))
 }
 
+// --- Row inserts, shared between the single-row trait methods and atomic batches.
+// A rusqlite `Transaction` derefs to `Connection`, so these run inside a tx too.
+
+fn insert_claim_row(conn: &Connection, c: &Claim) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO claim
+         (claim_id, project_id, text, claim_type, is_bearing, output_locale, created_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![
+            c.id, c.project_id, c.text, c.claim_type.code(),
+            c.is_bearing as i64, c.output_locale, c.created_at
+        ],
+    )?;
+    Ok(())
+}
+
+fn insert_verifier_row(conn: &Connection, v: &Verifier) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO verifier
+         (verifier_id, kind, model_id, model_family, version, prompt_hash, role)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![v.id, v.kind.code(), v.model_id, v.model_family, v.version, v.prompt_hash, v.role],
+    )?;
+    Ok(())
+}
+
+fn insert_verdict_row(conn: &Connection, v: &Verdict) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO verdict
+         (verdict_id, claim_id, verifier_id, status, evidence_redacted,
+          calibrated_confidence, uncertain_reason, independence, revises_verdict_id,
+          created_event_seq)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            v.id, v.claim_id, v.verifier_id, v.status.code(), v.evidence_redacted as i64,
+            v.calibrated_confidence, v.uncertain_reason,
+            v.independence.map(|i| i.code()), v.revises_verdict_id, v.created_event_seq
+        ],
+    )?;
+    Ok(())
+}
+
+/// Append one event onto `conn` (which may be a transaction): compute the chain
+/// head + `entry_hash` and insert the row. Does NOT commit — the caller's tx owns that.
+fn append_event_row(conn: &Connection, actor: &str, op: &str, payload: &serde_json::Value) -> Result<Event> {
+    let canonical = canonical_json(payload)?;
+    let head: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT seq, entry_hash FROM event ORDER BY seq DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(backend)?;
+    let (seq, prev_hash) = match head {
+        Some((s, h)) => (s + 1, h),
+        None => (1, GENESIS_PREV_HASH.to_string()),
+    };
+    let ts = now_ms();
+    let entry = entry_hash(&prev_hash, &canonical);
+    conn.execute(
+        "INSERT INTO event (seq, ts, actor, op, payload_json, prev_hash, entry_hash)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![seq, ts, actor, op, canonical, prev_hash, entry],
+    )
+    .map_err(backend)?;
+    Ok(Event {
+        seq,
+        ts,
+        actor: actor.to_string(),
+        op: op.to_string(),
+        payload_json: canonical,
+        prev_hash,
+        entry_hash: entry,
+    })
+}
+
 /// Encrypted SQLite durable store. `Connection` is `Send` but not `Sync`, so the
 /// (synchronous) crate guards it with a `Mutex`; the async shell wraps calls in a
 /// blocking task / `tokio::task::spawn_blocking`.
@@ -187,43 +264,11 @@ impl SqliteStore {
 
 impl EventLog for SqliteStore {
     fn append_event(&self, actor: &str, op: &str, payload: &serde_json::Value) -> Result<Event> {
-        let canonical = canonical_json(payload)?;
         let mut guard = self.lock();
         let tx = guard.transaction().map_err(backend)?;
-
-        let head: Option<(i64, String)> = tx
-            .query_row(
-                "SELECT seq, entry_hash FROM event ORDER BY seq DESC LIMIT 1",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
-            .map_err(backend)?;
-
-        let (seq, prev_hash) = match head {
-            Some((s, h)) => (s + 1, h),
-            None => (1, GENESIS_PREV_HASH.to_string()),
-        };
-        let ts = now_ms();
-        let entry = entry_hash(&prev_hash, &canonical);
-
-        tx.execute(
-            "INSERT INTO event (seq, ts, actor, op, payload_json, prev_hash, entry_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![seq, ts, actor, op, canonical, prev_hash, entry],
-        )
-        .map_err(backend)?;
+        let event = append_event_row(&tx, actor, op, payload)?;
         tx.commit().map_err(backend)?;
-
-        Ok(Event {
-            seq,
-            ts,
-            actor: actor.to_string(),
-            op: op.to_string(),
-            payload_json: canonical,
-            prev_hash,
-            entry_hash: entry,
-        })
+        Ok(event)
     }
 
     fn head_hash(&self) -> Result<Option<String>> {
@@ -333,18 +378,7 @@ impl DurableStore for SqliteStore {
     }
 
     fn put_claim(&self, c: &Claim) -> Result<()> {
-        self.lock()
-            .execute(
-                "INSERT OR REPLACE INTO claim
-                 (claim_id, project_id, text, claim_type, is_bearing, output_locale, created_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![
-                    c.id, c.project_id, c.text, c.claim_type.code(),
-                    c.is_bearing as i64, c.output_locale, c.created_at
-                ],
-            )
-            .map_err(backend)?;
-        Ok(())
+        insert_claim_row(&self.lock(), c).map_err(backend)
     }
 
     fn get_claim(&self, id: &str) -> Result<Option<Claim>> {
@@ -424,15 +458,7 @@ impl DurableStore for SqliteStore {
     }
 
     fn put_verifier(&self, v: &Verifier) -> Result<()> {
-        self.lock()
-            .execute(
-                "INSERT OR REPLACE INTO verifier
-                 (verifier_id, kind, model_id, model_family, version, prompt_hash, role)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![v.id, v.kind.code(), v.model_id, v.model_family, v.version, v.prompt_hash, v.role],
-            )
-            .map_err(backend)?;
-        Ok(())
+        insert_verifier_row(&self.lock(), v).map_err(backend)
     }
 
     fn get_verifier(&self, id: &str) -> Result<Option<Verifier>> {
@@ -467,22 +493,31 @@ impl DurableStore for SqliteStore {
 
     fn insert_verdict(&self, v: &Verdict) -> Result<()> {
         // Plain INSERT (not REPLACE): verdicts are immutable; a re-judgement is a
-        // new row linked via revises_verdict_id.
-        self.lock()
-            .execute(
-                "INSERT INTO verdict
-                 (verdict_id, claim_id, verifier_id, status, evidence_redacted,
-                  calibrated_confidence, uncertain_reason, independence, revises_verdict_id,
-                  created_event_seq)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-                params![
-                    v.id, v.claim_id, v.verifier_id, v.status.code(), v.evidence_redacted as i64,
-                    v.calibrated_confidence, v.uncertain_reason,
-                    v.independence.map(|i| i.code()), v.revises_verdict_id, v.created_event_seq
-                ],
-            )
-            .map_err(map_sqlite)?; // duplicate verdict_id / FK / CHECK -> Conflict
-        Ok(())
+        // new row linked via revises_verdict_id. Duplicate id / FK / CHECK -> Conflict.
+        insert_verdict_row(&self.lock(), v).map_err(map_sqlite)
+    }
+
+    fn record_verification(
+        &self,
+        actor: &str,
+        op: &str,
+        payload: &serde_json::Value,
+        verifier: &Verifier,
+        items: &[(Claim, Verdict)],
+    ) -> Result<Event> {
+        let mut guard = self.lock();
+        let tx = guard.transaction().map_err(backend)?;
+        let event = append_event_row(&tx, actor, op, payload)?;
+        insert_verifier_row(&tx, verifier).map_err(map_sqlite)?;
+        for (claim, verdict) in items {
+            insert_claim_row(&tx, claim).map_err(map_sqlite)?;
+            let mut v = verdict.clone();
+            v.created_event_seq = event.seq;
+            insert_verdict_row(&tx, &v).map_err(map_sqlite)?;
+        }
+        // Any early-return above drops `tx` un-committed → full rollback.
+        tx.commit().map_err(map_sqlite)?;
+        Ok(event)
     }
 
     fn verdicts_for_claim(&self, claim_id: &str) -> Result<Vec<Verdict>> {
@@ -544,6 +579,86 @@ mod tests {
 
     fn mkstore() -> SqliteStore {
         SqliteStore::open_in_memory("test-key").expect("open")
+    }
+
+    fn mk_claim(text: &str) -> Claim {
+        Claim {
+            id: new_id(),
+            project_id: "p".into(),
+            text: text.into(),
+            claim_type: ClaimType::Descriptive,
+            is_bearing: false,
+            output_locale: None,
+            created_at: now_ms(),
+        }
+    }
+
+    fn mk_verdict(id: String, claim_id: String, verifier_id: String) -> Verdict {
+        Verdict {
+            id,
+            claim_id,
+            verifier_id,
+            status: VerdictStatus::Uncertain,
+            evidence_redacted: false,
+            calibrated_confidence: None,
+            uncertain_reason: Some("clean_pending".into()),
+            independence: Some(Independence::LocalOnly),
+            revises_verdict_id: None,
+            created_event_seq: 0,
+        }
+    }
+
+    fn det_verifier() -> Verifier {
+        Verifier {
+            id: new_id(),
+            kind: VerifierKind::Deterministic,
+            model_id: None,
+            model_family: None,
+            version: Some("0".into()),
+            prompt_hash: None,
+            role: Some("routine_verify".into()),
+        }
+    }
+
+    #[test]
+    fn record_verification_is_atomic_and_stamps_seq() {
+        let s = mkstore();
+        let verifier = det_verifier();
+        let c1 = mk_claim("one");
+        let c2 = mk_claim("two");
+        let items = vec![
+            (c1.clone(), mk_verdict(new_id(), c1.id.clone(), verifier.id.clone())),
+            (c2.clone(), mk_verdict(new_id(), c2.id.clone(), verifier.id.clone())),
+        ];
+        let event = s
+            .record_verification("engine", "draft.checked", &json!({ "claims": 2 }), &verifier, &items)
+            .unwrap();
+        assert_eq!(event.seq, 1);
+        assert!(s.verify_chain().unwrap(), "chain intact after the batch");
+        let v1 = s.verdicts_for_claim(&c1.id).unwrap();
+        assert_eq!(v1.len(), 1);
+        assert_eq!(v1[0].created_event_seq, event.seq, "seq stamped from the minted event");
+        assert!(s.get_verifier(&verifier.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn record_verification_rolls_back_on_failure() {
+        let s = mkstore();
+        let verifier = det_verifier();
+        let c1 = mk_claim("one");
+        let c2 = mk_claim("two");
+        let dup = new_id(); // same verdict id for both → PK conflict on the 2nd insert
+        let items = vec![
+            (c1.clone(), mk_verdict(dup.clone(), c1.id.clone(), verifier.id.clone())),
+            (c2.clone(), mk_verdict(dup.clone(), c2.id.clone(), verifier.id.clone())),
+        ];
+        let res =
+            s.record_verification("engine", "draft.checked", &json!({ "claims": 2 }), &verifier, &items);
+        assert!(res.is_err(), "duplicate verdict id must fail the batch");
+        // Everything rolls back together — no dangling audit anchor.
+        assert_eq!(s.head_hash().unwrap(), None, "event rolled back");
+        assert!(s.get_verifier(&verifier.id).unwrap().is_none(), "verifier rolled back");
+        assert!(s.get_claim(&c1.id).unwrap().is_none(), "first claim rolled back");
     }
 
     #[test]

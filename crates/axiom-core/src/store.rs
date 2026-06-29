@@ -114,6 +114,20 @@ pub trait DurableStore {
     /// `verdict_id` (or FK/CHECK violation) surfaces as [`StoreError::Conflict`].
     fn insert_verdict(&self, v: &Verdict) -> Result<()>;
     fn verdicts_for_claim(&self, claim_id: &str) -> Result<Vec<Verdict>>;
+
+    /// Atomically record a verification pass: append the `op` event, insert
+    /// `verifier`, and insert each `(claim, verdict)` — ALL in one transaction, so
+    /// a partial failure can never leave an audit-anchor event referencing verdicts
+    /// that weren't written. Each verdict's `created_event_seq` is assigned from the
+    /// event minted here (any value the caller set is overwritten). Returns the event.
+    fn record_verification(
+        &self,
+        actor: &str,
+        op: &str,
+        payload: &Value,
+        verifier: &Verifier,
+        items: &[(Claim, Verdict)],
+    ) -> Result<Event>;
 }
 
 /// Rebuildable vector index (SSOT §一 — LanceDB, cache tier).
