@@ -1,0 +1,8 @@
+[package]
+name = "axiom-core"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Axiom3 open verification core: claim model, ingest-gate rules, entailment/citation verification, deterministic checkers, calibration."
+
+[dependencies]

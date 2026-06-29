@@ -1,0 +1,10 @@
+# pnpm 11 reads dependency-build approval + run settings from here.
+# esbuild ships its platform binary via optionalDependencies; its postinstall is
+# unnecessary, so we explicitly skip it (a valid boolean, not the scaffold placeholder)
+# to avoid ERR_PNPM_IGNORED_BUILDS (exit 1).
+allowBuilds:
+  esbuild: false
+
+# Don't re-run a deps-status install check before every `pnpm <script>`
+# (it blocks headless/CI runs).
+verifyDepsBeforeRun: false
