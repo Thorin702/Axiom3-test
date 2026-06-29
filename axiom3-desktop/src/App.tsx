@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Lang, t, verdictLabel, indepLabel, findingDesc } from "./i18n";
 import "./App.css";
@@ -75,6 +76,14 @@ function App() {
   );
   const [check, setCheck] = useState<DraftCheck | null>(null);
   const [notableOnly, setNotableOnly] = useState(true);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+
+  useEffect(() => {
+    const un = listen<{ done: number; total: number }>("check_progress", (e) => setProgress(e.payload));
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
 
   function note(line: string) {
     setLog((l) => [line, ...l].slice(0, 30));
@@ -141,7 +150,9 @@ function App() {
   }
 
   async function checkDraft() {
+    setProgress(null);
     const c = await run(() => invoke<DraftCheck>("check_draft", { draft }));
+    setProgress(null);
     if (c) {
       setCheck(c);
       note(
@@ -150,6 +161,10 @@ function App() {
       const s = await run(() => invoke<ProjectStatus>("project_status"));
       if (s) setStatus(s);
     }
+  }
+
+  async function cancelCheck() {
+    await invoke("cancel_check");
   }
 
   async function closeProject() {
@@ -251,8 +266,44 @@ function App() {
               </span>
             </div>
             {busy && (
-              <div style={{ fontSize: 12, color: "#185fa5", marginTop: 6 }}>
-                ⏳ {t(lang, "checking")}
+              <div
+                style={{
+                  fontSize: 12,
+                  color: "#185fa5",
+                  marginTop: 6,
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                }}
+              >
+                <span>
+                  ⏳ {t(lang, "checking")}
+                  {progress ? ` ${progress.done}/${progress.total}` : ""}
+                </span>
+                {progress && progress.total > 0 && (
+                  <span
+                    style={{
+                      flex: 1,
+                      maxWidth: 200,
+                      height: 4,
+                      background: "#8883",
+                      borderRadius: 2,
+                      overflow: "hidden",
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "block",
+                        height: "100%",
+                        width: `${Math.round((progress.done / progress.total) * 100)}%`,
+                        background: "#185fa5",
+                      }}
+                    />
+                  </span>
+                )}
+                <button onClick={cancelCheck} style={{ fontSize: 11, padding: "1px 8px" }}>
+                  {t(lang, "cancel")}
+                </button>
               </div>
             )}
 

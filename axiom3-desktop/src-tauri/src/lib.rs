@@ -38,6 +38,7 @@ pub fn run() {
             workbench::append_event,
             workbench::verify_chain,
             workbench::check_draft,
+            workbench::cancel_check,
             workbench::import_document,
             workbench::vector_self_test,
             workbench::close_project,

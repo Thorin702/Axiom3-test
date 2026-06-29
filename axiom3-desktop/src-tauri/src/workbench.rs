@@ -16,6 +16,7 @@ use axiom_core::model::{new_id, Independence, Verdict, VerdictStatus, Verifier, 
 use axiom_core::store::{DurableStore, EventLog, VectorStore};
 use axiom_core::verify::{verify_draft, ClaimReport};
 use axiom_runtime::fleet::{verify_bearing_claim, FleetMember, FleetVerdict, MultiProviderRigBackend};
+use axiom_runtime::supervisor::{run_batch, Cancel};
 use axiom_runtime::Provider;
 use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
@@ -406,6 +407,8 @@ fn vector_round_trip(dir: &Path) -> anyhow::Result<String> {
 #[derive(Default)]
 pub struct AppState {
     current: Mutex<Option<Arc<Workbench>>>,
+    /// The cancel handle of the in-flight draft check, if any.
+    cancel: Mutex<Option<Cancel>>,
 }
 
 impl AppState {
@@ -428,6 +431,17 @@ impl AppState {
             .unwrap_or_else(|p| p.into_inner())
             .as_ref()
             .map(|w| w.id().to_string())
+    }
+    fn set_cancel(&self, c: Cancel) {
+        *self.cancel.lock().unwrap_or_else(|p| p.into_inner()) = Some(c);
+    }
+    fn clear_cancel(&self) {
+        *self.cancel.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+    fn cancel_current(&self) {
+        if let Some(c) = self.cancel.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+            c.cancel();
+        }
     }
 }
 
@@ -534,10 +548,14 @@ pub async fn vector_self_test(state: tauri::State<'_, AppState>) -> Result<Strin
 
 #[tauri::command]
 pub async fn check_draft(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     draft: String,
 ) -> Result<DraftCheck, String> {
+    use tauri::Emitter;
     let wb = state.get()?;
+    let cancel = Cancel::new();
+    state.set_cancel(cancel.clone());
 
     // 1. Deterministic tier (CPU) — off the async runtime.
     let reports = {
@@ -547,35 +565,40 @@ pub async fn check_draft(
             .map_err(|e| e.to_string())?
     };
 
-    // 2. Cross-vendor fleet verification for bearing claims (async network I/O).
-    //    Needs ≥2 vendor keys in the env; otherwise the gate keeps them Uncertain.
+    // 2. Cross-vendor fleet verification for bearing claims — SUPERVISED: bounded
+    //    concurrency, live progress events, and cancellation. Needs ≥2 vendor keys.
     let members = std::sync::Arc::new(fleet_from_env());
     let mut fleet_verdicts = HashMap::new();
     if members.len() >= 2 {
-        use futures::StreamExt;
-        // Owned (id, text) pairs so each future borrows nothing from this scope —
-        // the Tauri command macro needs the future general over lifetimes.
+        // Owned (id, text) pairs so each future borrows nothing from this scope.
         let bearing: Vec<(String, String)> = reports
             .iter()
             .filter(|r| r.claim.is_bearing)
             .take(max_fleet_claims())
             .map(|r| (r.claim.id.clone(), r.claim.text.clone()))
             .collect();
-        // Verify up to 6 bearing claims concurrently (each fleets across vendors),
-        // so a whole paper's claims don't run strictly one-at-a-time.
-        let verdicts: Vec<(String, FleetVerdict)> = futures::stream::iter(bearing)
-            .map(|(id, text)| {
+        let total = bearing.len();
+        let _ = app.emit("check_progress", serde_json::json!({ "done": 0, "total": total }));
+        let verdicts = run_batch(
+            bearing,
+            6,
+            &cancel,
+            |(id, text)| {
                 let members = members.clone();
                 async move {
                     let backend = MultiProviderRigBackend;
                     (id, verify_bearing_claim(&text, &members, &backend).await)
                 }
-            })
-            .buffer_unordered(6)
-            .collect()
-            .await;
+            },
+            |done, total| {
+                let _ = app.emit("check_progress", serde_json::json!({ "done": done, "total": total }));
+            },
+        )
+        .await;
         fleet_verdicts.extend(verdicts);
     }
+
+    state.clear_cancel();
 
     // 3. Combine + atomically persist — off the async runtime.
     let wb2 = wb.clone();
@@ -583,6 +606,12 @@ pub async fn check_draft(
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
+}
+
+/// Cancel the in-flight draft check (the fleet stops scheduling new claims).
+#[tauri::command]
+pub fn cancel_check(state: tauri::State<'_, AppState>) {
+    state.cancel_current();
 }
 
 /// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can

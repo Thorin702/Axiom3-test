@@ -11,6 +11,7 @@
 //! lower-level CompletionModel, which carries `Usage`).
 
 pub mod fleet;
+pub mod supervisor;
 
 use axiom_providers::message::{ContentBlock, Request, Role};
 use rig_core::client::{CompletionClient, ProviderClient};
