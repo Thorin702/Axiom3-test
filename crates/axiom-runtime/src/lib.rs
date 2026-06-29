@@ -10,6 +10,8 @@
 //! history, tool / signed-thinking blocks, and usage extraction (needs Rig's
 //! lower-level CompletionModel, which carries `Usage`).
 
+pub mod fleet;
+
 use axiom_providers::message::{ContentBlock, Request, Role};
 use rig_core::client::{CompletionClient, ProviderClient};
 use rig_core::completion::Prompt;

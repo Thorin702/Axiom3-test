@@ -584,6 +584,7 @@ name = "axiom-runtime"
 version = "0.0.0"
 dependencies = [
  "anyhow",
+ "axiom-core",
  "axiom-providers",
  "rig-core",
  "tokio",
