@@ -6,3 +6,8 @@ license = "MIT"
 description = "Axiom3 open verification core: claim model, ingest-gate rules, entailment/citation verification, deterministic checkers, calibration."
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+ulid = "1"
+thiserror = "2"

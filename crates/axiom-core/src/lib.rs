@@ -1,57 +1,23 @@
 //! Axiom3 open verification core.
 //!
-//! This crate is the OPEN-SOURCE (MIT) verification engine — claim model,
-//! ingest-gate rules, entailment/citation verification, deterministic checkers,
-//! and calibration. The proprietary shell (orchestration, UX, tool ecosystem)
-//! lives in `axiom3-desktop/` and depends on this crate; never the reverse.
+//! This crate is the OPEN-SOURCE (MIT) verification engine — the claim/evidence
+//! domain model, the storage traits the engine reads/writes through, ingest-gate
+//! rules, entailment/citation verification, deterministic checkers, and calibration.
 //!
-//! P0.1 seed: only the load-bearing `VerdictStatus` type + a `version()` probe,
-//! enough to prove the open-core boundary is wired. Real components land in P0.2+.
+//! The proprietary shell (orchestration, UX, tool ecosystem) and the concrete
+//! storage backends (`axiom-store`) depend on this crate; never the reverse.
+//!
+//! Conventions are fixed by the SSOT build spec (`Axiom3-BuildSpec.md` §〇):
+//! - IDs are ULIDs (sortable). See [`model::new_id`].
+//! - `verdict.status` is a strict 5-state enum ([`model::VerdictStatus`]);
+//!   `evidence_redacted` (RTBF) is a separate boolean, never a 6th status.
 
-/// The 5-state verdict vocabulary (SSOT §〇.2 / §一).
-///
-/// NOTE: `evidence_redacted` (RTBF) is a separate *derived boolean* on the
-/// persisted verdict row, NOT a sixth status value. Do not add it here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VerdictStatus {
-    Verified,
-    Refuted,
-    Uncertain,
-    Quarantined,
-    InjectionNeutralized,
-}
+pub mod model;
+pub mod store;
 
-impl VerdictStatus {
-    /// Stable, language-invariant machine code (SSOT §〇.2: verdict vocabulary
-    /// is a locked namespace keyed by a machine code, localized labels layer on top).
-    pub fn code(self) -> &'static str {
-        match self {
-            VerdictStatus::Verified => "verified",
-            VerdictStatus::Refuted => "refuted",
-            VerdictStatus::Uncertain => "uncertain",
-            VerdictStatus::Quarantined => "quarantined",
-            VerdictStatus::InjectionNeutralized => "injection_neutralized",
-        }
-    }
-}
+pub use model::VerdictStatus;
 
-/// Open-core crate version — surfaced to the shell to prove the wiring.
+/// Open-core crate version — surfaced to the shell to prove the boundary wiring.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn verdict_codes_are_stable() {
-        assert_eq!(VerdictStatus::Verified.code(), "verified");
-        assert_eq!(VerdictStatus::InjectionNeutralized.code(), "injection_neutralized");
-    }
-
-    #[test]
-    fn version_is_nonempty() {
-        assert!(!version().is_empty());
-    }
 }
