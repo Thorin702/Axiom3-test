@@ -625,6 +625,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "axiom-core",
+ "axiom-ingest",
  "axiom-providers",
  "futures",
  "rig-core",

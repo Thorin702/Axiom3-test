@@ -72,7 +72,32 @@ fn extract_pdf(path: &Path) -> Result<String> {
     if size > MAX_PDF_BYTES {
         return Err(IngestError::TooLarge(format!("pdf is {size} bytes (limit {MAX_PDF_BYTES})")));
     }
-    pdf_extract::extract_text(path).map_err(|e| IngestError::Pdf(e.to_string()))
+    match pdf_extract::extract_text(path) {
+        Ok(text) => Ok(text),
+        Err(first) => {
+            // Some exporters (notably CNKI and other Chinese journal databases) append
+            // a metadata blob AFTER the PDF's `%%EOF`, which trips strict trailer
+            // parsing ("invalid file trailer"). The bytes up to and including the last
+            // `%%EOF` are a complete, valid PDF — retry on that truncated view before
+            // giving up.
+            let bytes = std::fs::read(path)?;
+            if let Some(end) = end_of_last_eof(&bytes) {
+                if end < bytes.len() {
+                    if let Ok(text) = pdf_extract::extract_text_from_mem(&bytes[..end]) {
+                        return Ok(text);
+                    }
+                }
+            }
+            Err(IngestError::Pdf(first.to_string()))
+        }
+    }
+}
+
+/// Byte index just past the last `%%EOF` marker, if any — the natural end of a valid
+/// PDF. Used to discard trailing junk that some exporters append after `%%EOF`.
+fn end_of_last_eof(bytes: &[u8]) -> Option<usize> {
+    const EOF: &[u8] = b"%%EOF";
+    bytes.windows(EOF.len()).rposition(|w| w == EOF).map(|p| p + EOF.len())
 }
 
 fn extract_docx(path: &Path) -> Result<String> {
@@ -156,6 +181,16 @@ mod tests {
         // The read is bounded — too-big errors instead of allocating unboundedly.
         assert!(matches!(read_text_file(&p, 100), Err(IngestError::TooLarge(_))));
         assert!(read_text_file(&p, 100_000).is_ok());
+    }
+
+    #[test]
+    fn end_of_last_eof_finds_the_trailer_end() {
+        assert_eq!(end_of_last_eof(b"...%%EOF"), Some(8));
+        // Trailing junk after %%EOF (CNKI-style): the index points just past %%EOF.
+        let b = b"head %%EOF\nWebFastLoad<FileProperty/>";
+        assert_eq!(&b[..end_of_last_eof(b).unwrap()], b"head %%EOF");
+        // No marker → None (nothing to truncate).
+        assert_eq!(end_of_last_eof(b"no marker here"), None);
     }
 
     #[test]
