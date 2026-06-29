@@ -284,34 +284,73 @@ impl Checker for UncitedQuantitativeChecker {
 }
 
 /// Signals that a numeric sentence is the study reporting its OWN data (so an in-line
-/// citation is not expected): first-person / self-reference, a table/figure pointer,
-/// or statistical-reporting machinery. Deterministic substring + `±` check; markers
-/// are space-anchored where a bare token would over-match (e.g. ` n =` not `n =`).
+/// citation is not expected): first-person RESULTS framing, a table/figure pointer, or
+/// statistical-reporting machinery. Only HIGH-PRECISION markers qualify — polysemous
+/// words like "mean"/"average"/"significant"/平均/显著 are deliberately excluded, since
+/// they occur in borrowed background statistics too and would silently swallow the very
+/// claims this checker exists to flag. p-values and sample sizes use a STRUCTURAL check
+/// (a `p`/`n` token + comparator + number) so "temp = 20" / "region = 5" don't match.
 fn is_own_results_context(text: &str) -> bool {
     if text.contains('±') {
         return true;
     }
     let low = text.to_lowercase();
     OWN_RESULTS_MARKERS.iter().any(|m| low.contains(m))
+        || has_stat_relation(&low, 'p', &['<', '=', '>', '≤', '≥', '≠'])
+        || has_stat_relation(&low, 'n', &['='])
 }
 
-/// Markers of own-results / statistical-reporting context (case-insensitive).
+/// A statistical relation reported as `<letter> <op> <number>` — e.g. `p < 0.05`,
+/// `p=0.001`, `n = 24`. The letter must start a word (not be inside `temp`, `region`)
+/// and the operator must be followed by a digit or decimal point. High precision.
+fn has_stat_relation(low: &str, letter: char, ops: &[char]) -> bool {
+    let c: Vec<char> = low.chars().collect();
+    for i in 0..c.len() {
+        if c[i] != letter {
+            continue;
+        }
+        // Word-start: the letter is not preceded by another alphabetic char.
+        if i > 0 && c[i - 1].is_alphabetic() {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < c.len() && c[j] == ' ' {
+            j += 1;
+        }
+        if j >= c.len() || !ops.contains(&c[j]) {
+            continue;
+        }
+        let mut k = j + 1;
+        while k < c.len() && c[k] == ' ' {
+            k += 1;
+        }
+        if k < c.len() && (c[k].is_ascii_digit() || c[k] == '.') {
+            return true;
+        }
+    }
+    false
+}
+
+/// HIGH-PRECISION own-results / statistical-reporting markers (case-insensitive). Each
+/// is specific enough that it rarely appears in a borrowed background statistic; bare
+/// polysemous words are excluded on purpose. Table/figure pointers are space-anchored
+/// so `comfortable`/`configure` don't trigger them.
 const OWN_RESULTS_MARKERS: &[&str] = &[
-    // first-person / self-reference — the authors' own measurements
-    "we ", "our ", "this study", "this paper", "present study", "results show",
-    "results showed", "results indicate", "results suggest", "we found", "we observed",
-    "we measured", "we report", "as shown in", "see table", "see fig", "table ",
-    "figure ", "fig.",
-    "本研究", "本文", "我们", "结果显示", "结果表明", "结果如", "测得", "测量",
-    "如表", "如图", "见表", "见图",
-    // statistical-reporting machinery
-    "p <", "p<", "p =", "p=", "p >", "p>", "p-value", "p值",
-    "95% ci", "95%ci", "confidence interval", "置信区间",
-    "mean", "median", "average", "std", " sd", " sem", "variance",
-    "标准差", "标准误", "均值", "中位数", "平均",
-    "anova", "t-test", "chi-square", "regression", "correlation", "odds ratio",
-    "hazard ratio", "significant", "显著",
-    " n =", " n=", "(n =", "(n=",
+    // first-person RESULTS framing (a specific verb, never a bare "we"/"our")
+    "we measured", "we found", "we observed", "we recorded", "we report",
+    "we obtained", "we calculated", "we assessed", "we computed", "we detected",
+    "this study", "this paper", "present study", "results show", "results showed",
+    "results indicate", "results suggest", "results demonstrate", "as shown in",
+    "as listed in", "as presented in", "see table", "see fig", " table ", " figure ",
+    " fig.",
+    // statistical-reporting machinery (precise multi-char terms)
+    "95% ci", "95%ci", "confidence interval", "standard deviation", "standard error",
+    "interquartile", "anova", "t-test", "chi-square", "odds ratio", "hazard ratio",
+    "p-value", "p值",
+    // CJK — specific compounds (own-results framing + precise statistical terms)
+    "本研究", "本文", "测得", "测量", "结果显示", "结果表明", "结果如", "如表",
+    "如图", "见表", "见图", "标准差", "标准误", "均值", "中位数", "置信区间",
+    "方差", "回归分析",
 ];
 
 /// Two claims sharing a topic keyword but stating different values for the same
@@ -729,41 +768,53 @@ mod tests {
         );
     }
 
+    /// Count uncited-quantitative flags a draft produces (across all its claims).
+    fn uncited_flags(draft: &str) -> usize {
+        let claims = extract_claims("p", draft);
+        let ctx = ctx_of("", &claims);
+        claims.iter().map(|c| UncitedQuantitativeChecker.check(c, &ctx).len()).sum()
+    }
+
     #[test]
     fn own_results_numbers_are_not_flagged_as_uncited() {
         // A paper reporting its OWN measurements is legitimately uncited — these must
         // NOT be flagged (the results-section noise the reviewer complained about).
+        // Each sentence carries a RECOGNISED unit (so it would flag absent denoising)
+        // and a HIGH-PRECISION own-results marker.
         let quiet = [
-            "We measured a mean dorsiflexion of 12.3 degrees.",
-            "The COP velocity was 2.4 cm/s ± 0.3 in the wedge condition.",
-            "The difference was significant (p < 0.05).",
-            "Group means differed by 8 percent (95% CI 3 to 13).",
-            "本研究测得踝关节背屈角度为 12.3 度。",
-            "结果显示落地冲击力下降了 15%。",
+            "We measured a peak COP velocity of 2.4 cm in the wedge condition.", // "we measured"
+            "The COP velocity reached 2.4 cm ± 0.3 across trials.",              // ±
+            "The impact force dropped by 8% (p < 0.05).",                       // p-value
+            "Group scores differed by 8% (95% CI 3 to 13).",                    // CI
+            "The cohort (n = 24) showed a 30% reduction in sway.",             // n =
+            "本研究测得落地冲击力下降 15%。",                                    // 本研究 / 测得
+            "结果显示踝关节背屈角度减小 12%。",                                  // 结果显示
         ];
         for d in quiet {
-            let claims = extract_claims("p", d);
-            let ctx = ctx_of("", &claims);
-            let flagged: usize = claims
-                .iter()
-                .map(|c| UncitedQuantitativeChecker.check(c, &ctx).len())
-                .sum();
-            assert_eq!(flagged, 0, "own-results / statistical sentence must be quiet: {d:?}");
+            assert_eq!(uncited_flags(d), 0, "own-results / statistical sentence must be quiet: {d:?}");
         }
     }
 
     #[test]
     fn bald_borrowed_statistic_is_still_flagged() {
-        // A background statistic stated as established fact, no citation, no own-results
-        // framing — the flag must SURVIVE the denoising.
-        for d in ["Ankle sprains affect 25% of all athletes.", "踝关节扭伤的复发率高达 70%。"] {
-            let claims = extract_claims("p", d);
-            let ctx = ctx_of("", &claims);
-            let flagged: usize = claims
-                .iter()
-                .map(|c| UncitedQuantitativeChecker.check(c, &ctx).len())
-                .sum();
-            assert_eq!(flagged, 1, "a bald uncited borrowed statistic is still flagged: {d:?}");
+        // Background statistics stated as established fact, no citation, no own-results
+        // framing — the flag must SURVIVE the denoising. Includes the exact polysemous
+        // cases the review caught (mean/average/significant/correlation/我们/平均) that
+        // must NOT be silenced just because a common word appears.
+        let must_flag = [
+            "Ankle sprains affect 25% of all athletes.",
+            "On average, 70% of trials fail.",
+            "A significant 60% of patients relapse.",
+            "Government spending averaged 40% of GDP.",
+            "The mean annual rainfall exceeds 2000 mm.",
+            "A strong correlation exists: obesity affects 35% of adults.",
+            "Means of public transport carry 40% of commuters.",
+            "踝关节扭伤的复发率高达 70%。",
+            "我们国家的森林覆盖率为 23%。",
+            "全球平均气温上升了 1.1 度。",
+        ];
+        for d in must_flag {
+            assert_eq!(uncited_flags(d), 1, "a bald uncited borrowed statistic must stay flagged: {d:?}");
         }
     }
 
