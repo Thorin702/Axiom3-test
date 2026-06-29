@@ -199,7 +199,14 @@ impl FleetBackend for MultiProviderRigBackend {
             let provider = crate::Provider::parse(&member.provider)
                 .ok_or_else(|| anyhow::anyhow!("unknown provider: {}", member.provider))?;
             let req = build_verify_request(&claim, &member.model);
-            let reply = crate::complete_with(provider, &req).await?;
+            // Bound each vendor call so a hung/slow provider can't stall the whole
+            // verification — a timeout is fail-closed (no corroboration), like any error.
+            let reply = tokio::time::timeout(
+                std::time::Duration::from_secs(45),
+                crate::complete_with(provider, &req),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("verifier timed out after 45s"))??;
             Ok(VendorJudgement {
                 family: provider.family().to_string(),
                 model: member.model,

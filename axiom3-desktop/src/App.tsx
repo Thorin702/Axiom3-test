@@ -139,7 +139,9 @@ function App() {
       const text = await run(() => invoke<string>("import_document", { path }));
       if (text !== undefined) {
         setDraft(text);
-        note(`${t(lang, "imported")}: ${path.split(/[/\\]/).pop()}`);
+        note(
+          `${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`
+        );
       }
     }
   }
@@ -230,18 +232,26 @@ function App() {
             <textarea
               value={draft}
               onChange={(e) => setDraft(e.currentTarget.value)}
-              rows={4}
+              rows={10}
               placeholder={t(lang, "check_placeholder")}
               style={{ width: "100%", fontFamily: "inherit", fontSize: 13, padding: 8 }}
             />
-            <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+            <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
               <button onClick={importDocument} disabled={busy}>
                 {t(lang, "import_btn")}
               </button>
               <button onClick={checkDraft} disabled={busy || !draft.trim()}>
                 {t(lang, "check_btn")}
               </button>
+              <span style={{ fontSize: 12, opacity: 0.6 }}>
+                {draft.length.toLocaleString()} {t(lang, "chars")}
+              </span>
             </div>
+            {busy && (
+              <div style={{ fontSize: 12, color: "#185fa5", marginTop: 6 }}>
+                ⏳ {t(lang, "checking")}
+              </div>
+            )}
 
             {check && (
               <div style={{ marginTop: 12 }}>
