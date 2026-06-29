@@ -262,27 +262,45 @@ impl Workbench {
                 match fleet.get(&r.claim.id) {
                 Some(fv) => {
                     let has_flags = !r.findings.is_empty();
-                    let status = if fv.status == VerdictStatus::Verified && has_flags {
-                        VerdictStatus::Uncertain
-                    } else {
-                        fv.status
-                    };
-                    // Complete machine-coded reason: the fleet reason + (block note
-                    // if downgraded) + a shared-evidence caveat for grounded assertive
-                    // verdicts + every deterministic flag code — the persisted audit
-                    // must omit nothing that shaped the final verdict.
+                    let grounded = evidence.get(&r.claim.id).is_some_and(|e| !e.is_empty());
+                    // The audit reason must omit nothing that shaped the final verdict.
                     let mut parts = vec![fv.reason.clone()];
-                    if status != fv.status {
+                    let mut status = fv.status;
+
+                    // (1) A deterministic risk flag (over-claim, etc.) BLOCKS a model-only
+                    //     `verified`: models judging from parametric knowledge can't confirm
+                    //     novelty/priority. Refuted passes through.
+                    if status == VerdictStatus::Verified && has_flags {
+                        status = VerdictStatus::Uncertain;
                         parts.push("deterministic_flags_block_verify".to_string());
                     }
-                    // When an assertive verdict was reached with all families judging
-                    // the SAME retrieved passages, their agreement is correlated by the
-                    // shared evidence — independence is over the models, not the
-                    // evidence. Tag it so MultiFamily is not over-read.
-                    let grounded = evidence.get(&r.claim.id).is_some_and(|e| !e.is_empty());
+
+                    // (2) INDEPENDENCE ON THE EVIDENCE AXIS. A grounded assertive verdict
+                    //     rests entirely on the user's supplied passages — independent
+                    //     across MODELS but drawn from a SINGLE source (the references
+                    //     corpus). H2's whole philosophy is that corroboration counts only
+                    //     when it is independent; all families reading one supplied passage
+                    //     is correlated, not independent, evidence — a fluent but false (or
+                    //     cherry-picked) passage would otherwise mint a green Verified the
+                    //     system cannot actually back. So a grounded Verified/Refuted CANNOT
+                    //     stand as assertive: surface its direction (your sources support /
+                    //     contradict the claim) and CAP the status at Uncertain. The fleet's
+                    //     own conclusion and the evidence stay visible for the reader.
+                    //     (When evidence can be shown independent ACROSS SOURCES, this gate
+                    //     can relax — that corroboration model is a follow-up.)
                     if grounded && matches!(status, VerdictStatus::Verified | VerdictStatus::Refuted) {
-                        parts.push("shared_evidence".to_string());
+                        parts.push(
+                            if status == VerdictStatus::Verified {
+                                "evidence_supports"
+                            } else {
+                                "evidence_contradicts"
+                            }
+                            .to_string(),
+                        );
+                        parts.push("grounded_single_source".to_string());
+                        status = VerdictStatus::Uncertain;
                     }
+
                     let mut det: Vec<&str> = r.findings.iter().map(|f| f.checker).collect();
                     det.sort_unstable();
                     det.dedup();
@@ -895,9 +913,13 @@ mod tests {
     }
 
     #[test]
-    fn grounded_assertive_verdict_is_tagged_shared_evidence() {
+    fn grounded_assertive_verdict_caps_to_uncertain() {
+        // A fluent (possibly false/cherry-picked) passage in the user's corpus must
+        // NOT mint a green Verified: grounding is independent across models but rests
+        // on a single supplied source, so the assertive verdict caps to Uncertain with
+        // the support direction surfaced. This closes the re-review's H2 violation.
         let dir = tempdir().unwrap();
-        let wb = Workbench::open(dir.path().join("p"), "shared-ev".into(), &MemorySecretStore::default())
+        let wb = Workbench::open(dir.path().join("p"), "grounded-cap".into(), &MemorySecretStore::default())
             .unwrap();
         let reports = wb.deterministic_reports("Therefore the treatment causes recovery.");
         assert!(reports[0].findings.is_empty(), "no deterministic flag on this one");
@@ -915,10 +937,36 @@ mod tests {
         let mut evidence = HashMap::new();
         evidence.insert(cid.clone(), vec!["The treatment produced recovery in the cohort.".to_string()]);
         let check = wb.persist_check(reports, fleet, evidence, HashSet::new()).unwrap();
-        assert_eq!(check.entries[0].status, "verified");
+        assert_eq!(check.entries[0].status, "uncertain",
+            "grounded Verified must cap to Uncertain, not ship green");
         let reason = check.entries[0].reason.as_deref().unwrap();
-        assert!(reason.contains("shared_evidence"),
-            "grounded MultiFamily must be tagged so it isn't over-read: {reason}");
+        assert!(reason.contains("grounded_single_source"), "cap reason recorded: {reason}");
+        assert!(reason.contains("evidence_supports"), "support direction surfaced: {reason}");
+        // The fleet's own conclusion stays visible for the reader.
+        assert_eq!(check.entries[0].fleet.as_ref().unwrap().status, "verified");
+    }
+
+    #[test]
+    fn ungrounded_fleet_verified_still_stands() {
+        // With NO references (knowledge mode), the evidence-axis cap does not apply —
+        // a clean bearing claim still takes the fleet's assertive verdict.
+        let dir = tempdir().unwrap();
+        let wb = Workbench::open(dir.path().join("p"), "ungrounded".into(), &MemorySecretStore::default())
+            .unwrap();
+        let reports = wb.deterministic_reports("Therefore the treatment causes recovery.");
+        let cid = reports[0].claim.id.clone();
+        let mut fleet = HashMap::new();
+        fleet.insert(
+            cid.clone(),
+            FleetVerdict {
+                status: VerdictStatus::Verified,
+                independence: Independence::MultiFamily,
+                reason: "multi_family_supported".into(),
+                judgements: vec![],
+            },
+        );
+        let check = wb.persist_check(reports, fleet, HashMap::new(), HashSet::new()).unwrap();
+        assert_eq!(check.entries[0].status, "verified", "no references → no evidence-axis cap");
     }
 
     #[test]

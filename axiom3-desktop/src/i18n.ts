@@ -93,7 +93,9 @@ const CODE: Record<string, Pair> = {
   single_family_independence_unmet: { zh: "独立性不足(单厂商)", en: "single-family (independence unmet)" },
   insufficient_corroboration: { zh: "佐证不足", en: "insufficient corroboration" },
   deterministic_flags_block_verify: { zh: "确定性标记阻止核实", en: "deterministic flags block verify" },
-  shared_evidence: { zh: "共享证据(独立性仅限模型)", en: "shared evidence (models, not evidence, are independent)" },
+  evidence_supports: { zh: "你的来源支持此断言", en: "your sources support this claim" },
+  evidence_contradicts: { zh: "你的来源与此断言矛盾", en: "your sources contradict this claim" },
+  grounded_single_source: { zh: "证据仅来自单一来源,未独立佐证(故存疑)", en: "evidence from a single source — not independently corroborated (so: uncertain)" },
   evidence_injection_neutralized: { zh: "参考文本疑似注入,已中和", en: "reference text looks injected — neutralized" },
   clean_pending: { zh: "无确定性问题(待外部核验)", en: "no deterministic issue (pending)" },
 };
