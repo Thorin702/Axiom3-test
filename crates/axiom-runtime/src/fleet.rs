@@ -180,13 +180,14 @@ fn word_at_start(s: &str, word: &str) -> bool {
             .is_none_or(|c| !c.is_alphanumeric() && c != '_')
 }
 
-/// Real backend over the Rig adapter. NOTE: multi-provider construction is still a
-/// TODO in the adapter, so today this hits ONE provider (DeepSeek via `complete`)
-/// regardless of `member.provider` — it therefore cannot satisfy the multi-family
-/// gate on its own. Key-gated by `DEEPSEEK_API_KEY`; for live single-vendor smoke.
-pub struct SingleProviderRigBackend;
+/// Real backend: dispatch each fleet member to its ACTUAL cloud provider via the
+/// Rig adapter. Each provider's key is read from its env var; a member whose key is
+/// unset (or provider unknown) errors and is fail-closed by the orchestrator — it
+/// cannot manufacture corroboration. The judgement's `family` is the provider it
+/// actually reached (never a caller-supplied label), so independence stays honest.
+pub struct MultiProviderRigBackend;
 
-impl FleetBackend for SingleProviderRigBackend {
+impl FleetBackend for MultiProviderRigBackend {
     fn judge(
         &self,
         claim: &str,
@@ -195,10 +196,12 @@ impl FleetBackend for SingleProviderRigBackend {
         let claim = claim.to_string();
         let member = member.clone();
         async move {
+            let provider = crate::Provider::parse(&member.provider)
+                .ok_or_else(|| anyhow::anyhow!("unknown provider: {}", member.provider))?;
             let req = build_verify_request(&claim, &member.model);
-            let reply = crate::complete(&req).await?;
+            let reply = crate::complete_with(provider, &req).await?;
             Ok(VendorJudgement {
-                family: member.family,
+                family: provider.family().to_string(),
                 model: member.model,
                 status: parse_verdict(&reply),
                 reasoning: reply,
