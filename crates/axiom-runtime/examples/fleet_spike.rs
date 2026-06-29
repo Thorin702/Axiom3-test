@@ -45,7 +45,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "Water boils at 100 degrees Celsius at sea level.".to_string());
     println!("\nclaim: {claim}");
 
-    let verdict = verify_bearing_claim(&claim, &fleet, &MultiProviderRigBackend).await;
+    let verdict = verify_bearing_claim(&claim, &[], &fleet, &MultiProviderRigBackend).await;
     println!("\n→ status:       {}", verdict.status.code());
     println!("→ independence: {}", verdict.independence.code());
     println!("→ reason:       {}", verdict.reason);

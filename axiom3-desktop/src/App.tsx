@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Lang, t, verdictLabel, indepLabel, findingDesc } from "./i18n";
+import { Lang, t, verdictLabel, indepLabel, findingDesc, reasonLabel } from "./i18n";
 import "./App.css";
 
 type ProjectStatus = {
@@ -38,6 +38,7 @@ type ClaimEntry = {
   reason: string | null;
   findings: FindingView[];
   fleet: FleetView | null;
+  evidence: string[];
 };
 type DraftCheck = {
   event_seq: number;
@@ -51,6 +52,7 @@ function statusColor(s: string): string {
   if (s === "verified") return "var(--text-success, green)";
   if (s === "refuted") return "var(--text-danger, crimson)";
   if (s === "uncertain") return "#b8860b";
+  if (s === "injection_neutralized" || s === "quarantined") return "#7b2fbe";
   return "gray";
 }
 
@@ -74,6 +76,7 @@ function App() {
   const [draft, setDraft] = useState(
     "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
+  const [references, setReferences] = useState("");
   const [check, setCheck] = useState<DraftCheck | null>(null);
   const [notableOnly, setNotableOnly] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -131,7 +134,7 @@ function App() {
     if (r) note(`${t(lang, "vector_self_test")} → ${r}`);
   }
 
-  async function importDocument() {
+  async function importInto(setter: (s: string) => void) {
     const path = await open({
       multiple: false,
       filters: [
@@ -141,7 +144,7 @@ function App() {
     if (typeof path === "string") {
       const text = await run(() => invoke<string>("import_document", { path }));
       if (text !== undefined) {
-        setDraft(text);
+        setter(text);
         note(
           `${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`
         );
@@ -151,7 +154,7 @@ function App() {
 
   async function checkDraft() {
     setProgress(null);
-    const c = await run(() => invoke<DraftCheck>("check_draft", { draft }));
+    const c = await run(() => invoke<DraftCheck>("check_draft", { draft, references }));
     setProgress(null);
     if (c) {
       setCheck(c);
@@ -178,6 +181,9 @@ function App() {
   // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
   function entryStatus(e: ClaimEntry): { label: string; color: string } {
     if (e.fleet) return { label: verdictLabel(lang, e.status), color: statusColor(e.status) };
+    // A neutralized injection is a terminal verdict in its own right (no fleet ran).
+    if (e.status === "injection_neutralized")
+      return { label: verdictLabel(lang, e.status), color: statusColor(e.status) };
     if (e.findings.length > 0)
       return { label: verdictLabel(lang, "uncertain"), color: statusColor("uncertain") };
     return { label: t(lang, "unchecked"), color: "gray" };
@@ -255,7 +261,7 @@ function App() {
               style={{ width: "100%", fontFamily: "inherit", fontSize: 13, padding: 8 }}
             />
             <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
-              <button onClick={importDocument} disabled={busy}>
+              <button onClick={() => importInto(setDraft)} disabled={busy}>
                 {t(lang, "import_btn")}
               </button>
               <button onClick={checkDraft} disabled={busy || !draft.trim()}>
@@ -265,6 +271,33 @@ function App() {
                 {draft.length.toLocaleString()} {t(lang, "chars")}
               </span>
             </div>
+
+            <details style={{ marginTop: 12 }}>
+              <summary style={{ fontSize: 13, fontWeight: 500, cursor: "pointer" }}>
+                {t(lang, "references_title")}
+              </summary>
+              <textarea
+                value={references}
+                onChange={(e) => setReferences(e.currentTarget.value)}
+                rows={6}
+                placeholder={t(lang, "references_placeholder")}
+                style={{
+                  width: "100%",
+                  fontFamily: "inherit",
+                  fontSize: 13,
+                  padding: 8,
+                  marginTop: 6,
+                }}
+              />
+              <div style={{ display: "flex", gap: 8, marginTop: 6, alignItems: "center" }}>
+                <button onClick={() => importInto(setReferences)} disabled={busy}>
+                  {t(lang, "import_refs")}
+                </button>
+                <span style={{ fontSize: 12, opacity: 0.6 }}>
+                  {references.length.toLocaleString()} {t(lang, "chars")}
+                </span>
+              </div>
+            </details>
             {busy && (
               <div
                 style={{
@@ -332,7 +365,13 @@ function App() {
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {check.entries
-                    .filter((e) => !notableOnly || e.findings.length > 0 || e.fleet)
+                    .filter(
+                      (e) =>
+                        !notableOnly ||
+                        e.findings.length > 0 ||
+                        e.fleet ||
+                        e.status === "injection_neutralized"
+                    )
                     .map((e) => {
                       const st = entryStatus(e);
                       return (
@@ -349,6 +388,15 @@ function App() {
                             <span style={{ fontSize: 11, color: st.color, minWidth: 56 }}>{st.label}</span>
                             <span style={{ fontSize: 14 }}>{e.text}</span>
                           </div>
+                          {/* The grounded direction + why the verdict landed where it did —
+                              shown for fleet-judged or neutralized claims (not clean ones). */}
+                          {e.reason &&
+                            (e.fleet || e.status === "injection_neutralized") &&
+                            e.reason !== "clean_pending" && (
+                              <div style={{ margin: "4px 0 0 64px", fontSize: 12, opacity: 0.85, color: st.color }}>
+                                {reasonLabel(lang, e.reason)}
+                              </div>
+                            )}
                           {e.findings.length > 0 && (
                             <ul style={{ margin: "6px 0 0 64px", fontSize: 12, color: "#a05a00" }}>
                               {e.findings.map((f, i) => (
@@ -375,6 +423,26 @@ function App() {
                                   ) : null}
                                 </div>
                               ))}
+                            </div>
+                          )}
+                          {e.evidence.length > 0 &&
+                            (e.fleet || e.status === "injection_neutralized") && (
+                            <div style={{ margin: "6px 0 0 64px", fontSize: 12 }}>
+                              <div style={{ opacity: 0.7, marginBottom: 2 }}>
+                                {t(
+                                  lang,
+                                  e.status === "injection_neutralized"
+                                    ? "injection_evidence_label"
+                                    : "evidence_label"
+                                )}
+                              </div>
+                              <ol style={{ margin: 0, paddingLeft: 18, opacity: 0.85 }}>
+                                {e.evidence.map((p, i) => (
+                                  <li key={i} style={{ marginBottom: 2 }}>
+                                    {p}
+                                  </li>
+                                ))}
+                              </ol>
                             </div>
                           )}
                         </div>
