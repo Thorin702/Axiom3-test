@@ -109,6 +109,31 @@ pub struct VendorView {
     pub family: String,
     pub model: String,
     pub status: String,
+    /// The model's stated reason (its `REASON:` line) — why it judged this way.
+    pub reasoning: String,
+}
+
+/// Pull a concise reason out of a model's reply: drop the `VERDICT:` line, strip a
+/// leading `REASON:` label, collapse to one line, and cap the length.
+fn short_reason(reply: &str) -> String {
+    let body = reply
+        .lines()
+        .filter(|l| !l.trim().to_ascii_lowercase().starts_with("verdict:"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let body = body.trim();
+    let body = body
+        .strip_prefix("REASON:")
+        .or_else(|| body.strip_prefix("Reason:"))
+        .or_else(|| body.strip_prefix("reason:"))
+        .unwrap_or(body)
+        .trim();
+    let truncated: String = body.chars().take(240).collect();
+    if body.chars().count() > 240 {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }
 
 /// The cross-vendor fleet result for a bearing claim.
@@ -245,6 +270,7 @@ impl Workbench {
                                 family: j.family.clone(),
                                 model: j.model.clone(),
                                 status: j.status.code().to_string(),
+                                reasoning: short_reason(&j.reasoning),
                             })
                             .collect(),
                     };

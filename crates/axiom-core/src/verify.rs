@@ -100,20 +100,18 @@ fn split_sentences(draft: &str) -> Vec<String> {
     let mut cur = String::new();
     for i in 0..chars.len() {
         let ch = chars[i];
-        let is_term = matches!(ch, '.' | '!' | '?' | '。' | '！' | '？' | ';' | '；' | '\n');
-        let is_decimal = ch == '.'
-            && i > 0
-            && chars[i - 1].is_ascii_digit()
-            && i + 1 < chars.len()
-            && chars[i + 1].is_ascii_digit();
-        if is_term && !is_decimal {
+        cur.push(ch);
+        let boundary = match ch {
+            '!' | '?' | '。' | '！' | '？' | ';' | '；' | '\n' => true,
+            '.' => period_ends_sentence(&chars, i),
+            _ => false,
+        };
+        if boundary {
             let t = cur.trim();
             if !t.is_empty() {
                 out.push(t.to_string());
             }
             cur.clear();
-        } else {
-            cur.push(ch);
         }
     }
     let t = cur.trim();
@@ -122,6 +120,51 @@ fn split_sentences(draft: &str) -> Vec<String> {
     }
     out
 }
+
+/// Decide whether a `.` at index `i` ends a sentence, vs. a decimal point, an
+/// abbreviation (`Fig.`, `et al.`), an initial (`J.`), or `e.g.`/`i.e.`. Academic
+/// text is full of these and naive period-splitting shreds it.
+fn period_ends_sentence(chars: &[char], i: usize) -> bool {
+    // A decimal point: digit . digit.
+    if i > 0
+        && chars[i - 1].is_ascii_digit()
+        && i + 1 < chars.len()
+        && chars[i + 1].is_ascii_digit()
+    {
+        return false;
+    }
+    // The alphabetic run immediately before the period.
+    let mut start = i;
+    while start > 0 && chars[start - 1].is_ascii_alphabetic() {
+        start -= 1;
+    }
+    let word: String = chars[start..i].iter().collect::<String>().to_ascii_lowercase();
+    // A single letter — an initial, or one component of e.g./i.e.
+    if word.chars().count() == 1 {
+        return false;
+    }
+    if ABBREVIATIONS.contains(&word.as_str()) {
+        return false;
+    }
+    // A lowercase letter right after (past spaces) signals a continuation, not a
+    // new sentence — sentences start with uppercase / CJK / a capitalised clause.
+    let mut j = i + 1;
+    while j < chars.len() && chars[j] == ' ' {
+        j += 1;
+    }
+    if j < chars.len() && chars[j].is_ascii_lowercase() {
+        return false;
+    }
+    true
+}
+
+/// Common abbreviations whose trailing period is NOT a sentence end.
+const ABBREVIATIONS: &[&str] = &[
+    "fig", "tab", "eq", "eqs", "ref", "refs", "sec", "no", "nos", "pp", "vol", "ed",
+    "eds", "al", "etc", "vs", "cf", "ca", "approx", "dr", "prof", "mr", "mrs", "ms",
+    "inc", "ltd", "dept", "univ", "min", "max", "avg", "std", "ibid", "resp", "art",
+    "ch", "chap",
+];
 
 /// A fragment is claim-like if it has enough substance to be worth judging.
 /// Script-aware: CJK is morpheme-dense, so a 3-character CJK-only phrase can be a
@@ -585,6 +628,18 @@ mod tests {
         let claims = extract_claims("p", "The rate constant was 0.45 per second.");
         assert_eq!(claims.len(), 1);
         assert!(claims[0].text.contains("0.45"), "decimal kept intact: {:?}", claims[0].text);
+    }
+
+    #[test]
+    fn abbreviations_and_initials_do_not_shatter_sentences() {
+        let claims = extract_claims(
+            "p",
+            "As shown in Fig. 3, the method of Smith et al. works, e.g. at low temperature. We then conclude success.",
+        );
+        let texts: Vec<&str> = claims.iter().map(|c| c.text.as_str()).collect();
+        assert_eq!(claims.len(), 2, "abbreviations must not split: {texts:?}");
+        assert!(claims[0].text.contains("Fig. 3"));
+        assert!(claims[0].text.contains("et al."));
     }
 
     #[test]

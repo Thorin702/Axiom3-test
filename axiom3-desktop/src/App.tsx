@@ -1,14 +1,7 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  Lang,
-  t,
-  verdictLabel,
-  indepLabel,
-  reasonLabel,
-  findingDesc,
-} from "./i18n";
+import { Lang, t, verdictLabel, indepLabel, findingDesc } from "./i18n";
 import "./App.css";
 
 type ProjectStatus = {
@@ -28,7 +21,7 @@ type EventInfo = {
 };
 
 type FindingView = { checker: string; message: string; excerpt: string | null };
-type VendorView = { family: string; model: string; status: string };
+type VendorView = { family: string; model: string; status: string; reasoning: string };
 type FleetView = {
   status: string;
   independence: string;
@@ -81,6 +74,7 @@ function App() {
     "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
   const [check, setCheck] = useState<DraftCheck | null>(null);
+  const [notableOnly, setNotableOnly] = useState(true);
 
   function note(line: string) {
     setLog((l) => [line, ...l].slice(0, 30));
@@ -163,6 +157,15 @@ function App() {
     setStatus(null);
     setCheck(null);
     note(t(lang, "closed_project"));
+  }
+
+  // A clean claim (no deterministic flag, no fleet verdict) is "unchecked" — shown
+  // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
+  function entryStatus(e: ClaimEntry): { label: string; color: string } {
+    if (e.fleet) return { label: verdictLabel(lang, e.status), color: statusColor(e.status) };
+    if (e.findings.length > 0)
+      return { label: verdictLabel(lang, "uncertain"), color: statusColor("uncertain") };
+    return { label: t(lang, "unchecked"), color: "gray" };
   }
 
   return (
@@ -255,57 +258,77 @@ function App() {
 
             {check && (
               <div style={{ marginTop: 12 }}>
-                <div style={{ fontSize: 13, marginBottom: 8 }}>
-                  {check.total} {t(lang, "claims")} · <b>{check.flagged} {t(lang, "flagged")}</b> ·{" "}
-                  {check.fleet_verified} {t(lang, "cross_vendor_n")} · {t(lang, "event_no")} #{check.event_seq}
+                <div
+                  style={{
+                    fontSize: 13,
+                    marginBottom: 8,
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <span>
+                    {check.total} {t(lang, "claims")} · <b>{check.flagged} {t(lang, "flagged")}</b> ·{" "}
+                    {check.fleet_verified} {t(lang, "cross_vendor_n")} · {t(lang, "event_no")} #
+                    {check.event_seq}
+                  </span>
+                  <button
+                    onClick={() => setNotableOnly(!notableOnly)}
+                    style={{ fontSize: 12, padding: "2px 8px" }}
+                  >
+                    {notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}
+                  </button>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {check.entries.map((e) => (
-                    <div
-                      key={e.claim_id}
-                      style={{
-                        border: "0.5px solid #8884",
-                        borderLeft: `3px solid ${statusColor(e.status)}`,
-                        borderRadius: 6,
-                        padding: "8px 10px",
-                      }}
-                    >
-                      <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-                        <span style={{ fontSize: 11, color: statusColor(e.status), minWidth: 56 }}>
-                          {verdictLabel(lang, e.status)}
-                        </span>
-                        <span style={{ fontSize: 14 }}>{e.text}</span>
-                      </div>
-                      {e.findings.length > 0 && (
-                        <ul style={{ margin: "6px 0 0 64px", fontSize: 12, color: "#a05a00" }}>
-                          {e.findings.map((f, i) => (
-                            <li key={i}>
-                              {findingDesc(lang, f.checker)}
-                              {f.excerpt ? ` 「${f.excerpt}」` : ""}
-                            </li>
-                          ))}
-                        </ul>
-                      )}
-                      {e.fleet && (
-                        <div style={{ margin: "6px 0 0 64px", fontSize: 12 }}>
-                          <span style={{ opacity: 0.7 }}>
-                            {t(lang, "cross_vendor")}({indepLabel(lang, e.fleet.independence)}):{" "}
-                          </span>
-                          {e.fleet.vendors.map((v, i) => (
-                            <span key={i} style={{ marginRight: 10 }}>
-                              {v.family}/{v.model}{" "}
-                              <b style={{ color: statusColor(v.status) }}>{verdictLabel(lang, v.status)}</b>
-                            </span>
-                          ))}
+                  {check.entries
+                    .filter((e) => !notableOnly || e.findings.length > 0 || e.fleet)
+                    .map((e) => {
+                      const st = entryStatus(e);
+                      return (
+                        <div
+                          key={e.claim_id}
+                          style={{
+                            border: "0.5px solid #8884",
+                            borderLeft: `3px solid ${st.color}`,
+                            borderRadius: 6,
+                            padding: "8px 10px",
+                          }}
+                        >
+                          <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                            <span style={{ fontSize: 11, color: st.color, minWidth: 56 }}>{st.label}</span>
+                            <span style={{ fontSize: 14 }}>{e.text}</span>
+                          </div>
+                          {e.findings.length > 0 && (
+                            <ul style={{ margin: "6px 0 0 64px", fontSize: 12, color: "#a05a00" }}>
+                              {e.findings.map((f, i) => (
+                                <li key={i}>
+                                  {findingDesc(lang, f.checker)}
+                                  {f.excerpt ? ` 「${f.excerpt}」` : ""}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {e.fleet && (
+                            <div style={{ margin: "6px 0 0 64px", fontSize: 12 }}>
+                              <div style={{ opacity: 0.7, marginBottom: 2 }}>
+                                {t(lang, "cross_vendor")}({indepLabel(lang, e.fleet.independence)})
+                              </div>
+                              {e.fleet.vendors.map((v, i) => (
+                                <div key={i} style={{ marginBottom: 2 }}>
+                                  {v.family}/{v.model}{" "}
+                                  <b style={{ color: statusColor(v.status) }}>
+                                    {verdictLabel(lang, v.status)}
+                                  </b>
+                                  {v.reasoning ? (
+                                    <span style={{ opacity: 0.7 }}> — {v.reasoning}</span>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      )}
-                      {e.reason && (
-                        <div style={{ margin: "4px 0 0 64px", fontSize: 11, opacity: 0.55 }}>
-                          {reasonLabel(lang, e.reason)}
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                      );
+                    })}
                 </div>
               </div>
             )}
