@@ -8,12 +8,15 @@
 //! rusqlite mutex would stall the executor. This is the `spawn_blocking` boundary
 //! that storage design "decision B" was built for.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use axiom_core::model::{new_id, Independence, Verdict, Verifier, VerifierKind};
+use axiom_core::model::{new_id, Independence, Verdict, VerdictStatus, Verifier, VerifierKind};
 use axiom_core::store::{DurableStore, EventLog, VectorStore};
-use axiom_core::verify::verify_draft;
+use axiom_core::verify::{verify_draft, ClaimReport};
+use axiom_runtime::fleet::{verify_bearing_claim, FleetMember, FleetVerdict, MultiProviderRigBackend};
+use axiom_runtime::Provider;
 use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
 use axiom_vector::LanceStore;
@@ -29,6 +32,31 @@ const KEYCHAIN_SERVICE: &str = "axiom3";
 /// we don't bake a guessed dim into on-disk state. P0.6 only proves the LanceStore
 /// wiring survives the shell's `spawn_blocking` boundary.
 const SELFTEST_DIM: usize = 8;
+
+/// Cap on bearing claims given full cross-vendor fleet verification per check (each
+/// costs API calls across vendors). Beyond this, claims stay at the deterministic tier.
+const MAX_FLEET_CLAIMS: usize = 8;
+
+/// Build the verification fleet from whichever providers have a key in the
+/// environment — a vendor with no key simply isn't in the fleet.
+fn fleet_from_env() -> Vec<FleetMember> {
+    let candidates = [
+        (Provider::Anthropic, "claude-haiku-4-5-20251001"),
+        (Provider::OpenAi, "gpt-4o-mini"),
+        (Provider::DeepSeek, "deepseek-chat"),
+        (Provider::Gemini, "gemini-1.5-flash"),
+        (Provider::Qwen, "qwen-plus"),
+    ];
+    candidates
+        .iter()
+        .filter(|(p, _)| std::env::var(p.env_var()).is_ok())
+        .map(|(p, model)| FleetMember {
+            family: p.family().to_string(),
+            provider: p.family().to_string(),
+            model: (*model).to_string(),
+        })
+        .collect()
+}
 
 /// Open per-project state. Held behind an `Arc` in [`AppState`] so commands can
 /// clone it out and move it onto a blocking thread.
@@ -66,6 +94,23 @@ pub struct FindingView {
     pub excerpt: Option<String>,
 }
 
+/// One model vendor's judgement, for the UI.
+#[derive(Serialize)]
+pub struct VendorView {
+    pub family: String,
+    pub model: String,
+    pub status: String,
+}
+
+/// The cross-vendor fleet result for a bearing claim.
+#[derive(Serialize)]
+pub struct FleetView {
+    pub status: String,
+    pub independence: String,
+    pub reason: String,
+    pub vendors: Vec<VendorView>,
+}
+
 /// One adjudicated claim in the ledger.
 #[derive(Serialize)]
 pub struct ClaimEntry {
@@ -73,11 +118,13 @@ pub struct ClaimEntry {
     pub text: String,
     pub claim_type: String,
     pub is_bearing: bool,
-    /// 5-state verdict code (deterministic tier: always `uncertain`).
+    /// Final 5-state verdict code (fleet result for bearing claims, else deterministic).
     pub status: String,
     /// Stable machine reason code(s).
     pub reason: Option<String>,
     pub findings: Vec<FindingView>,
+    /// Cross-vendor breakdown, when a bearing claim was fleet-verified.
+    pub fleet: Option<FleetView>,
 }
 
 /// The result of checking a draft: the persisted claim ledger.
@@ -86,9 +133,20 @@ pub struct DraftCheck {
     /// The event seq that recorded this check (audit anchor).
     pub event_seq: i64,
     pub total: usize,
-    /// How many claims carry at least one risk flag.
+    /// How many claims carry at least one deterministic risk flag.
     pub flagged: usize,
+    /// How many bearing claims got cross-vendor fleet verification.
+    pub fleet_verified: usize,
     pub entries: Vec<ClaimEntry>,
+}
+
+/// A claim's deterministic report joined with its final adjudicated verdict.
+struct Combined<'a> {
+    report: &'a ClaimReport,
+    status: VerdictStatus,
+    reason: Option<String>,
+    independence: Independence,
+    fleet: Option<FleetView>,
 }
 
 impl Workbench {
@@ -117,62 +175,139 @@ impl Workbench {
     /// Run the deterministic verification engine over a draft and PERSIST the
     /// result: one `draft.checked` event anchors a batch of immutable claims +
     /// verdicts in the encrypted store. Returns the ledger for the UI.
-    pub fn check_draft(&self, draft: &str) -> anyhow::Result<DraftCheck> {
-        let reports = verify_draft(&self.project_id, draft);
+    /// The deterministic tier: extract claims + run the always-on checkers. Pure +
+    /// fast; the (async, networked) fleet runs between this and [`Self::persist_check`].
+    pub fn deterministic_reports(&self, draft: &str) -> Vec<ClaimReport> {
+        verify_draft(&self.project_id, draft)
+    }
 
-        // A deterministic verifier identity for this run (engine version recorded).
+    /// Combine the deterministic reports with the per-claim fleet verdicts, then
+    /// ATOMICALLY persist (one audit event + verifier + all claims + verdicts).
+    pub fn persist_check(
+        &self,
+        reports: Vec<ClaimReport>,
+        fleet: HashMap<String, FleetVerdict>,
+    ) -> anyhow::Result<DraftCheck> {
+        let used_fleet = !fleet.is_empty();
         let verifier = Verifier {
             id: new_id(),
-            kind: VerifierKind::Deterministic,
+            kind: if used_fleet { VerifierKind::Model } else { VerifierKind::Deterministic },
             model_id: None,
             model_family: None,
             version: Some(axiom_core::version().to_string()),
             prompt_hash: None,
-            role: Some("routine_verify".to_string()),
+            role: Some(if used_fleet { "adjudicate" } else { "routine_verify" }.to_string()),
         };
 
-        // Build (claim, verdict) pairs. `created_event_seq` is assigned atomically
-        // by record_verification from the event it mints.
-        let items: Vec<(axiom_core::model::Claim, Verdict)> = reports
+        // Final per-claim verdict = fleet result for bearing claims, deterministic
+        // otherwise — with one conservative rule: a deterministic risk flag (e.g. an
+        // over-claim) BLOCKS a model-only `verified`, because models judging from
+        // parametric knowledge can't confirm novelty/priority. Refuted passes through.
+        let combined: Vec<Combined> = reports
             .iter()
-            .map(|r| {
-                let verdict = Verdict {
-                    id: new_id(),
-                    claim_id: r.claim.id.clone(),
-                    verifier_id: verifier.id.clone(),
+            .map(|r| match fleet.get(&r.claim.id) {
+                Some(fv) => {
+                    let has_flags = !r.findings.is_empty();
+                    let status = if fv.status == VerdictStatus::Verified && has_flags {
+                        VerdictStatus::Uncertain
+                    } else {
+                        fv.status
+                    };
+                    // Complete machine-coded reason: the fleet reason + (block note
+                    // if downgraded) + every deterministic flag code — the persisted
+                    // audit must omit nothing that shaped the final verdict.
+                    let mut parts = vec![fv.reason.clone()];
+                    if status != fv.status {
+                        parts.push("deterministic_flags_block_verify".to_string());
+                    }
+                    let mut det: Vec<&str> = r.findings.iter().map(|f| f.checker).collect();
+                    det.sort_unstable();
+                    det.dedup();
+                    parts.extend(det.into_iter().map(String::from));
+                    let reason = parts.join(",");
+                    let view = FleetView {
+                        status: fv.status.code().to_string(),
+                        independence: fv.independence.code().to_string(),
+                        reason: fv.reason.clone(),
+                        vendors: fv
+                            .judgements
+                            .iter()
+                            .map(|j| VendorView {
+                                family: j.family.clone(),
+                                model: j.model.clone(),
+                                status: j.status.code().to_string(),
+                            })
+                            .collect(),
+                    };
+                    Combined { report: r, status, reason: Some(reason), independence: fv.independence, fleet: Some(view) }
+                }
+                None => Combined {
+                    report: r,
                     status: r.status,
-                    evidence_redacted: false,
-                    calibrated_confidence: None,
-                    uncertain_reason: r.reason.clone(),
-                    // Single local engine, no cross-vendor corroboration.
-                    independence: Some(Independence::LocalOnly),
-                    revises_verdict_id: None,
-                    created_event_seq: 0, // assigned atomically below
-                };
-                (r.claim.clone(), verdict)
+                    reason: r.reason.clone(),
+                    independence: Independence::LocalOnly,
+                    fleet: None,
+                },
             })
             .collect();
 
-        // Atomic: the audit-anchor event + verifier + all claims + all verdicts
-        // commit together, or not at all.
+        let items: Vec<(axiom_core::model::Claim, Verdict)> = combined
+            .iter()
+            .map(|c| {
+                let verdict = Verdict {
+                    id: new_id(),
+                    claim_id: c.report.claim.id.clone(),
+                    verifier_id: verifier.id.clone(),
+                    status: c.status,
+                    evidence_redacted: false,
+                    calibrated_confidence: None,
+                    uncertain_reason: c.reason.clone(),
+                    independence: Some(c.independence),
+                    revises_verdict_id: None,
+                    created_event_seq: 0, // assigned atomically below
+                };
+                (c.report.claim.clone(), verdict)
+            })
+            .collect();
+
+        // Audit payload carries fleet provenance (which model said what).
+        let provenance: Vec<Value> = combined
+            .iter()
+            .map(|c| {
+                json!({
+                    "claim_id": c.report.claim.id,
+                    "status": c.status.code(),
+                    // The fleet's own conclusion, recorded alongside the final status
+                    // so a downgrade is explicit (not a hidden discrepancy).
+                    "fleet_status": c.fleet.as_ref().map(|v| v.status.clone()),
+                    "independence": c.independence.code(),
+                    "vendors": c.fleet.as_ref().map(|v| v.vendors.iter()
+                        .map(|x| json!({"family": x.family, "model": x.model, "status": x.status}))
+                        .collect::<Vec<_>>()),
+                })
+            })
+            .collect();
+
+        let fleet_verified = fleet.len();
         let event = self.durable.record_verification(
             "engine",
             "draft.checked",
-            &json!({ "claims": reports.len(), "draft_chars": draft.chars().count() }),
+            &json!({ "claims": reports.len(), "fleet_verified": fleet_verified, "verdicts": provenance }),
             &verifier,
             &items,
         )?;
 
-        let entries: Vec<ClaimEntry> = reports
-            .iter()
-            .map(|r| ClaimEntry {
-                claim_id: r.claim.id.clone(),
-                text: r.claim.text.clone(),
-                claim_type: r.claim.claim_type.code().to_string(),
-                is_bearing: r.claim.is_bearing,
-                status: r.status.code().to_string(),
-                reason: r.reason.clone(),
-                findings: r
+        let entries: Vec<ClaimEntry> = combined
+            .into_iter()
+            .map(|c| ClaimEntry {
+                claim_id: c.report.claim.id.clone(),
+                text: c.report.claim.text.clone(),
+                claim_type: c.report.claim.claim_type.code().to_string(),
+                is_bearing: c.report.claim.is_bearing,
+                status: c.status.code().to_string(),
+                reason: c.reason,
+                findings: c
+                    .report
                     .findings
                     .iter()
                     .map(|f| FindingView {
@@ -181,11 +316,18 @@ impl Workbench {
                         excerpt: f.excerpt.clone(),
                     })
                     .collect(),
+                fleet: c.fleet,
             })
             .collect();
 
         let flagged = entries.iter().filter(|e| !e.findings.is_empty()).count();
-        Ok(DraftCheck { event_seq: event.seq, total: entries.len(), flagged, entries })
+        Ok(DraftCheck {
+            event_seq: event.seq,
+            total: entries.len(),
+            flagged,
+            fleet_verified,
+            entries,
+        })
     }
 
     pub fn status(&self) -> anyhow::Result<ProjectStatus> {
@@ -361,9 +503,37 @@ pub async fn check_draft(
     draft: String,
 ) -> Result<DraftCheck, String> {
     let wb = state.get()?;
-    tauri::async_runtime::spawn_blocking(move || wb.check_draft(&draft).map_err(|e| e.to_string()))
+
+    // 1. Deterministic tier (CPU) — off the async runtime.
+    let reports = {
+        let wb = wb.clone();
+        tauri::async_runtime::spawn_blocking(move || wb.deterministic_reports(&draft))
+            .await
+            .map_err(|e| e.to_string())?
+    };
+
+    // 2. Cross-vendor fleet verification for bearing claims (async network I/O).
+    //    Needs ≥2 vendor keys in the env; otherwise the gate keeps them Uncertain.
+    let members = fleet_from_env();
+    let mut fleet_verdicts = HashMap::new();
+    if members.len() >= 2 {
+        let backend = MultiProviderRigBackend;
+        let mut budget = MAX_FLEET_CLAIMS;
+        for r in &reports {
+            if r.claim.is_bearing && budget > 0 {
+                budget -= 1;
+                let fv = verify_bearing_claim(&r.claim.text, &members, &backend).await;
+                fleet_verdicts.insert(r.claim.id.clone(), fv);
+            }
+        }
+    }
+
+    // 3. Combine + atomically persist — off the async runtime.
+    let wb2 = wb.clone();
+    tauri::async_runtime::spawn_blocking(move || wb2.persist_check(reports, fleet_verdicts))
         .await
         .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -425,7 +595,9 @@ mod tests {
         .unwrap();
 
         let draft = "This is the first-ever room-temperature synthesis. The yield was 94%.";
-        let check = wb.check_draft(draft).unwrap();
+        // Deterministic only (no fleet verdicts).
+        let reports = wb.deterministic_reports(draft);
+        let check = wb.persist_check(reports, HashMap::new()).unwrap();
 
         assert_eq!(check.total, 2, "two claims extracted");
         assert!(check.flagged >= 1, "at least the over-claim is flagged");
@@ -438,6 +610,81 @@ mod tests {
         let first = &check.entries[0];
         let verdicts = wb.durable.verdicts_for_claim(&first.claim_id).unwrap();
         assert_eq!(verdicts.len(), 1, "one verdict persisted per claim");
+    }
+
+    #[test]
+    fn fleet_verdict_becomes_the_final_status() {
+        let dir = tempdir().unwrap();
+        let wb = Workbench::open(dir.path().join("p"), "fleet-test".into(), &MemorySecretStore::default())
+            .unwrap();
+        let reports = wb.deterministic_reports("Therefore the treatment causes recovery.");
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].findings.is_empty(), "no deterministic flag on this one");
+        let mut fleet = HashMap::new();
+        fleet.insert(
+            reports[0].claim.id.clone(),
+            FleetVerdict {
+                status: VerdictStatus::Verified,
+                independence: Independence::MultiFamily,
+                reason: "multi_family_supported".into(),
+                judgements: vec![],
+            },
+        );
+        let check = wb.persist_check(reports, fleet).unwrap();
+        assert_eq!(check.fleet_verified, 1);
+        assert_eq!(check.entries[0].status, "verified", "a clean bearing claim takes the fleet verdict");
+        assert!(check.entries[0].fleet.is_some());
+    }
+
+    #[test]
+    fn deterministic_flag_blocks_a_model_only_verify() {
+        let dir = tempdir().unwrap();
+        let wb = Workbench::open(dir.path().join("p"), "block-test".into(), &MemorySecretStore::default())
+            .unwrap();
+        let reports = wb.deterministic_reports("We present the first-ever room-temperature superconductor.");
+        assert!(!reports[0].findings.is_empty(), "over-claim is flagged");
+        let mut fleet = HashMap::new();
+        fleet.insert(
+            reports[0].claim.id.clone(),
+            FleetVerdict {
+                status: VerdictStatus::Verified,
+                independence: Independence::MultiFamily,
+                reason: "multi_family_supported".into(),
+                judgements: vec![],
+            },
+        );
+        let check = wb.persist_check(reports, fleet).unwrap();
+        // Models can't confirm a novelty claim from parametric knowledge → blocked.
+        assert_eq!(check.entries[0].status, "uncertain");
+        assert!(check.entries[0]
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("deterministic_flags_block_verify"));
+    }
+
+    #[test]
+    fn persisted_reason_keeps_both_layers_under_fleet_uncertain() {
+        let dir = tempdir().unwrap();
+        let wb = Workbench::open(dir.path().join("p"), "reason-test".into(), &MemorySecretStore::default())
+            .unwrap();
+        let reports = wb.deterministic_reports("We present the first-ever room-temperature superconductor.");
+        assert!(!reports[0].findings.is_empty(), "over-claim flagged");
+        let mut fleet = HashMap::new();
+        fleet.insert(
+            reports[0].claim.id.clone(),
+            FleetVerdict {
+                status: VerdictStatus::Uncertain,
+                independence: Independence::MultiFamily,
+                reason: "insufficient_corroboration".into(),
+                judgements: vec![],
+            },
+        );
+        let check = wb.persist_check(reports, fleet).unwrap();
+        let reason = check.entries[0].reason.as_deref().unwrap();
+        // Both the fleet reason AND the deterministic flag survive into the audit.
+        assert!(reason.contains("insufficient_corroboration"), "fleet reason kept: {reason}");
+        assert!(reason.contains("overclaim"), "deterministic flag kept: {reason}");
     }
 
     #[test]

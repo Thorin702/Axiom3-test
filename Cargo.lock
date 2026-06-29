@@ -628,6 +628,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axiom-core",
+ "axiom-runtime",
  "axiom-secrets",
  "axiom-store",
  "axiom-vector",
