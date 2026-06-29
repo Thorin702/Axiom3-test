@@ -1,0 +1,13 @@
+[package]
+name = "axiom-secrets"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Axiom3 secret storage: OS keychain (macOS Keychain / Windows Credential Manager) for the SQLCipher DB key and BYO-API keys, with an in-memory store for tests."
+
+[dependencies]
+# OS-native secret storage. macOS Keychain (apple-native) + Windows Credential
+# Manager (windows-native); the right backend is selected per-target at compile time.
+keyring = { version = "3", features = ["apple-native", "windows-native"] }
+getrandom = "0.2"
+thiserror = "2"
