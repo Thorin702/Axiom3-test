@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import { Lang, t, verdictLabel, indepLabel, findingDesc } from "./i18n";
+import { Lang, t, verdictLabel, indepLabel, findingDesc, reasonLabel } from "./i18n";
 import "./App.css";
 
 type ProjectStatus = {
@@ -388,6 +388,15 @@ function App() {
                             <span style={{ fontSize: 11, color: st.color, minWidth: 56 }}>{st.label}</span>
                             <span style={{ fontSize: 14 }}>{e.text}</span>
                           </div>
+                          {/* The grounded direction + why the verdict landed where it did —
+                              shown for fleet-judged or neutralized claims (not clean ones). */}
+                          {e.reason &&
+                            (e.fleet || e.status === "injection_neutralized") &&
+                            e.reason !== "clean_pending" && (
+                              <div style={{ margin: "4px 0 0 64px", fontSize: 12, opacity: 0.85, color: st.color }}>
+                                {reasonLabel(lang, e.reason)}
+                              </div>
+                            )}
                           {e.findings.length > 0 && (
                             <ul style={{ margin: "6px 0 0 64px", fontSize: 12, color: "#a05a00" }}>
                               {e.findings.map((f, i) => (
