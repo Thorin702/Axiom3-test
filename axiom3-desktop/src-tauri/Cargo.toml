@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
@@ -33,6 +34,8 @@ axiom-secrets = { path = "../../crates/axiom-secrets" }
 axiom-vector = { path = "../../crates/axiom-vector" }
 # Agent runtime: the model-verification fleet (cross-vendor) for bearing claims.
 axiom-runtime = { path = "../../crates/axiom-runtime" }
+# Document text extraction (pdf / docx / txt-md) for upload-and-check.
+axiom-ingest = { path = "../../crates/axiom-ingest" }
 
 # Single-instance guard (desktop only) — prevents two processes racing first-run
 # DB-key creation for the same project (see axiom-secrets::get_or_create_db_key).

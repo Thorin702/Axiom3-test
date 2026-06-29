@@ -29,6 +29,7 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             axiom_core_version,
@@ -37,6 +38,7 @@ pub fn run() {
             workbench::append_event,
             workbench::verify_chain,
             workbench::check_draft,
+            workbench::import_document,
             workbench::vector_self_test,
             workbench::close_project,
         ])
