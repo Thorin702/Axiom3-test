@@ -38,21 +38,26 @@ pub struct RouteDecision {
 
 /// Pick a usable model satisfying every required modality and feature.
 ///
-/// P0.3 default is "first usable match" (deterministic); cost/latency/quality
-/// ranking and the user's per-role pin are layered on later. Returns `model: None`
-/// with a note when nothing qualifies (e.g. the only candidate is sunset).
+/// Among matches, selection is deterministic via a stable `(provider, model_id)`
+/// tie-break, so routing is reproducible regardless of `/models` discovery order.
+/// Cost/latency/quality ranking and the user's per-role pin layer on later.
+/// Returns `model: None` with a note when nothing qualifies.
 pub fn route(matrix: &CapabilityMatrix, req: &RouteRequest, now_ms: i64) -> RouteDecision {
-    let pick = matrix
+    let mut matches: Vec<&ModelCapability> = matrix
         .usable(now_ms)
-        .find(|m| {
+        .filter(|m| {
             req.required_input.iter().all(|&x| m.supports_input(x))
                 && req.required_output.iter().all(|&x| m.supports_output(x))
                 && req.required_features.iter().all(|f| m.has_feature(f))
         })
-        .cloned();
+        .collect();
+    // Stable tie-break — independent of insertion/discovery order.
+    matches.sort_by(|a, b| {
+        (a.provider.as_str(), a.model_id.as_str()).cmp(&(b.provider.as_str(), b.model_id.as_str()))
+    });
 
-    match pick {
-        Some(m) => RouteDecision { model: Some(m), note: None },
+    match matches.first() {
+        Some(m) => RouteDecision { model: Some((*m).clone()), note: None },
         None => RouteDecision {
             model: None,
             note: Some("no usable model satisfies the required modalities/features".into()),
@@ -61,6 +66,10 @@ pub fn route(matrix: &CapabilityMatrix, req: &RouteRequest, now_ms: i64) -> Rout
 }
 
 /// The independence currently achievable across connected providers.
+///
+/// NOTE: 0 usable families also maps to `SingleFamily` (conservative — the bearing
+/// gate blocks either way). To distinguish "nothing connected" from "one vendor"
+/// when setting an `uncertain_reason`, callers check [`CapabilityMatrix::has_usable`].
 pub fn independence(matrix: &CapabilityMatrix, now_ms: i64) -> Independence {
     let fams = matrix.usable_families(now_ms);
     match fams.len() {
@@ -109,6 +118,22 @@ mod tests {
         };
         let d = route(&m, &req, 0);
         assert_eq!(d.model.unwrap().model_id, "haiku");
+    }
+
+    #[test]
+    fn route_is_deterministic_regardless_of_order() {
+        let req = RouteRequest {
+            required_input: vec![Modality::Text],
+            required_output: vec![Modality::Text],
+            required_features: vec![],
+        };
+        let opus = cap("opus", "anthropic", ModelStatus::Available, &[], &[Modality::Text]);
+        let haiku = cap("haiku", "anthropic", ModelStatus::Available, &[], &[Modality::Text]);
+        let m1 = CapabilityMatrix::new(vec![opus.clone(), haiku.clone()]);
+        let m2 = CapabilityMatrix::new(vec![haiku, opus]);
+        // Stable (provider, model_id) tie-break → "haiku" < "opus" in both orders.
+        assert_eq!(route(&m1, &req, 0).model.unwrap().model_id, "haiku");
+        assert_eq!(route(&m2, &req, 0).model.unwrap().model_id, "haiku");
     }
 
     #[test]

@@ -90,6 +90,12 @@ impl CapabilityMatrix {
         self.models.iter().filter(move |m| m.is_usable(now_ms))
     }
 
+    /// Whether any model is usable right now (distinguishes "nothing connected"
+    /// from "one vendor" for independence attribution).
+    pub fn has_usable(&self, now_ms: i64) -> bool {
+        self.usable(now_ms).next().is_some()
+    }
+
     /// Distinct usable model families (the unit of independence), sorted/deduped.
     pub fn usable_families(&self, now_ms: i64) -> Vec<String> {
         let mut fams: Vec<String> = self.usable(now_ms).map(|m| m.family.clone()).collect();

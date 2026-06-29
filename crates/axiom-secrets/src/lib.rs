@@ -15,8 +15,10 @@ use std::sync::Mutex;
 pub enum SecretError {
     #[error("keyring error: {0}")]
     Keyring(#[from] keyring::Error),
+    /// The OS CSPRNG failed — keeps the typed source so callers can tell a fatal
+    /// platform failure from a transient one.
     #[error("random source failed: {0}")]
-    Random(String),
+    Random(#[from] getrandom::Error),
 }
 
 pub type Result<T> = std::result::Result<T, SecretError>;
@@ -68,16 +70,23 @@ pub struct MemorySecretStore {
     map: Mutex<HashMap<String, String>>,
 }
 
+impl MemorySecretStore {
+    fn map(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
+        // Recover from a poisoned lock rather than cascading panics.
+        self.map.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
 impl SecretStore for MemorySecretStore {
     fn get(&self, name: &str) -> Result<Option<String>> {
-        Ok(self.map.lock().unwrap().get(name).cloned())
+        Ok(self.map().get(name).cloned())
     }
     fn set(&self, name: &str, value: &str) -> Result<()> {
-        self.map.lock().unwrap().insert(name.to_string(), value.to_string());
+        self.map().insert(name.to_string(), value.to_string());
         Ok(())
     }
     fn delete(&self, name: &str) -> Result<()> {
-        self.map.lock().unwrap().remove(name);
+        self.map().remove(name);
         Ok(())
     }
 }
@@ -96,16 +105,31 @@ pub fn db_key_name(project_id: &str) -> String {
     format!("db-key:{project_id}")
 }
 
+/// Process-wide guard so two threads doing first-run init don't interleave
+/// generate/set and mint conflicting keys. Cross-process first-run races are
+/// prevented by running the app single-instance (enforced in the shell, P0.6).
+static DB_KEY_INIT_LOCK: Mutex<()> = Mutex::new(());
+
 /// Fetch a project's SQLCipher passphrase, generating + persisting a fresh
-/// 256-bit random key (64 hex chars) on first use. Idempotent: subsequent calls
-/// return the same key, so the DB stays openable across runs.
+/// 256-bit random key (64 hex chars) on first use.
+///
+/// Idempotent and race-safe within a process: first-run generation is serialized
+/// under [`DB_KEY_INIT_LOCK`] with a double-check, so a second thread adopts the
+/// first thread's key instead of overwriting it (which would seal the DB with one
+/// key while the keychain holds another — unrecoverable).
 pub fn get_or_create_db_key(store: &dyn SecretStore, project_id: &str) -> Result<String> {
     let name = db_key_name(project_id);
+    // Fast path — already created, no lock needed.
+    if let Some(existing) = store.get(&name)? {
+        return Ok(existing);
+    }
+    let _guard = DB_KEY_INIT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    // Re-check under the lock: another thread may have just created it.
     if let Some(existing) = store.get(&name)? {
         return Ok(existing);
     }
     let mut buf = [0u8; 32];
-    getrandom::getrandom(&mut buf).map_err(|e| SecretError::Random(e.to_string()))?;
+    getrandom::getrandom(&mut buf)?;
     let key = to_hex(&buf);
     store.set(&name, &key)?;
     Ok(key)
