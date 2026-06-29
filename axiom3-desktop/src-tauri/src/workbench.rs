@@ -33,9 +33,18 @@ const KEYCHAIN_SERVICE: &str = "axiom3";
 /// wiring survives the shell's `spawn_blocking` boundary.
 const SELFTEST_DIM: usize = 8;
 
-/// Cap on bearing claims given full cross-vendor fleet verification per check (each
-/// costs API calls across vendors). Beyond this, claims stay at the deterministic tier.
-const MAX_FLEET_CLAIMS: usize = 8;
+/// Default cap on bearing claims given full cross-vendor fleet verification per
+/// check (each costs API calls across vendors). Override with `AXIOM_FLEET_MAX`.
+/// Beyond the cap, claims stay at the deterministic tier.
+const DEFAULT_FLEET_MAX: usize = 24;
+
+fn max_fleet_claims() -> usize {
+    std::env::var("AXIOM_FLEET_MAX")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_FLEET_MAX)
+}
 
 /// Build the verification fleet from whichever providers have a key in the
 /// environment — a vendor with no key simply isn't in the fleet.
@@ -518,7 +527,7 @@ pub async fn check_draft(
     let mut fleet_verdicts = HashMap::new();
     if members.len() >= 2 {
         let backend = MultiProviderRigBackend;
-        let mut budget = MAX_FLEET_CLAIMS;
+        let mut budget = max_fleet_claims();
         for r in &reports {
             if r.claim.is_bearing && budget > 0 {
                 budget -= 1;
