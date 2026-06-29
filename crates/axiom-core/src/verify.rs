@@ -296,36 +296,100 @@ fn is_own_results_context(text: &str) -> bool {
     }
     let low = text.to_lowercase();
     OWN_RESULTS_MARKERS.iter().any(|m| low.contains(m))
-        || has_stat_relation(&low, 'p', &['<', '=', '>', '≤', '≥', '≠'])
-        || has_stat_relation(&low, 'n', &['='])
+        || has_p_value(&low)
+        || has_sample_size(text)
+        || has_float_label(&low)
 }
 
-/// A statistical relation reported as `<letter> <op> <number>` — e.g. `p < 0.05`,
-/// `p=0.001`, `n = 24`. The letter must start a word (not be inside `temp`, `region`)
-/// and the operator must be followed by a digit or decimal point. High precision.
-fn has_stat_relation(low: &str, letter: char, ops: &[char]) -> bool {
+/// A p-value report: a word-start `p` + comparator + a PROBABILITY (`0.x` or `.x`),
+/// e.g. `p < 0.05`, `p=0.001`, `p < .01`. Requiring a sub-1 value excludes pressure
+/// reports like `p = 4 atm` (where `p` is the symbol for pressure, not significance).
+fn has_p_value(low: &str) -> bool {
     let c: Vec<char> = low.chars().collect();
     for i in 0..c.len() {
-        if c[i] != letter {
-            continue;
-        }
-        // Word-start: the letter is not preceded by another alphabetic char.
-        if i > 0 && c[i - 1].is_alphabetic() {
+        if c[i] != 'p' || (i > 0 && c[i - 1].is_alphabetic()) {
             continue;
         }
         let mut j = i + 1;
         while j < c.len() && c[j] == ' ' {
             j += 1;
         }
-        if j >= c.len() || !ops.contains(&c[j]) {
+        if j >= c.len() || !matches!(c[j], '<' | '=' | '>' | '≤' | '≥' | '≠') {
             continue;
         }
         let mut k = j + 1;
         while k < c.len() && c[k] == ' ' {
             k += 1;
         }
-        if k < c.len() && (c[k].is_ascii_digit() || c[k] == '.') {
+        // A probability: ".05" or "0.05" — never a bare integer like "4".
+        if k < c.len() && (c[k] == '.' || (c[k] == '0' && k + 1 < c.len() && c[k + 1] == '.')) {
             return true;
+        }
+    }
+    false
+}
+
+/// A sample-size report: a word-start LOWERCASE `n` + `=` + a digit, e.g. `n = 24`,
+/// `(n=480)`. Checked CASE-SENSITIVELY: lowercase `n` is the sample-size convention,
+/// so this excludes an uppercase `N = 3` (a count / mole-number symbol in chemistry).
+fn has_sample_size(text: &str) -> bool {
+    let c: Vec<char> = text.chars().collect();
+    for i in 0..c.len() {
+        if c[i] != 'n' || (i > 0 && c[i - 1].is_alphabetic()) {
+            continue;
+        }
+        let mut j = i + 1;
+        while j < c.len() && c[j] == ' ' {
+            j += 1;
+        }
+        if j >= c.len() || c[j] != '=' {
+            continue;
+        }
+        let mut k = j + 1;
+        while k < c.len() && c[k] == ' ' {
+            k += 1;
+        }
+        if k < c.len() && c[k].is_ascii_digit() {
+            return true;
+        }
+    }
+    false
+}
+
+/// A labeled-float reference — `Table 2`, `Fig. 3`, `Figure 1` — i.e. a word-start
+/// `table`/`figure`/`fig` followed by an optional `.`, spaces, then a digit. This is
+/// the own-data-presentation signal, and it does NOT fire on the everyday nouns
+/// "water table" / "this figure" (no following number).
+fn has_float_label(low: &str) -> bool {
+    let c: Vec<char> = low.chars().collect();
+    let kws: [&[char]; 3] = [
+        &['t', 'a', 'b', 'l', 'e'],
+        &['f', 'i', 'g', 'u', 'r', 'e'],
+        &['f', 'i', 'g'],
+    ];
+    for kw in kws {
+        'scan: for i in 0..c.len() {
+            if i + kw.len() > c.len() {
+                break;
+            }
+            for (o, &ch) in kw.iter().enumerate() {
+                if c[i + o] != ch {
+                    continue 'scan;
+                }
+            }
+            if i > 0 && c[i - 1].is_alphabetic() {
+                continue;
+            }
+            let mut k = i + kw.len();
+            if k < c.len() && c[k] == '.' {
+                k += 1;
+            }
+            while k < c.len() && c[k] == ' ' {
+                k += 1;
+            }
+            if k < c.len() && c[k].is_ascii_digit() {
+                return true;
+            }
         }
     }
     false
@@ -333,19 +397,19 @@ fn has_stat_relation(low: &str, letter: char, ops: &[char]) -> bool {
 
 /// HIGH-PRECISION own-results / statistical-reporting markers (case-insensitive). Each
 /// is specific enough that it rarely appears in a borrowed background statistic; bare
-/// polysemous words are excluded on purpose. Table/figure pointers are space-anchored
-/// so `comfortable`/`configure` don't trigger them.
+/// polysemous words ("mean"/"average"/"significant"/平均/显著/我们) are excluded on
+/// purpose. p-values, sample sizes, and table/figure labels are detected structurally
+/// above, not as substrings, so "water table" / "p = 4 atm" / "N = 3" don't trigger.
 const OWN_RESULTS_MARKERS: &[&str] = &[
     // first-person RESULTS framing (a specific verb, never a bare "we"/"our")
     "we measured", "we found", "we observed", "we recorded", "we report",
     "we obtained", "we calculated", "we assessed", "we computed", "we detected",
     "this study", "this paper", "present study", "results show", "results showed",
     "results indicate", "results suggest", "results demonstrate", "as shown in",
-    "as listed in", "as presented in", "see table", "see fig", " table ", " figure ",
-    " fig.",
-    // statistical-reporting machinery (precise multi-char terms)
+    "as listed in", "as presented in", "see table", "see fig",
+    // statistical-reporting machinery (precise multi-char terms; " anova" anchored)
     "95% ci", "95%ci", "confidence interval", "standard deviation", "standard error",
-    "interquartile", "anova", "t-test", "chi-square", "odds ratio", "hazard ratio",
+    "interquartile", " anova", "t-test", "chi-square", "odds ratio", "hazard ratio",
     "p-value", "p值",
     // CJK — specific compounds (own-results framing + precise statistical terms)
     "本研究", "本文", "测得", "测量", "结果显示", "结果表明", "结果如", "如表",
@@ -787,6 +851,7 @@ mod tests {
             "The impact force dropped by 8% (p < 0.05).",                       // p-value
             "Group scores differed by 8% (95% CI 3 to 13).",                    // CI
             "The cohort (n = 24) showed a 30% reduction in sway.",             // n =
+            "As shown in Table 2, the dorsiflexion was 12 cm.",                // labeled float
             "本研究测得落地冲击力下降 15%。",                                    // 本研究 / 测得
             "结果显示踝关节背屈角度减小 12%。",                                  // 结果显示
         ];
@@ -809,6 +874,12 @@ mod tests {
             "The mean annual rainfall exceeds 2000 mm.",
             "A strong correlation exists: obesity affects 35% of adults.",
             "Means of public transport carry 40% of commuters.",
+            // The re-review's structural edge cases: ordinary "table"/"figure" nouns,
+            // pressure p, and uppercase chemistry N must NOT be read as own-results.
+            "A water table drop of 5 cm was reported worldwide.",
+            "This figure exceeds the global average of 40%.",
+            "When p = 4 atm the boiling point rose by 5%.",
+            "At ratio N = 3 the compound is 40% nitrogen by mass.",
             "踝关节扭伤的复发率高达 70%。",
             "我们国家的森林覆盖率为 23%。",
             "全球平均气温上升了 1.1 度。",
