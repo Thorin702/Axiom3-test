@@ -1,0 +1,14 @@
+# Axiom3 monorepo workspace.
+# Open-core (MIT): crates/axiom-core — the verification engine.
+# Proprietary shell: axiom3-desktop/ — orchestration, UX, tool ecosystem.
+# Dependency direction is one-way: the shell depends on axiom-core, never the reverse.
+[workspace]
+resolver = "2"
+members = ["axiom3-desktop/src-tauri", "crates/axiom-core"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

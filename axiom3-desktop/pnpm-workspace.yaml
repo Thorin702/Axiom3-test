@@ -1,0 +1,11 @@
+allowBuilds:
+  esbuild: set this to true or false
+
+# pnpm 11 reads dependency-build approval + run settings from here (not package.json/.npmrc).
+# Allow esbuild to run its install script (clears ERR_PNPM_IGNORED_BUILDS exit 1).
+onlyBuiltDependencies:
+  - esbuild
+
+# Don't re-run a deps-status install check before every `pnpm <script>`
+# (it blocks headless/CI runs).
+verifyDepsBeforeRun: false
