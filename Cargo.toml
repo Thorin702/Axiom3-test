@@ -6,9 +6,11 @@
 resolver = "2"
 members = ["axiom3-desktop/src-tauri", "crates/axiom-core"]
 
+# NOTE: no `panic = "abort"` — axiom-core is the verification engine; we keep
+# unwind so the orchestrator can `catch_unwind` and isolate a single verifier's
+# panic instead of aborting the whole process (and losing the audit trail).
 [profile.release]
 codegen-units = 1
 lto = true
 opt-level = "s"
-panic = "abort"
 strip = true
