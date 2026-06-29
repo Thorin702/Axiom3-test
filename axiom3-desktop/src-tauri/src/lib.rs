@@ -1,11 +1,9 @@
-// Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
+mod workbench;
+
+use workbench::AppState;
 
 /// Returns the open-core verification engine version.
-/// P0.1 smoke test that the shell -> axiom-core boundary is wired.
+/// Smoke test that the shell -> axiom-core boundary is wired.
 #[tauri::command]
 fn axiom_core_version() -> String {
     axiom_core::version().to_string()
@@ -13,9 +11,34 @@ fn axiom_core_version() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Single-instance must be registered first (desktop only): a second launch
+    // forwards to the running process instead of racing first-run DB-key creation.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // A second launch surfaces the running window instead of doing nothing.
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![greet, axiom_core_version])
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            axiom_core_version,
+            workbench::open_project,
+            workbench::project_status,
+            workbench::append_event,
+            workbench::verify_chain,
+            workbench::vector_self_test,
+            workbench::close_project,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
