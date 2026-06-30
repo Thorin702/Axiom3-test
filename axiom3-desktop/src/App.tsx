@@ -6,6 +6,7 @@ import { Lang, t } from "./i18n";
 import "./theme.css";
 import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
+import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Download, ListFilter, X, Languages, Settings, Upload } from "lucide-react";
 
 
@@ -33,6 +34,7 @@ function App() {
   const [check, setCheck] = useState<DraftCheck | null>(null);
   const [notableOnly, setNotableOnly] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [onboarded, setOnboarded] = useState(localStorage.getItem("axiom3.onboarded") === "1");
 
   useEffect(() => {
     const un = listen<{ done: number; total: number }>("check_progress", (e) => setProgress(e.payload));
@@ -149,7 +151,9 @@ function App() {
   // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
 
   return (
-    <div className="ax-app">
+    <>
+      {!onboarded && <OnboardingWizard lang={lang} onDone={() => setOnboarded(true)} />}
+      <div className="ax-app">
       <aside className="ax-sidebar">
         <div className="ax-brand">
           Axiom3
@@ -384,7 +388,8 @@ function App() {
           )}
         </div>
       </main>
-    </div>
+      </div>
+    </>
   );
 }
 

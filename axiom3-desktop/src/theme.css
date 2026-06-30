@@ -208,3 +208,31 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-dev { margin-top: 30px; border-top: 0.5px solid var(--ax-line-soft); padding-top: 12px; }
 .ax-dev > summary { font-size: 12px; color: var(--ax-ink-faint); cursor: pointer; list-style: none; }
 .ax-log { font-family: var(--ax-mono, ui-monospace, monospace); font-size: 12px; color: var(--ax-ink-soft); line-height: 1.7; margin: 10px 0 0; padding: 0; list-style: none; }
+
+/* ── onboarding wizard ─────────────────────────────────────────────── */
+.ax-wiz-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(20, 24, 25, 0.55);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.ax-wiz {
+  width: 100%; max-width: 540px; min-height: 440px;
+  background: var(--ax-surface); border: 0.5px solid var(--ax-line);
+  border-radius: 16px; padding: 20px 24px; display: flex; flex-direction: column;
+}
+.ax-wiz__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.ax-wiz__title { margin: 0; font-size: 16px; font-weight: 500; color: var(--ax-ink); }
+.ax-wiz__count { font-size: 12px; color: var(--ax-ink-faint); }
+.ax-wiz__body { flex: 1; font-size: 14px; color: var(--ax-ink-soft); line-height: 1.65; }
+.ax-wiz__foot { display: flex; align-items: center; justify-content: space-between; margin-top: 16px; padding-top: 12px; border-top: 0.5px solid var(--ax-line-soft); }
+.ax-wiz__dots { display: flex; gap: 6px; }
+.ax-wiz__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ax-line); cursor: pointer; border: none; padding: 0; }
+.ax-wiz__dot.on { background: var(--ax-accent); }
+
+.ax-wiz-brand { font-family: var(--ax-serif); font-size: 22px; color: var(--ax-ink); }
+.ax-wiz-brand small { font-family: var(--ax-sans); font-size: 12px; color: var(--ax-ink-faint); margin-left: 8px; }
+.ax-wiz-bullet { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 10px; }
+.ax-wiz-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 0.5px solid var(--ax-line-soft); font-size: 14px; color: var(--ax-ink); }
+.ax-wiz-opt { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0.5px solid var(--ax-line); border-radius: var(--ax-radius); background: var(--ax-surface); color: var(--ax-ink); cursor: pointer; font-size: 14px; margin-bottom: 8px; line-height: 1.45; }
+.ax-wiz-opt.sel { border: 2px solid var(--ax-accent); padding: 9px 11px; }
+.ax-wiz-consent { border: 2px solid var(--ax-accent); border-radius: 12px; padding: 12px; background: var(--ax-accent-soft); }
