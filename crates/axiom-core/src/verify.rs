@@ -305,6 +305,11 @@ impl Checker for AbsoluteQuantifierChecker {
         "absolute_quantifier"
     }
     fn check(&self, claim: &Claim, _ctx: &DraftContext) -> Vec<Finding> {
+        // An absolute in a plan/goal ("本项目将解决所有难题") is aspirational framing, not a
+        // factual claim — stay silent (the inherently-empirical checks still run).
+        if is_non_assertive(&claim.text) {
+            return vec![];
+        }
         flag_terms(&claim.text, ABSOLUTE_TERMS, "absolute_quantifier", |t| {
             format!("absolute quantifier \"{t}\" is rarely literally true")
         })
