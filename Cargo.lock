@@ -628,7 +628,9 @@ dependencies = [
  "axiom-ingest",
  "axiom-providers",
  "futures",
+ "reqwest 0.12.28",
  "rig-core",
+ "serde_json",
  "tokio",
 ]
 
@@ -3373,6 +3375,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
@@ -6304,6 +6307,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams 0.4.2",
  "web-sys",
+ "webpki-roots 1.0.8",
 ]
 
 [[package]]
