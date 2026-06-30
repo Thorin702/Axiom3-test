@@ -19,6 +19,7 @@
 //! [`adjudicate`] are fully unit-testable without a clock or I/O.
 
 use crate::model::{new_id, now_ms, Claim, ClaimType, VerdictStatus};
+use crate::text::is_cjk;
 
 /// Whether a finding, on its own, contradicts the claim or merely flags a risk
 /// that external verification must resolve.
@@ -167,16 +168,22 @@ const ABBREVIATIONS: &[&str] = &[
 ];
 
 /// A fragment is claim-like if it has enough substance to be worth judging.
-/// Script-aware: CJK is morpheme-dense, so a 3-character CJK-only phrase can be a
-/// full claim, while Latin text needs ~6 alphanumerics.
+/// Script-aware: CJK is morpheme-dense, so a 3-character CJK-only phrase can be a full
+/// claim, while Latin text needs ~6 alphanumerics. A SHORT CJK phrase that also carries
+/// a number (e.g. `产率 73%` — "yield 73%") is exactly the quantitative conclusion we
+/// most want to judge, so it qualifies on `cjk >= 2` even though the digits make
+/// `cjk != alnum`.
 fn is_claim_like(s: &str) -> bool {
     let alnum = s.chars().filter(|c| c.is_alphanumeric()).count();
     let cjk = s.chars().filter(|c| is_cjk(*c)).count();
-    if cjk > 0 && cjk == alnum {
-        cjk >= 3
-    } else {
-        alnum >= 6
+    if cjk >= 3 {
+        return true;
     }
+    if cjk >= 2 && alnum > cjk {
+        // short CJK phrase plus at least one non-CJK alphanumeric token (a number/unit)
+        return true;
+    }
+    alnum >= 6
 }
 
 fn classify(text: &str) -> ClaimType {
@@ -301,9 +308,10 @@ fn is_own_results_context(text: &str) -> bool {
         || has_float_label(&low)
 }
 
-/// A p-value report: a word-start `p` + comparator + a PROBABILITY (`0.x` or `.x`),
-/// e.g. `p < 0.05`, `p=0.001`, `p < .01`. Requiring a sub-1 value excludes pressure
-/// reports like `p = 4 atm` (where `p` is the symbol for pressure, not significance).
+/// A p-value report: a word-start `p` + comparator + a PROBABILITY (a value in
+/// `[0, 1)`), e.g. `p < 0.05`, `p=0.001`, `p < .01`, `p = 5e-6`. The number is parsed
+/// and range-checked, so a pressure report like `p = 4 atm` (`p` = pressure, value ≥ 1)
+/// does not qualify, while scientific-notation p-values do.
 fn has_p_value(low: &str) -> bool {
     let c: Vec<char> = low.chars().collect();
     for i in 0..c.len() {
@@ -321,9 +329,18 @@ fn has_p_value(low: &str) -> bool {
         while k < c.len() && c[k] == ' ' {
             k += 1;
         }
-        // A probability: ".05" or "0.05" — never a bare integer like "4".
-        if k < c.len() && (c[k] == '.' || (c[k] == '0' && k + 1 < c.len() && c[k + 1] == '.')) {
-            return true;
+        // Read the numeric token (digits, '.', exponent) and require 0 <= v < 1.
+        let start = k;
+        while k < c.len() && (c[k].is_ascii_digit() || matches!(c[k], '.' | 'e' | 'E' | '-' | '+')) {
+            k += 1;
+        }
+        if k > start {
+            let tok: String = c[start..k].iter().collect();
+            if let Ok(v) = tok.parse::<f64>() {
+                if v.is_finite() && (0.0..1.0).contains(&v) {
+                    return true;
+                }
+            }
         }
     }
     false
@@ -627,11 +644,16 @@ fn numeric_mentions(s: &str) -> Vec<(f64, String)> {
             if k < chars.len() && chars[k] == ' ' {
                 k += 1;
             }
-            if let (Ok(v), Some((u, next))) = (raw.parse::<f64>(), read_unit(&chars, k)) {
-                out.push((v, u));
-                i = next;
-            } else {
-                i = j.max(i + 1);
+            match (raw.parse::<f64>(), read_unit(&chars, k)) {
+                // Reject non-finite values: a 300+ digit run parses to f64::INFINITY,
+                // which would drive a nonsensical `infmol` finding / conflict.
+                (Ok(v), Some((u, next))) if v.is_finite() => {
+                    out.push((v, u));
+                    i = next;
+                }
+                _ => {
+                    i = j.max(i + 1);
+                }
             }
             continue;
         }
@@ -650,8 +672,20 @@ fn read_unit(chars: &[char], pos: usize) -> Option<(String, usize)> {
     if chars[pos] == '%' {
         return normalize_unit("%").map(|u| (u, pos + 1));
     }
-    if chars[pos] == '°' && pos + 1 < chars.len() && chars[pos + 1].eq_ignore_ascii_case(&'C') {
-        return normalize_unit("°c").map(|u| (u, pos + 2));
+    // Single-glyph degree signs, incl. the U+2103 ℃ / U+2109 ℉ ubiquitous in CJK text.
+    if chars[pos] == '℃' {
+        return normalize_unit("°c").map(|u| (u, pos + 1));
+    }
+    if chars[pos] == '℉' {
+        return normalize_unit("°f").map(|u| (u, pos + 1));
+    }
+    if chars[pos] == '°' && pos + 1 < chars.len() {
+        if chars[pos + 1].eq_ignore_ascii_case(&'C') {
+            return normalize_unit("°c").map(|u| (u, pos + 2));
+        }
+        if chars[pos + 1].eq_ignore_ascii_case(&'F') {
+            return normalize_unit("°f").map(|u| (u, pos + 2));
+        }
     }
     // Latin unit word (read up to 12 letters, then require it be recognised).
     let mut k = pos;
@@ -659,6 +693,11 @@ fn read_unit(chars: &[char], pos: usize) -> Option<(String, usize)> {
         k += 1;
     }
     if k > pos {
+        // A COMPOUND/ratio unit (mg/kg, mol/L, m^2, m·s) is NOT comparable to its bare
+        // numerator — refuse it so `5 mg/kg` and `8 mg` aren't seen as the same unit.
+        if matches!(chars.get(k), Some('/' | '·' | '*' | '^')) {
+            return None;
+        }
         let tok: String = chars[pos..k].iter().collect();
         return normalize_unit(&tok).map(|u| (u, k));
     }
@@ -685,20 +724,31 @@ fn normalize_unit(raw: &str) -> Option<String> {
         "%" | "percent" | "percentage" | "pct" => Some("%".to_string()),
         "kelvin" => Some("k".to_string()),
         "celsius" => Some("°c".to_string()),
-        "k" | "°c" | "mol" | "mmol" | "umol" | "nmol" | "g" | "mg" | "kg" | "ng"
+        "fahrenheit" => Some("°f".to_string()),
+        "k" | "°c" | "°f" | "mol" | "mmol" | "umol" | "nmol" | "g" | "mg" | "kg" | "ng"
         | "ug" | "da" | "kda" | "m" | "cm" | "mm" | "nm" | "um" | "km" | "l" | "ml"
         | "ul" | "s" | "ms" | "min" | "h" | "hr" | "hz" | "khz" | "mhz" | "ghz"
         | "v" | "mv" | "kv" | "ev" | "kev" | "mev" | "pa" | "kpa" | "mpa" | "bar"
         | "atm" | "j" | "kj" | "w" | "kw" | "ppm" | "ppb" | "rpm" | "bp" | "kb"
         | "db" => Some(u),
+        // CJK unit words. NOTE: read_unit tries 3→2→1 chars, so a 3-char unit
+        // (摄氏度) is matched before its 1-char suffix (度).
         "摄氏度" | "度" => Some("°c".to_string()),
         "毫升" => Some("ml".to_string()),
         "升" => Some("l".to_string()),
         "毫克" => Some("mg".to_string()),
-        "千克" => Some("kg".to_string()),
+        "千克" | "公斤" => Some("kg".to_string()),
         "克" => Some("g".to_string()),
+        "毫米" => Some("mm".to_string()),
+        "厘米" | "公分" => Some("cm".to_string()),
+        "纳米" => Some("nm".to_string()),
+        "微米" => Some("um".to_string()),
+        "千米" | "公里" => Some("km".to_string()),
         "米" => Some("m".to_string()),
+        "毫秒" => Some("ms".to_string()),
         "秒" => Some("s".to_string()),
+        "分钟" => Some("min".to_string()),
+        "小时" => Some("h".to_string()),
         _ => None,
     }
 }
@@ -742,10 +792,6 @@ fn keywords(s: &str) -> Vec<String> {
     flush_latin(&mut latin, &mut out);
     flush_cjk(&mut cjk, &mut out);
     out
-}
-
-fn is_cjk(ch: char) -> bool {
-    matches!(ch as u32, 0x4E00..=0x9FFF)
 }
 
 fn shares_keyword(a: &[String], b: &[String]) -> bool {
@@ -887,6 +933,60 @@ mod tests {
         for d in must_flag {
             assert_eq!(uncited_flags(d), 1, "a bald uncited borrowed statistic must stay flagged: {d:?}");
         }
+    }
+
+    #[test]
+    fn celsius_glyph_and_cjk_units_are_recognized() {
+        // ℃ (U+2103) — the common Chinese Celsius glyph — must parse as a unit so two
+        // conflicting temperatures are caught (previously invisible vs the "°C" form).
+        let c = verify_draft("p", "反应温度为 80℃。反应温度为 60℃。");
+        assert_eq!(
+            c.iter().filter(|r| r.findings.iter().any(|f| f.checker == "internal_conflict")).count(),
+            1,
+            "two ℃ temperatures on a shared topic conflict"
+        );
+        // 厘米 (cm) is a recognized CJK length unit.
+        let cm = verify_draft("p", "位移为 5 厘米。位移为 8 厘米。");
+        assert_eq!(
+            cm.iter().filter(|r| r.findings.iter().any(|f| f.checker == "internal_conflict")).count(),
+            1,
+            "厘米 is recognized and comparable"
+        );
+    }
+
+    #[test]
+    fn compound_ratio_unit_is_not_a_false_conflict() {
+        // mg/kg (a ratio) must NOT be seen as the same unit as a bare mg.
+        let r = verify_draft("p", "The dose was 5 mg/kg. The dose was 8 mg.");
+        assert!(
+            r.iter().all(|x| x.findings.iter().all(|f| f.checker != "internal_conflict")),
+            "a compound unit is not compared to its bare numerator"
+        );
+    }
+
+    #[test]
+    fn short_cjk_claim_with_a_number_is_extracted() {
+        // 产率 73% (yield 73%) — a short CJK phrase plus a number — is exactly the
+        // quantitative conclusion to judge; it must survive extraction.
+        let claims = extract_claims("p", "产率 73%。");
+        assert_eq!(claims.len(), 1, "短 CJK + 数值 claim extracted");
+        assert!(claims[0].text.contains("产率"));
+    }
+
+    #[test]
+    fn over_long_digit_run_yields_no_infinite_mention() {
+        let s = format!("{} mol", "9".repeat(400));
+        let mentions = numeric_mentions(&s);
+        assert!(mentions.iter().all(|(v, _)| v.is_finite()), "no infinite value");
+        assert!(mentions.is_empty(), "a 400-digit run is rejected, not parsed to inf");
+    }
+
+    #[test]
+    fn scientific_notation_p_value_is_recognized() {
+        // p = 5e-6 is a p-value (own results) → the 8% is not flagged uncited.
+        assert_eq!(uncited_flags("The drop was 8% (p = 5e-6)."), 0);
+        // p = 4 atm is PRESSURE, not a p-value → the borrowed 5% stays flagged.
+        assert_eq!(uncited_flags("At p = 4 atm the rate fell 5%."), 1);
     }
 
     #[test]

@@ -15,6 +15,7 @@
 pub mod evidence;
 pub mod model;
 pub mod store;
+pub mod text;
 pub mod verify;
 
 pub use model::VerdictStatus;
