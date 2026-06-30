@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     let candidates = [
         (Provider::Anthropic, "claude-haiku-4-5-20251001"),
         (Provider::OpenAi, "gpt-4o-mini"),
-        (Provider::DeepSeek, "deepseek-chat"),
+        (Provider::DeepSeek, "deepseek-v4-flash"),
         (Provider::Gemini, "gemini-1.5-flash"),
         (Provider::Qwen, "qwen-plus"),
     ];

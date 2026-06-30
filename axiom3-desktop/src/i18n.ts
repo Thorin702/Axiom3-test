@@ -36,13 +36,60 @@ const UI: Record<string, Pair> = {
   chars: { zh: "字符", en: "chars" },
   unchecked: { zh: "未校验", en: "unchecked" },
   show_all: { zh: "显示全部", en: "show all" },
-  only_notable: { zh: "只看有结论/标记的", en: "only flagged/verdicted" },
+  only_notable: { zh: "只看已标记或跨模型核验的", en: "only flagged or cross-checked" },
+  switch_language: { zh: "切换语言", en: "Switch language" },
   export_provenance: { zh: "导出溯源", en: "Export provenance" },
   export_provenance_hint: {
     zh: "导出本次校对的可审计溯源记录(JSON):每条断言跑了哪些检查器、哪些独立厂商投票、依据哪些证据,并锚定到哈希链。",
     en: "Export an auditable provenance record (JSON) for this check: which checkers ran per claim, which independent vendors voted, the grounding evidence — anchored to the hash chain.",
   },
   exported: { zh: "已导出", en: "exported" },
+  results_philosophy: {
+    zh: "Axiom3 检查并呈现证据 — 是否成立,由你判断。",
+    en: "Axiom3 checks and surfaces evidence — whether it holds is your call.",
+  },
+  att_flagged: { zh: "已标记", en: "flagged" },
+  att_review: { zh: "需复核", en: "needs review" },
+  att_clear: { zh: "已检查 · 未见问题", en: "checked · nothing flagged" },
+  att_neutralized: { zh: "注入已中和", en: "injection neutralized" },
+  sec_checks: { zh: "检查", en: "checks" },
+  sec_evidence: { zh: "证据 · 供你判断", en: "evidence · for your judgment" },
+  sec_signal: { zh: "跨模型阅读", en: "cross-model reading" },
+  signal_caveat: { zh: "信号 · 非裁决", en: "a signal, not a verdict" },
+  src_retrieved: { zh: "文献", en: "retrieved" },
+  src_user: { zh: "你的参考", en: "your reference" },
+  app_subtitle_short: { zh: "校验为中心的科研工作台", en: "verification-first research workbench" },
+  project: { zh: "项目", en: "project" },
+  settings_soon: { zh: "设置(即将)", en: "settings (soon)" },
+  empty_title: { zh: "打开或新建一个项目", en: "Open or create a project" },
+  empty_sub: {
+    zh: "Axiom3 把草稿拆成断言,运行检查并摆出证据 — 是否成立,由你判断。",
+    en: "Axiom3 breaks a draft into claims, runs checks, and surfaces evidence — whether it holds is your call.",
+  },
+  dev_tools: { zh: "开发工具", en: "developer tools" },
+  settings: { zh: "设置", en: "Settings" },
+  set_appearance: { zh: "外观", en: "Appearance" },
+  set_theme: { zh: "主题", en: "Theme" },
+  theme_light: { zh: "浅色", en: "Light" },
+  theme_dark: { zh: "深色", en: "Dark" },
+  theme_system: { zh: "跟随系统", en: "System" },
+  set_language: { zh: "语言", en: "Language" },
+  set_providers: { zh: "模型与提供方", en: "Models & providers" },
+  set_provider_ph: { zh: "为所选提供方粘贴 API key…", en: "Paste API key for the selected provider…" },
+  prov_remove: { zh: "移除", en: "remove" },
+  prov_save: { zh: "连接", en: "Connect" },
+  set_checking: { zh: "校验与检查", en: "Checking" },
+  set_litsearch: { zh: "文献检索", en: "Literature search" },
+  set_litsearch_hint: { zh: "对承重断言检索已发表文献作证据(候选,非裁决)", en: "Retrieve published literature as evidence for bearing claims (candidate, not a verdict)" },
+  set_fleetmax: { zh: "跨厂商预算(承重断言上限)", en: "Cross-vendor budget (max bearing claims)" },
+  set_about: { zh: "关于", en: "About" },
+  set_version: { zh: "引擎版本", en: "Engine version" },
+  set_disclaimer: {
+    zh: "Axiom3 做检查与证据呈现,不判定真伪、不给确定性结论;研究结论与责任归你。",
+    en: "Axiom3 runs checks and surfaces evidence; it does not judge truth or give definitive conclusions — the conclusion and responsibility are yours.",
+  },
+  on: { zh: "开", en: "On" },
+  off: { zh: "关", en: "Off" },
   checking: { zh: "校对中…", en: "checking…" },
   cancel: { zh: "取消", en: "cancel" },
   references_title: { zh: "参考来源(可选,裁决基于此)", en: "References (optional — verdicts are grounded in these)" },
@@ -75,6 +122,19 @@ const VERDICT: Record<string, Pair> = {
 
 export function verdictLabel(lang: Lang, code: string): string {
   return VERDICT[code]?.[lang] ?? code;
+}
+
+// A model's read is a SIGNAL, not a verdict — so the per-vendor line in the dossier
+// shows an evidence DIRECTION, never the truth-coded nouns "verified/refuted". The raw
+// machine status still lives in the auditable provenance export.
+const VENDOR_SIGNAL: Record<string, Pair> = {
+  verified: { zh: "倾向支持", en: "leans support" },
+  refuted: { zh: "倾向存疑", en: "leans against" },
+  uncertain: { zh: "存疑", en: "inconclusive" },
+};
+
+export function vendorSignalLabel(lang: Lang, code: string): string {
+  return VENDOR_SIGNAL[code]?.[lang] ?? verdictLabel(lang, code);
 }
 
 const INDEP: Record<string, Pair> = {
