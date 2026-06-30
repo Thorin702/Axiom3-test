@@ -296,7 +296,7 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 
 /* ── settings modal ────────────────────────────────────────────────── */
 .ax-set-overlay { position: fixed; inset: 0; z-index: 40; background: rgba(20,24,25,0.5); display: flex; align-items: center; justify-content: center; padding: 24px; }
-.ax-set { width: 100%; max-width: 560px; max-height: 80vh; background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 16px; display: flex; flex-direction: column; }
+.ax-set { width: 100%; max-width: 560px; max-height: 80vh; background: var(--ax-surface); border: 1px solid var(--ax-line); border-radius: var(--ax-radius-lg); box-shadow: var(--ax-shadow); display: flex; flex-direction: column; }
 .ax-set__head { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 0.5px solid var(--ax-line); }
 .ax-set__title { margin: 0; font-size: 16px; font-weight: 500; color: var(--ax-ink); }
 .ax-set-group { margin-bottom: 22px; }
@@ -312,13 +312,22 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 
 
 /* ── task composer (slash commands) ────────────────────────────────── */
-.ax-composer { position: relative; margin-top: 8px; }
-.ax-composer__chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
-  color: var(--ax-accent); background: var(--ax-accent-soft); border-radius: var(--ax-radius);
-  padding: 3px 6px 3px 10px; margin-bottom: 8px; }
-.ax-slash-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 5;
-  background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 12px;
-  box-shadow: 0 6px 24px rgba(20,24,25,0.12); padding: 6px; max-height: 260px; overflow-y: auto; }
+/* the composer is one unified input card (Claude-like) — inner fields are seamless */
+.ax-composer { position: relative; margin-top: 8px; border: 1px solid var(--ax-line);
+  border-radius: var(--ax-radius-lg); background: var(--ax-surface); padding: 6px 6px 4px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+.ax-composer:focus-within { border-color: var(--ax-accent); box-shadow: var(--ax-focus); }
+.ax-composer > .ax-textarea, .ax-composer > * > .ax-textarea { border: none; background: transparent; padding: 8px 9px; resize: none; }
+.ax-composer .ax-textarea:focus { box-shadow: none; border: none; }
+.ax-composer .ax-toolrow { padding: 2px 6px 2px; }
+.ax-composer details { padding: 0 4px; }
+.ax-composer details .ax-textarea { border: 1px solid var(--ax-line-soft); background: var(--ax-surface-2); border-radius: var(--ax-radius); padding: 8px 10px; }
+.ax-composer__chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+  color: var(--ax-accent); background: var(--ax-accent-soft); border-radius: var(--ax-radius-sm);
+  padding: 3px 6px 3px 10px; margin: 2px 0 6px 4px; }
+.ax-slash-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 5;
+  background: var(--ax-surface); border: 1px solid var(--ax-line); border-radius: var(--ax-radius-lg);
+  box-shadow: var(--ax-shadow); padding: 6px; max-height: 280px; overflow-y: auto; }
 .ax-slash-item { display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
   border: none; background: transparent; border-radius: var(--ax-radius); padding: 8px 10px;
   cursor: pointer; font-family: var(--ax-sans); }
@@ -473,13 +482,14 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-recent__title b { font-weight: 400; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* home: greeting + centered composer */
-.ax-home { max-width: 700px; margin: 12vh auto 0; }
-.ax-home__greeting { font-family: var(--ax-serif); font-size: 30px; color: var(--ax-ink); text-align: center; margin: 0; line-height: 1.25; }
-.ax-home__sub { font-size: 14px; color: var(--ax-ink-soft); text-align: center; margin: 12px 0 26px; }
-.ax-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 18px; }
-.ax-chip { display: inline-flex; align-items: center; gap: 6px; border: 0.5px solid var(--ax-line);
-  background: var(--ax-surface); border-radius: 20px; padding: 6px 13px; cursor: pointer;
-  font-family: var(--ax-sans); font-size: 12.5px; color: var(--ax-ink-soft); }
+.ax-home { max-width: 680px; margin: 15vh auto 0; }
+.ax-home__greeting { font-family: var(--ax-serif); font-size: 32px; color: var(--ax-ink); text-align: center; margin: 0; line-height: 1.2; letter-spacing: -0.01em; }
+.ax-home__sub { font-size: 14px; color: var(--ax-ink-soft); text-align: center; margin: 14px 0 30px; }
+.ax-chips { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 22px; }
+.ax-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--ax-line);
+  background: var(--ax-surface); border-radius: var(--ax-radius); padding: 6px 12px; cursor: pointer;
+  font-family: var(--ax-sans); font-size: 12.5px; color: var(--ax-ink-soft);
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease; }
 .ax-chip:hover { border-color: var(--ax-accent); color: var(--ax-accent); background: var(--ax-accent-soft); }
 .ax-chip__d { color: var(--ax-ink-faint); }
 
