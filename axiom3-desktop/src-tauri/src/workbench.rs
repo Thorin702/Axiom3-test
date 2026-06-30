@@ -209,36 +209,43 @@ fn verdict_key(text: &str, evidence: &[String]) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// The DOI prefix up to the first `.` after the `/` — the part that survives the
-/// sentence splitter (which breaks "10.x/word.2020" at `word.2020`). Used to attach a
-/// whole-draft DOI's finding to the (possibly fragmented) claim that cites it.
-fn doi_anchor(doi: &str) -> &str {
-    if let Some(slash) = doi.find('/') {
-        if let Some(dot) = doi[slash..].find('.') {
-            return &doi[..slash + dot];
+/// Attach each problematic DOI's finding to the claim that actually CITES it, by
+/// OFFSET: the complete DOI's byte position in the draft must fall inside the claim's
+/// byte range (claims are trimmed substrings of the draft). This survives sentence
+/// fragmentation AND same-prefix DOIs (e.g. two `10.1016/j.…` Elsevier DOIs in
+/// different sentences attach to their own claims, never each other's — the
+/// substring/anchor approaches mis-attached). DOI findings are Risk → claim stays
+/// Uncertain. A DOI not inside any claim's range (a stray reference fragment) is
+/// dropped — fail-closed, never mis-attached.
+fn apply_doi_findings(
+    reports: &mut [ClaimReport],
+    draft: &str,
+    dois: &[String],
+    statuses: &HashMap<String, DoiStatus>,
+) {
+    let ranges: Vec<Option<(usize, usize)>> = reports
+        .iter()
+        .map(|r| {
+            let t = r.claim.text.as_str();
+            draft.find(t).map(|s| (s, s + t.len()))
+        })
+        .collect();
+    let mut changed = HashSet::new();
+    for doi in dois {
+        let Some(finding) = doi_finding(doi, statuses.get(doi)) else { continue };
+        let Some(pos) = draft.find(doi.as_str()) else { continue };
+        if let Some(idx) = ranges
+            .iter()
+            .position(|r| matches!(r, Some((s, e)) if *s <= pos && pos < *e))
+        {
+            reports[idx].findings.push(finding);
+            changed.insert(idx);
         }
     }
-    doi
-}
-
-/// Attach DOI findings to each claim that cites a problematic DOI, and re-adjudicate it.
-/// `dois` are the COMPLETE DOIs extracted from the whole draft (so the Crossref lookup
-/// is accurate even when the sentence splitter fragments a DOI); a claim is matched by
-/// the DOI's [`doi_anchor`]. DOI findings are Risk, so the claim stays Uncertain.
-fn apply_doi_findings(reports: &mut [ClaimReport], dois: &[String], statuses: &HashMap<String, DoiStatus>) {
-    for r in reports.iter_mut() {
-        let new: Vec<Finding> = dois
-            .iter()
-            .filter(|doi| r.claim.text.contains(doi_anchor(doi)))
-            .filter_map(|doi| doi_finding(doi, statuses.get(doi)))
-            .collect();
-        if new.is_empty() {
-            continue;
-        }
-        r.findings.extend(new);
-        let (status, reason) = adjudicate(&r.findings);
-        r.status = status;
-        r.reason = reason;
+    for i in changed {
+        let (status, reason) = adjudicate(&reports[i].findings);
+        reports[i].status = status;
+        reports[i].reason = reason;
     }
 }
 
@@ -800,8 +807,10 @@ pub async fn check_draft(
         .ok_or_else(|| "a draft check is already running".to_string())?;
 
     // Complete DOIs from the WHOLE draft — extracted before the splitter runs, so the
-    // Crossref lookup is accurate even when sentence-splitting fragments a DOI.
-    let draft_dois = axiom_core::doi::extract_dois(&draft);
+    // Crossref lookup is accurate even when sentence-splitting fragments a DOI. The
+    // draft is kept (clone) so findings can be attributed back to claims BY OFFSET.
+    let dois_draft = draft.clone();
+    let draft_dois = axiom_core::doi::extract_dois(&dois_draft);
 
     // 1. Deterministic tier (CPU) — off the async runtime.
     let mut reports = {
@@ -988,7 +997,7 @@ pub async fn check_draft(
                 }
             }
         }
-        apply_doi_findings(&mut reports, &draft_dois, &statuses);
+        apply_doi_findings(&mut reports, &dois_draft, &draft_dois, &statuses);
     }
 
     // 3. Combine + atomically persist — off the async runtime.
@@ -1082,23 +1091,15 @@ mod tests {
     }
 
     #[test]
-    fn doi_anchor_survives_sentence_splitting() {
-        // A DOI with an internal "word.digit" splits; the anchor keeps the prefix.
-        assert_eq!(doi_anchor("10.1016/j.foo.2020.01.001"), "10.1016/j");
-        // No internal '.' in the suffix → the whole DOI is the anchor.
-        assert_eq!(doi_anchor("10.1038/nature12373"), "10.1038/nature12373");
-    }
-
-    #[test]
     fn apply_doi_findings_flags_and_re_adjudicates() {
         // The splitter fragments "retracted.2020", but the COMPLETE DOI comes from the
-        // whole draft and the anchor ("10.1016/retracted") matches the first fragment.
-        let mut reports =
-            verify_draft("p", "This result rests on 10.1016/retracted.2020 as support.");
+        // whole draft and is attributed BY OFFSET to the claim citing it.
+        let draft = "This result rests on 10.1016/retracted.2020 as support.";
+        let mut reports = verify_draft("p", draft);
         let dois = vec!["10.1016/retracted.2020".to_string()];
         let mut statuses = HashMap::new();
         statuses.insert("10.1016/retracted.2020".to_string(), DoiStatus::Retracted);
-        apply_doi_findings(&mut reports, &dois, &statuses);
+        apply_doi_findings(&mut reports, draft, &dois, &statuses);
         let flagged = reports
             .iter()
             .find(|r| r.findings.iter().any(|f| f.checker == "doi_retracted"))
@@ -1110,6 +1111,33 @@ mod tests {
             "reason reflects the retraction: {:?}",
             flagged.reason
         );
+    }
+
+    #[test]
+    fn doi_finding_attaches_only_to_the_citing_claim() {
+        // Two Elsevier DOIs sharing the "10.1016/j" prefix in DIFFERENT sentences: the
+        // retracted one must flag ONLY its own claim — the old anchor approach smeared
+        // it onto every "10.1016/j" claim.
+        let draft = "Result A rests on 10.1016/j.foo.2020 as the basis. \
+                     Result B instead uses 10.1016/j.bar.2021 entirely.";
+        let mut reports = verify_draft("p", draft);
+        let dois = vec!["10.1016/j.foo.2020".to_string(), "10.1016/j.bar.2021".to_string()];
+        let mut statuses = HashMap::new();
+        statuses.insert("10.1016/j.foo.2020".to_string(), DoiStatus::Retracted);
+        statuses.insert("10.1016/j.bar.2021".to_string(), DoiStatus::Ok);
+        apply_doi_findings(&mut reports, draft, &dois, &statuses);
+        let flagged: Vec<&str> = reports
+            .iter()
+            .filter(|r| r.findings.iter().any(|f| f.checker == "doi_retracted"))
+            .map(|r| r.claim.text.as_str())
+            .collect();
+        assert_eq!(flagged.len(), 1, "exactly the foo-citing claim is flagged: {flagged:?}");
+        assert!(flagged[0].contains("foo"), "and it's the right one: {flagged:?}");
+        // The clean bar-citing claim is NOT smeared with the retraction.
+        assert!(reports
+            .iter()
+            .filter(|r| r.claim.text.contains("bar"))
+            .all(|r| r.findings.iter().all(|f| f.checker != "doi_retracted")));
     }
 
     #[test]
