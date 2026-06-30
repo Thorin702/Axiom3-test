@@ -132,6 +132,8 @@ pub async fn run_coding_agent(
 ) -> CodingResult {
     let sys = system_prompt(sandbox.mode());
     let mut transcript = format!("GOAL:\n{goal}\n\nWorkspace root: {}\n", sandbox.root().display());
+    let mut ran_command = false; // did the agent run a build/test command this run?
+    let mut nudged = false; // pushed back once for finishing without verifying
     for n in 1..=budget.max_steps {
         if cancel.is_cancelled() {
             return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1 };
@@ -153,6 +155,17 @@ pub async fn run_coding_agent(
             Err(_) => return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n },
         };
         if let Some(f) = v.get("final").and_then(|x| x.as_str()) {
+            // In write mode, don't accept "done" until the agent has actually RUN a
+            // build/test command at least once — nudge it once, like Codex verifying.
+            if sandbox.mode() == SandboxMode::ReadWrite && !ran_command && !nudged {
+                nudged = true;
+                transcript.push_str(
+                    "\n[system] You haven't run any build/test command yet. Before finishing, RUN \
+                     the tests (e.g. `python3 check.py`, `pytest -q`, or `cargo test`) to confirm \
+                     your change actually works — then finish.\n",
+                );
+                continue;
+            }
             return CodingResult { status: "done".into(), summary: f.to_string(), steps: n };
         }
         let tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
@@ -184,6 +197,7 @@ pub async fn run_coding_agent(
                 (q, obs)
             }
             "run" => {
+                ran_command = true;
                 let argv: Vec<String> = v
                     .get("cmd")
                     .and_then(|x| x.as_array())
@@ -320,7 +334,7 @@ mod tests {
         let model = ScriptModel {
             replies: Mutex::new(vec![
                 r#"{"tool":"write_file","path":"hello.txt","content":"hi there"}"#.into(),
-                r#"{"tool":"read_file","path":"hello.txt"}"#.into(),
+                r#"{"tool":"run","cmd":["cat","hello.txt"]}"#.into(), // verifies → satisfies the "run before final" nudge
                 r#"{"final":"created hello.txt"}"#.into(),
             ]),
         };
