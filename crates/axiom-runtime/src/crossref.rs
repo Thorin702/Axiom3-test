@@ -44,6 +44,17 @@ pub fn classify_response(http_status: u16, body: &Value) -> DoiStatus {
 }
 
 const CROSSREF_BASE: &str = "https://api.crossref.org/works/";
+
+/// A DOI safe to interpolate into the request path: ASCII-graphic, no whitespace, and
+/// none of the chars that could redirect the request — `..` (path traversal), `?`
+/// (query), `#` (fragment), `%` (escape), `\\`. `/` is allowed (a DOI's own separator).
+fn is_path_safe_doi(doi: &str) -> bool {
+    !doi.is_empty()
+        && doi.starts_with("10.")
+        && doi.chars().all(|c| c.is_ascii_graphic())
+        && !doi.contains("..")
+        && !doi.contains(['?', '#', '%', '\\'])
+}
 const USER_AGENT: &str = concat!("Axiom3/", env!("CARGO_PKG_VERSION"), " (research verification tool)");
 
 /// A Crossref client (wraps a `reqwest::Client`; cheap to clone).
@@ -71,6 +82,12 @@ impl Crossref {
     /// Verify one DOI. A 404 is a `NotFound` result (not an error). A 5xx / network
     /// blip retries with backoff; on exhaustion the call ERRORS (fail-closed).
     pub async fn check(&self, doi: &str) -> anyhow::Result<DoiStatus> {
+        // The DOI is interpolated into the request path; refuse anything that could
+        // steer the request off `/works/{doi}` (path traversal, query, fragment, or a
+        // percent-escape). A real DOI never contains these; rejecting fails CLOSED.
+        if !is_path_safe_doi(doi) {
+            anyhow::bail!("refusing to look up an unsafe DOI: {doi:?}");
+        }
         let url = format!("{CROSSREF_BASE}{doi}");
         // The retry closure returns Ok(None) for a 404 (terminal, no retry), Ok(Some)
         // for a parsed 200 body, and Err for a transient fault to retry.
@@ -134,6 +151,26 @@ mod tests {
     #[test]
     fn classify_maps_404_to_not_found() {
         assert_eq!(classify_response(404, &json!({})), DoiStatus::NotFound);
+    }
+
+    #[test]
+    fn rejects_unsafe_dois_before_the_network() {
+        assert!(is_path_safe_doi("10.1016/S0140-6736(97)11096-0"));
+        assert!(is_path_safe_doi("10.1038/nature12373"));
+        // Injection shapes: path traversal, query, fragment, escape.
+        assert!(!is_path_safe_doi("10.1234/x/../../members/1"));
+        assert!(!is_path_safe_doi("10.1234/x?rows=1000"));
+        assert!(!is_path_safe_doi("10.1234/x#frag"));
+        assert!(!is_path_safe_doi("10.1234/%2e%2e"));
+        // Not a DOI shape at all.
+        assert!(!is_path_safe_doi("works/10.1/x"));
+        assert!(!is_path_safe_doi(""));
+    }
+
+    #[tokio::test]
+    async fn check_fails_closed_on_an_unsafe_doi() {
+        // An unsafe DOI errors (fail-closed) BEFORE any network call.
+        assert!(Crossref::new().check("10.1234/x/../../members/1").await.is_err());
     }
 
     /// Live smoke test against the real Crossref API (network) — run explicitly:

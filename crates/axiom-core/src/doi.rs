@@ -16,8 +16,9 @@ pub fn extract_dois(text: &str) -> Vec<String> {
     let mut seen = HashSet::new();
     let mut i = 0;
     while i + 2 < c.len() {
-        // Must start "10." at a non-digit boundary (so "810.1234/x" isn't a DOI).
-        let boundary = i == 0 || !c[i - 1].is_ascii_digit();
+        // Must start "10." at a boundary that isn't a digit OR a '.', so neither
+        // "810.1234/x" nor a dotted-quad/CIDR like "192.168.10.1234/24" matches.
+        let boundary = i == 0 || !(c[i - 1].is_ascii_digit() || c[i - 1] == '.');
         if boundary && c[i] == '1' && c[i + 1] == '0' && c[i + 2] == '.' {
             let dstart = i + 3;
             let mut j = dstart;
@@ -26,14 +27,22 @@ pub fn extract_dois(text: &str) -> Vec<String> {
             }
             let registrant_len = j - dstart;
             if (4..=9).contains(&registrant_len) && c.get(j) == Some(&'/') {
-                // Suffix runs to whitespace; trim trailing sentence punctuation.
+                // The suffix is ASCII-graphic, so it terminates at whitespace AND at any
+                // non-ASCII char — e.g. CJK punctuation/Han with no space (参见10.x/y。该)
+                // would otherwise glue prose onto the DOI and 404 a real work. It also
+                // stops at <>?# so an angle-bracketed DOI or a query/fragment-injection
+                // suffix can't leak into the (network) URL. Trailing ASCII punctuation
+                // is then trimmed.
                 let mut k = j + 1;
-                while k < c.len() && !c[k].is_whitespace() {
+                while k < c.len()
+                    && c[k].is_ascii_graphic()
+                    && !matches!(c[k], '<' | '>' | '?' | '#')
+                {
                     k += 1;
                 }
                 let mut end = k;
                 while end > j + 1
-                    && matches!(c[end - 1], '.' | ',' | ';' | ')' | ']' | '}' | '"' | '\'' | '>' | '。' | '，')
+                    && matches!(c[end - 1], '.' | ',' | ';' | ')' | ']' | '}' | '"' | '\'')
                 {
                     end -= 1;
                 }
@@ -81,6 +90,24 @@ mod tests {
     fn deduplicates_case_insensitively() {
         let dois = extract_dois("10.1016/ABC and again 10.1016/abc and 10.1016/abc");
         assert_eq!(dois.len(), 1, "{dois:?}");
+    }
+
+    #[test]
+    fn terminates_at_cjk_with_no_space() {
+        // Chinese typography puts no space between Han and inline Latin; the DOI must
+        // not absorb the following characters (which would 404 a real work).
+        assert_eq!(extract_dois("参见10.1038/nature12373。该研究"), vec!["10.1038/nature12373"]);
+        assert_eq!(extract_dois("引用10.1038/nature12373，并指出"), vec!["10.1038/nature12373"]);
+    }
+
+    #[test]
+    fn rejects_dotted_quad_and_injection_chars() {
+        // An IP/CIDR last octet is not a DOI.
+        assert!(extract_dois("192.168.10.1234/24 subnet").is_empty());
+        // Query/fragment/angle-bracket terminate the suffix (no URL injection leaks).
+        assert_eq!(extract_dois("10.1234/x?rows=1000"), vec!["10.1234/x"]);
+        assert_eq!(extract_dois("10.1234/x#frag"), vec!["10.1234/x"]);
+        assert_eq!(extract_dois("<10.1234/abc>"), vec!["10.1234/abc"]);
     }
 
     #[test]
