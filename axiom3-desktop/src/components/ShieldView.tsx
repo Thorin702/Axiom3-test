@@ -72,7 +72,7 @@ export function ShieldView({ lang }: { lang: Lang }) {
           <p className="ax-surface__sub">{s.sub}</p>
         </div>
         <div className="ax-surface__actions">
-          <button className="ax-btn">
+          <button className="ax-btn" disabled>
             <ShieldCheck size={15} /> {s.refresh}
           </button>
         </div>

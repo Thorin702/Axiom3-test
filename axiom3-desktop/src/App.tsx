@@ -18,7 +18,7 @@ import { MetricsView } from "./components/MetricsView";
 import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import {
-  Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus,
+  Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
   Command, Bell, type LucideIcon,
 } from "lucide-react";
@@ -111,6 +111,7 @@ function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [cmd, setCmd] = useState<string | null>(null);
   const [slash, setSlash] = useState("");
+  const [slashIdx, setSlashIdx] = useState(0);
   const [notableOnly, setNotableOnly] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [onboarded, setOnboarded] = useState(localStorage.getItem("axiom3.onboarded") === "1");
@@ -130,6 +131,12 @@ function App() {
       /* quota — ignore */
     }
   }, [tasks]);
+
+  // Clear any error banner whenever the user navigates (a run sets its error after the
+  // view change, so a fresh failure still shows; only stale errors get wiped).
+  useEffect(() => {
+    setError("");
+  }, [nav, view, activeId]);
 
   // ⌘K / Ctrl-K opens the command palette anywhere.
   useEffect(() => {
@@ -238,13 +245,13 @@ function App() {
     }
   }
 
-  async function runCheckDraft() {
-    if (!draft.trim()) return;
+  async function runCheckDraft(draftText?: string) {
+    const useDraft = (draftText ?? draft).trim();
+    if (!useDraft) return;
     const proj = await ensureProject();
     if (!proj) return;
     const id = `t${Date.now()}`;
-    const trimmed = draft.trim();
-    const title = (trimmed.slice(0, 42) || t(lang, "tt_check_draft")) + (trimmed.length > 42 ? "…" : "");
+    const title = useDraft.slice(0, 42) + (useDraft.length > 42 ? "…" : "");
     setTasks((ts) => [{ id, type: "check_draft", title, status: "running", ts: Date.now() }, ...ts]);
     setActiveId(id);
     setNav("tasks");
@@ -255,7 +262,7 @@ function App() {
     const litsearch = localStorage.getItem("axiom3.lit") !== "off";
     const fmRaw = parseInt(localStorage.getItem("axiom3.fleetmax") || "", 10);
     const fleetmax = Number.isFinite(fmRaw) && fmRaw > 0 ? fmRaw : null;
-    const c = await run(() => invoke<DraftCheck>("check_draft", { draft, references, litsearch, fleetmax }));
+    const c = await run(() => invoke<DraftCheck>("check_draft", { draft: useDraft, references, litsearch, fleetmax }));
     setProgress(null);
     setTasks((ts) =>
       ts.map((x) =>
@@ -297,6 +304,8 @@ function App() {
   // A clean claim (no deterministic flag, no fleet verdict) is "unchecked" — shown
   // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
 
+  const activeTask = tasks.find((x) => x.id === activeId) ?? null;
+
   const paletteItems: PaletteItem[] = [
     ...NAV.map((n) => ({ key: n.key, label: lang === "zh" ? n.zh : n.en, kind: "nav" as const })),
     ...COMMANDS.map((c) => ({
@@ -335,7 +344,27 @@ function App() {
     { key: "earlier", zh: "更早", en: "Earlier" },
   ];
 
-  // The slash composer — shared by the home screen and (future) follow-ups. Typing "/"
+  // Slash-menu matches for the current composer text (shared by render + keyboard nav).
+  const slashOpen = slash.trimStart().startsWith("/");
+  const slashMatches = slashOpen
+    ? COMMANDS.filter((c) => {
+        const q = slash.trimStart().slice(1).toLowerCase();
+        return q === "" || (lang === "zh" ? c.zh : c.en).toLowerCase().includes(q) || c.cat.includes(q);
+      })
+    : [];
+
+  // Plain prose typed in the composer == "check this text" (the one live task). Returns
+  // true if it consumed the submit (so the textarea doesn't also insert a newline).
+  function submitFreeText(): boolean {
+    const text = slash.trim();
+    if (text && !text.startsWith("/")) {
+      runCheckDraft(text);
+      return true;
+    }
+    return false;
+  }
+
+  // The slash composer — shared by the home screen and thread follow-ups. Typing "/"
   // surfaces task types; picking one swaps in that task's inputs (only /校对 runs today).
   function composerBlock() {
     return (
@@ -345,20 +374,56 @@ function App() {
             <textarea
               className="ax-textarea"
               value={slash}
-              onChange={(e) => setSlash(e.currentTarget.value)}
+              onChange={(e) => {
+                setSlash(e.currentTarget.value);
+                setSlashIdx(0);
+              }}
+              onKeyDown={(e) => {
+                if (slashOpen && slashMatches.length) {
+                  if (e.key === "ArrowDown") {
+                    e.preventDefault();
+                    setSlashIdx((i) => Math.min(i + 1, slashMatches.length - 1));
+                  } else if (e.key === "ArrowUp") {
+                    e.preventDefault();
+                    setSlashIdx((i) => Math.max(i - 1, 0));
+                  } else if (e.key === "Enter") {
+                    e.preventDefault();
+                    const c = slashMatches[Math.min(slashIdx, slashMatches.length - 1)];
+                    if (c && c.active) {
+                      setCmd(c.key);
+                      setSlash("");
+                    }
+                  } else if (e.key === "Escape") {
+                    setSlash("");
+                  }
+                } else if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  submitFreeText();
+                }
+              }}
               rows={3}
               placeholder={t(lang, "composer_ph")}
             />
-            {slash.trimStart().startsWith("/") && (
+            <div className="ax-toolrow" style={{ justifyContent: "flex-end" }}>
+              <span className="ax-hint" style={{ marginRight: "auto" }}>{t(lang, "composer_hint")}</span>
+              <button
+                className="ax-iconbtn"
+                onClick={() => submitFreeText()}
+                disabled={busy || !slash.trim() || slashOpen}
+                title={t(lang, "task_run")}
+                aria-label={t(lang, "task_run")}
+              >
+                <ArrowUp size={16} aria-hidden />
+              </button>
+            </div>
+            {slashOpen && slashMatches.length > 0 && (
               <div className="ax-slash-menu">
-                {COMMANDS.filter((c) => {
-                  const q = slash.trimStart().slice(1).toLowerCase();
-                  return q === "" || (lang === "zh" ? c.zh : c.en).toLowerCase().includes(q) || c.cat.includes(q);
-                }).map((c) => (
+                {slashMatches.map((c, i) => (
                   <button
                     key={c.key}
-                    className="ax-slash-item"
+                    className={`ax-slash-item ${i === Math.min(slashIdx, slashMatches.length - 1) ? "is-active" : ""}`}
                     disabled={!c.active}
+                    onMouseEnter={() => setSlashIdx(i)}
                     onClick={() => {
                       setCmd(c.key);
                       setSlash("");
@@ -386,7 +451,7 @@ function App() {
               <>
                 <textarea className="ax-textarea" value={draft} onChange={(e) => setDraft(e.currentTarget.value)} rows={9} placeholder={t(lang, "check_placeholder")} />
                 <div className="ax-toolrow">
-                  <button className="ax-btn ax-btn--primary" onClick={runCheckDraft} disabled={busy || !draft.trim()}>
+                  <button className="ax-btn ax-btn--primary" onClick={() => runCheckDraft()} disabled={busy || !draft.trim()}>
                     {t(lang, "task_run")}
                   </button>
                   <button className="ax-iconbtn" onClick={() => importInto(setDraft)} disabled={busy} title={t(lang, "import_btn")} aria-label={t(lang, "import_btn")}>
@@ -430,37 +495,41 @@ function App() {
         </button>
 
         <div className="ax-side-scroll">
-          {tasks.length === 0 && (
+          {tasks.length === 0 ? (
             <p className="ax-hint" style={{ padding: "6px 9px" }}>
-              {lang === "zh" ? "还没有任务,从上面开始。" : "No tasks yet — start above."}
+              {lang === "zh" ? "还没有任务。在中间的输入框开始第一个。" : "No tasks yet. Start your first in the box in the center."}
             </p>
+          ) : (
+            RECENT_GROUPS.map((g) => {
+              const items = tasks.filter((tk) => groupOf(tk.ts) === g.key);
+              if (!items.length) return null;
+              return (
+                <div key={g.key}>
+                  <p className="ax-nav__label">{lang === "zh" ? g.zh : g.en}</p>
+                  {items.map((tk) => (
+                    <button
+                      key={tk.id}
+                      className={`ax-recent ${nav === "tasks" && activeId === tk.id ? "is-active" : ""}`}
+                      title={`${tk.title} · ${t(lang, `st_${tk.status}`)}`}
+                      onClick={() => {
+                        setNav("tasks");
+                        setActiveId(tk.id);
+                        setView("thread");
+                      }}
+                    >
+                      <span className="ax-recent__title">
+                        <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
+                        <b>{tk.title}</b>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              );
+            })
           )}
-          {RECENT_GROUPS.map((g) => {
-            const items = tasks.filter((tk) => groupOf(tk.ts) === g.key);
-            if (!items.length) return null;
-            return (
-              <div key={g.key}>
-                <p className="ax-nav__label">{lang === "zh" ? g.zh : g.en}</p>
-                {items.map((tk) => (
-                  <button
-                    key={tk.id}
-                    className={`ax-recent ${nav === "tasks" && activeId === tk.id ? "is-active" : ""}`}
-                    onClick={() => {
-                      setNav("tasks");
-                      setActiveId(tk.id);
-                      setView("thread");
-                    }}
-                  >
-                    <span className="ax-recent__title">
-                      <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
-                      <b>{tk.title}</b>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            );
-          })}
+        </div>
 
+        <div className="ax-side-tools">
           <p className="ax-nav__label">{lang === "zh" ? "工具" : "Tools"}</p>
           {NAV.filter((n) => n.key !== "tasks").map((n) => (
             <button
@@ -500,13 +569,23 @@ function App() {
       <main className="ax-main">
         <header className="ax-topbar">
           <div className="ax-crumb">
-            {status ? (
+            {nav === "tasks" && view === "thread" && activeTask ? (
+              <>
+                <span className={`ax-lamp ${activeTask.status === "done" ? "is-green" : activeTask.status === "running" ? "is-amber" : "is-neutral"}`} />
+                <span className="ax-proj__name" style={{ maxWidth: 380 }}>{activeTask.title}</span>
+              </>
+            ) : nav !== "tasks" ? (
+              <span>
+                {(() => {
+                  const n = NAV.find((x) => x.key === nav);
+                  return n ? (lang === "zh" ? n.zh : n.en) : lang === "zh" ? "通知" : "Notifications";
+                })()}
+              </span>
+            ) : status ? (
               <>
                 <span className={`ax-lamp ${status.chain_ok ? "is-green" : "is-amber"}`} />
                 {status.project_id}
-                <span className="ax-hint">
-                  · {t(lang, "events")} {status.event_count}
-                </span>
+                <span className="ax-hint">· {t(lang, "events")} {status.event_count}</span>
               </>
             ) : (
               <span className="ax-hint">{t(lang, "app_title")}</span>
@@ -617,7 +696,7 @@ function App() {
                         )}
                       </div>
 
-                      {busy && tk.status === "running" && (
+                      {tk.status === "running" && (
                         <div className="ax-progress">
                           <span>
                             {t(lang, "checking")}
@@ -669,6 +748,9 @@ function App() {
                     </>
                   );
                 })()}
+              {activeId && (
+                <div className="ax-thread__followup">{composerBlock()}</div>
+              )}
             </div>
           )}
         </div>
