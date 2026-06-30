@@ -341,9 +341,12 @@ impl Workbench {
                     // independently cross-checked — otherwise it is indistinguishable in
                     // the ledger from a clean non-bearing claim. fleet_cap_exceeded =
                     // the budget deselected it (other claims took the fleet);
-                    // cross_vendor_unavailable = the fleet couldn't run (no providers) or
-                    // every dispatched vendor failed. Non-bearing claims keep their
-                    // deterministic reason.
+                    // cross_vendor_unavailable = the fleet didn't run (no providers
+                    // connected) or this claim didn't complete (cancelled / dropped from
+                    // the batch). NOTE: an all-vendors-failed claim does NOT land here —
+                    // verify_bearing_claim still returns a FleetVerdict (empty judgements
+                    // → single_family_independence_unmet), so it routes through Some(fv).
+                    // Non-bearing claims keep their deterministic reason.
                     let reason = if r.claim.is_bearing {
                         let code = if plan.fleet_ran && !plan.fleet_planned.contains(&r.claim.id) {
                             "fleet_cap_exceeded"
