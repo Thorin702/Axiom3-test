@@ -51,10 +51,50 @@ export type ExportSummary = {
   chain_intact: boolean;
 };
 
-// A unit of work the platform runs. Today only check_draft actually executes; the other
-// types are declared so the workbench is task-oriented from the start (the dynamic-
-// workflow / multimodal / coding engine fills them in).
-export type TaskType = "check_draft" | "ppt" | "code" | "research";
+// ── Orchestration: the run_event stream from axiom-orchestrate ──────────────
+// Mirrors the Rust RunEventBody (serde tag = "kind"), flattened onto the envelope.
+export type RunEvent = { run_id: string; seq: number; ts: number } & (
+  | { kind: "run_started"; task_kind: string; title: string; cancellable: boolean }
+  | { kind: "plan_ready"; phases: string[]; planned_agents: number; notes: string[] }
+  | { kind: "phase_changed"; phase: string; index: number; total: number }
+  | { kind: "agent_spawned"; agent_id: string; role: string; model: string; vendor: string; phase: string }
+  | { kind: "agent_progress"; agent_id: string; step: number; tokens_in: number; tokens_out: number; note: string | null }
+  | { kind: "agent_finished"; agent_id: string; outcome: string; tokens_in: number; tokens_out: number; error: string | null; summary: string | null }
+  | { kind: "run_progress"; agents_done: number; agents_total: number; agents_running: number; agents_queued: number }
+  | { kind: "run_finished"; status: string; agents_total: number; agents_ok: number; agents_err: number; error: string | null }
+);
+
+export type AgentView = {
+  id: string;
+  role: string;
+  model: string;
+  vendor: string;
+  status: "running" | "ok" | "err" | "cancelled";
+  tokensIn: number;
+  tokensOut: number;
+  summary?: string;
+  error?: string;
+};
+export type RunView = {
+  id: string;
+  taskKind: string;
+  title: string;
+  status: "running" | "done" | "failed" | "cancelled";
+  phase: string;
+  phases: string[];
+  agents: AgentView[];
+  agentsTotal: number;
+  agentsDone: number;
+  tokensIn: number;
+  tokensOut: number;
+  startedMs: number;
+  finishedMs?: number;
+  error?: string;
+};
+
+// A unit of work the platform runs. Today check_draft + workflow execute; the others
+// are declared so the workbench is task-oriented from the start.
+export type TaskType = "check_draft" | "workflow" | "ppt" | "code" | "research";
 export type TaskStatus = "running" | "done" | "failed" | "cancelled";
 export type Task = {
   id: string;
@@ -63,5 +103,6 @@ export type Task = {
   status: TaskStatus;
   ts: number;
   result?: DraftCheck;
+  synthesis?: string; // workflow runs: the folded multi-agent output
   error?: string;
 };

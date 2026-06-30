@@ -43,6 +43,8 @@ pub fn run() {
             workbench::verify_chain,
             workbench::check_draft,
             workbench::cancel_check,
+            workbench::run_workflow,
+            workbench::cancel_run,
             workbench::import_document,
             workbench::vector_self_test,
             workbench::export_provenance,

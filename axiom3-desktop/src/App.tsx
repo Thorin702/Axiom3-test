@@ -17,10 +17,11 @@ import { ProvenanceView } from "./components/ProvenanceView";
 import { MetricsView } from "./components/MetricsView";
 import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
+import { ActivityRail } from "./components/ActivityRail";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
-  Command, Bell, type LucideIcon,
+  Command, Bell, PanelRight, type LucideIcon,
 } from "lucide-react";
 
 
@@ -57,7 +58,7 @@ const COMMANDS: SlashCmd[] = [
   { key: "debug", cat: "编程", zh: "调试", en: "debug", dzh: "定位 + 修复", den: "locate + fix", active: false },
   { key: "review", cat: "编程", zh: "审查", en: "review", dzh: "代码审查", den: "code review", active: false },
   // 编排 (orchestration)
-  { key: "workflow", cat: "编排", zh: "工作流", en: "workflow", dzh: "自定义动态多智能体工作流(任意任务)", den: "custom dynamic multi-agent workflow (any task)", active: false },
+  { key: "workflow", cat: "编排", zh: "工作流", en: "workflow", dzh: "自定义动态多智能体工作流(任意任务)", den: "custom dynamic multi-agent workflow (any task)", active: true },
 ];
 
 // Sidebar navigation — the platform's surfaces, grouped 工作 / 信任·证据 / 概览. Each routes
@@ -118,6 +119,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [nav, setNav] = useState<NavKey>("tasks");
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(localStorage.getItem("axiom3.rail") === "1");
 
   useEffect(() => {
     applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
@@ -280,6 +282,38 @@ function App() {
       const s = await run(() => invoke<ProjectStatus>("project_status"));
       if (s) setStatus(s);
     }
+  }
+
+  // Launch a dynamic multi-agent WORKFLOW run. The supervisor decomposes the goal,
+  // fans out sub-agents, and streams their lifecycle into the ActivityRail; we open the
+  // rail and record a task so its synthesized result is readable in the thread.
+  async function runWorkflow(goal: string) {
+    const g = goal.trim();
+    if (!g) return;
+    const proj = await ensureProject();
+    if (!proj) return;
+    const runid = `run-${Date.now()}`;
+    const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
+    setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now() }, ...ts]);
+    setActiveId(runid);
+    setNav("tasks");
+    setView("thread");
+    setCmd(null);
+    setSlash("");
+    setRailOpen(true);
+    localStorage.setItem("axiom3.rail", "1");
+    const r = await run<{ status: string; synthesis: string | null }>(() =>
+      invoke("run_workflow", { goal: g, runid })
+    );
+    setTasks((ts) =>
+      ts.map((x) =>
+        x.id === runid
+          ? r
+            ? { ...x, status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed", synthesis: r.synthesis ?? undefined }
+            : { ...x, status: "failed", error: "failed" }
+          : x
+      )
+    );
   }
 
   async function cancelCheck() {
@@ -470,6 +504,24 @@ function App() {
                   </div>
                 </details>
               </>
+            ) : cmd === "workflow" ? (
+              <>
+                <textarea
+                  className="ax-textarea"
+                  value={draft}
+                  onChange={(e) => setDraft(e.currentTarget.value)}
+                  rows={5}
+                  placeholder={lang === "zh" ? "描述目标,一支智能体队伍会被组建去完成它…" : "Describe a goal — a fleet of agents will be assembled to do it…"}
+                />
+                <div className="ax-toolrow">
+                  <button className="ax-btn ax-btn--primary" onClick={() => runWorkflow(draft)} disabled={busy || !draft.trim()}>
+                    {t(lang, "task_run")}
+                  </button>
+                  <span className="ax-hint">
+                    {lang === "zh" ? "多智能体 · 实时显示在右侧活动栏" : "multi-agent · streams to the activity rail"}
+                  </span>
+                </div>
+              </>
             ) : (
               <p className="ax-hint">{t(lang, "soon_note")}</p>
             )}
@@ -486,7 +538,7 @@ function App() {
       {paletteOpen && (
         <CommandPalette lang={lang} items={paletteItems} onPick={onPalettePick} onClose={() => setPaletteOpen(false)} />
       )}
-      <div className="ax-app">
+      <div className={`ax-app ${railOpen ? "has-rail" : ""}`}>
       <aside className="ax-sidebar">
         <div className="ax-brand" style={{ fontSize: 19 }}>Axiom3</div>
 
@@ -609,6 +661,18 @@ function App() {
             >
               <Bell size={16} aria-hidden />
             </button>
+            <button
+              className={`ax-iconbtn ${railOpen ? "is-active" : ""}`}
+              onClick={() => {
+                const next = !railOpen;
+                setRailOpen(next);
+                localStorage.setItem("axiom3.rail", next ? "1" : "0");
+              }}
+              title={lang === "zh" ? "活动栏" : "Activity"}
+              aria-label={lang === "zh" ? "活动栏" : "Activity"}
+            >
+              <PanelRight size={16} aria-hidden />
+            </button>
           </div>
         </header>
 
@@ -696,24 +760,39 @@ function App() {
                         )}
                       </div>
 
-                      {tk.status === "running" && (
-                        <div className="ax-progress">
-                          <span>
-                            {t(lang, "checking")}
-                            {progress ? ` ${progress.done}/${progress.total}` : ""}
-                          </span>
-                          {progress && progress.total > 0 && (
-                            <span className="ax-progress__bar">
-                              <span className="ax-progress__fill" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+                      {tk.status === "running" &&
+                        (tk.type === "workflow" ? (
+                          <div className="ax-progress">
+                            <span>{lang === "zh" ? "多智能体运行中 · 见右侧活动栏 →" : "agents running · see the activity rail →"}</span>
+                            <button className="ax-iconbtn" onClick={() => invoke("cancel_run", { runid: tk.id })} title={t(lang, "cancel")} aria-label={t(lang, "cancel")}>
+                              <X size={14} aria-hidden />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="ax-progress">
+                            <span>
+                              {t(lang, "checking")}
+                              {progress ? ` ${progress.done}/${progress.total}` : ""}
                             </span>
-                          )}
-                          <button className="ax-iconbtn" onClick={cancelCheck} title={t(lang, "cancel")} aria-label={t(lang, "cancel")}>
-                            <X size={14} aria-hidden />
-                          </button>
+                            {progress && progress.total > 0 && (
+                              <span className="ax-progress__bar">
+                                <span className="ax-progress__fill" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+                              </span>
+                            )}
+                            <button className="ax-iconbtn" onClick={cancelCheck} title={t(lang, "cancel")} aria-label={t(lang, "cancel")}>
+                              <X size={14} aria-hidden />
+                            </button>
+                          </div>
+                        ))}
+
+                      {tk.synthesis && (
+                        <div className="ax-synth">
+                          <p className="ax-block-label">{lang === "zh" ? "汇总结果" : "Synthesized result"}</p>
+                          <div className="ax-synth__body">{tk.synthesis}</div>
                         </div>
                       )}
 
-                      {!tk.result && tk.status !== "running" && (
+                      {!tk.result && !tk.synthesis && tk.status !== "running" && (
                         <p className="ax-hint" style={{ marginTop: 14 }}>
                           {tk.status === "cancelled"
                             ? lang === "zh" ? "任务已取消。" : "Task was cancelled."
@@ -755,6 +834,15 @@ function App() {
           )}
         </div>
       </main>
+      {railOpen && (
+        <ActivityRail
+          lang={lang}
+          onClose={() => {
+            setRailOpen(false);
+            localStorage.setItem("axiom3.rail", "0");
+          }}
+        />
+      )}
       </div>
     </>
   );

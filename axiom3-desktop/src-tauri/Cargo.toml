@@ -34,6 +34,8 @@ axiom-secrets = { path = "../../crates/axiom-secrets" }
 axiom-vector = { path = "../../crates/axiom-vector" }
 # Agent runtime: the model-verification fleet (cross-vendor) for bearing claims.
 axiom-runtime = { path = "../../crates/axiom-runtime" }
+# Dynamic multi-agent orchestration engine (workflow + coding). Free-form work tier.
+axiom-orchestrate = { path = "../../crates/axiom-orchestrate" }
 # Document text extraction (pdf / docx / txt-md) for upload-and-check.
 axiom-ingest = { path = "../../crates/axiom-ingest" }
 

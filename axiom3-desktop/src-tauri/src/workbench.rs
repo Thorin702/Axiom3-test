@@ -24,6 +24,11 @@ use axiom_runtime::litsearch::{LitSearch, Work};
 use axiom_runtime::plan::{plan_verification, PlanBudget, VerificationDepth};
 use axiom_runtime::supervisor::{run_batch, Cancel};
 use axiom_runtime::Provider;
+use axiom_orchestrate::events::{EventSink, RunEvent};
+use axiom_orchestrate::model::Run;
+use axiom_orchestrate::step::ProviderStep;
+use axiom_orchestrate::supervisor::LlmDecomposer;
+use axiom_orchestrate::{orchestrate, OrchestrateOptions};
 use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
 use axiom_vector::LanceStore;
@@ -666,6 +671,9 @@ pub struct AppState {
     /// SESSION DOI cache: a Crossref result per DOI, so a re-check (or the same DOI in
     /// several claims) isn't re-queried. Cleared on project close/switch.
     doi_cache: Mutex<HashMap<String, DoiStatus>>,
+    /// In-flight orchestration runs, keyed by run id → its cancel handle. Unlike the
+    /// single `cancel` check slot, MANY workflow runs can be live at once.
+    runs: Mutex<HashMap<String, Cancel>>,
 }
 
 impl AppState {
@@ -735,11 +743,46 @@ impl AppState {
             c.cancel();
         }
     }
-    /// True while a draft check is in flight (its cancel slot is reserved). Used to
-    /// refuse mutating provider keys mid-check — the fleet reads keys from the process
-    /// env concurrently, and a `set_var`/`getenv` overlap is a data race.
+    /// True while a draft check is in flight (its cancel slot is reserved).
     fn is_checking(&self) -> bool {
         self.cancel.lock().unwrap_or_else(|p| p.into_inner()).is_some()
+    }
+    /// True while ANY work (a check OR an orchestration run) reads provider keys from
+    /// the process env. Used to refuse mutating keys mid-work — a live `set_var` would
+    /// data-race those concurrent reads.
+    fn is_busy(&self) -> bool {
+        self.is_checking() || !self.runs.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
+    }
+    /// Reserve a run id in the registry. `None` if that id is already live. The guard
+    /// removes ONLY its own entry on drop (every exit path), so runs can't leak.
+    fn begin_run(&self, run_id: &str, c: Cancel) -> Option<RunGuard<'_>> {
+        let mut runs = self.runs.lock().unwrap_or_else(|p| p.into_inner());
+        if runs.contains_key(run_id) {
+            return None;
+        }
+        runs.insert(run_id.to_string(), c);
+        Some(RunGuard { state: self, run_id: run_id.to_string() })
+    }
+    fn clear_run(&self, run_id: &str) {
+        self.runs.lock().unwrap_or_else(|p| p.into_inner()).remove(run_id);
+    }
+    fn cancel_run(&self, run_id: &str) {
+        if let Some(c) = self.runs.lock().unwrap_or_else(|p| p.into_inner()).get(run_id) {
+            c.cancel();
+        }
+    }
+}
+
+/// RAII reservation of an orchestration run's slot in [`AppState::runs`]. Mirrors
+/// [`CheckGuard`]: dropping it (return / `?` / unwind) removes this run's entry.
+struct RunGuard<'a> {
+    state: &'a AppState,
+    run_id: String,
+}
+
+impl Drop for RunGuard<'_> {
+    fn drop(&mut self) {
+        self.state.clear_run(&self.run_id);
     }
 }
 
@@ -990,8 +1033,8 @@ pub fn provider_status() -> Vec<ProviderState> {
 /// into the Rig backend instead of via env — is a follow-up.)
 #[tauri::command]
 pub fn set_provider_key(state: tauri::State<'_, AppState>, provider: String, key: String) -> Result<(), String> {
-    if state.is_checking() {
-        return Err("a check is running — change keys after it finishes".into());
+    if state.is_busy() {
+        return Err("work is running — change keys after it finishes".into());
     }
     let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
     let key = key.trim();
@@ -1009,8 +1052,8 @@ pub fn set_provider_key(state: tauri::State<'_, AppState>, provider: String, key
 /// for the same data-race reason as [`set_provider_key`].
 #[tauri::command]
 pub fn delete_provider_key(state: tauri::State<'_, AppState>, provider: String) -> Result<(), String> {
-    if state.is_checking() {
-        return Err("a check is running — change keys after it finishes".into());
+    if state.is_busy() {
+        return Err("work is running — change keys after it finishes".into());
     }
     let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
     KeyringSecretStore::new(KEYCHAIN_SERVICE)
@@ -1423,6 +1466,76 @@ pub async fn check_draft(
 #[tauri::command]
 pub fn cancel_check(state: tauri::State<'_, AppState>) {
     state.cancel_current();
+}
+
+/// Bridge orchestration events onto the Tauri event bus. Every run streams its agent
+/// lifecycle over the single `run_event` channel; the frontend ActivityRail consumes it.
+struct TauriSink {
+    app: tauri::AppHandle,
+}
+impl EventSink for TauriSink {
+    fn emit(&self, ev: RunEvent) {
+        use tauri::Emitter;
+        let _ = self.app.emit("run_event", &ev);
+    }
+}
+
+/// Default model per provider for a workflow run's decomposer + synthesis.
+fn workflow_model_for(provider: &str) -> String {
+    match provider {
+        "deepseek" => "deepseek-v4-flash",
+        "qwen" | "dashscope" => "qwen-plus",
+        "anthropic" => "claude-haiku-4-5-20251001",
+        "openai" => "gpt-4o-mini",
+        "gemini" | "google" => "gemini-2.5-flash",
+        _ => "deepseek-v4-flash",
+    }
+    .to_string()
+}
+
+/// Run a dynamic multi-agent WORKFLOW: a supervisor decomposes the goal into sub-agents,
+/// runs them concurrently against the provider, streams each one's lifecycle on the
+/// `run_event` channel, and folds the outputs. The frontend supplies a fresh `runid` so
+/// it can correlate the live stream before this returns. Free-form work — NOT verdict-
+/// bound (the red line scopes only the checking features).
+#[tauri::command]
+pub async fn run_workflow(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    goal: String,
+    runid: String,
+    provider: Option<String>,
+) -> Result<Run, String> {
+    if goal.trim().is_empty() {
+        return Err("empty goal".into());
+    }
+    let provider = provider.unwrap_or_else(|| "deepseek".to_string());
+    if Provider::parse(&provider).is_none() {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let model = workflow_model_for(&provider);
+    let cancel = Cancel::new();
+    // Reserve the run slot (rejects a duplicate run id) for the whole run lifetime.
+    let _guard = state
+        .begin_run(&runid, cancel.clone())
+        .ok_or("a run with this id is already in flight")?;
+    let sink: Arc<dyn EventSink> = Arc::new(TauriSink { app: app.clone() });
+    let opts = OrchestrateOptions {
+        run_id: runid.clone(),
+        provider: provider.clone(),
+        model: model.clone(),
+        concurrency: 4,
+    };
+    let decomposer = LlmDecomposer { provider: provider.clone(), model: model.clone() };
+    let run = orchestrate(&goal, &opts, &decomposer, &ProviderStep, sink, &cancel).await;
+    Ok(run)
+}
+
+/// Cancel one orchestration run by id (cooperative — stops scheduling new agents; an
+/// in-flight provider call still finishes or hits its 45s timeout).
+#[tauri::command]
+pub fn cancel_run(state: tauri::State<'_, AppState>, runid: String) {
+    state.cancel_run(&runid);
 }
 
 /// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can
