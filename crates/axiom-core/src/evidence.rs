@@ -9,6 +9,8 @@
 
 use std::collections::HashMap;
 
+use crate::text::is_cjk;
+
 /// A retrievable chunk of a source document.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Passage {
@@ -266,13 +268,6 @@ fn tokenize(s: &str) -> Vec<String> {
     out
 }
 
-fn is_cjk(ch: char) -> bool {
-    matches!(ch as u32,
-        0x3040..=0x30FF |   // Hiragana + Katakana
-        0x3400..=0x4DBF |   // CJK Extension A
-        0x4E00..=0x9FFF |   // CJK Unified Ideographs
-        0xF900..=0xFAFF)    // CJK Compatibility Ideographs
-}
 
 const STOPWORDS: &[&str] = &[
     "the", "a", "an", "of", "to", "in", "is", "are", "was", "were", "and", "or",
