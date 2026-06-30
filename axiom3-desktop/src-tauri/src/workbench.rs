@@ -188,6 +188,19 @@ struct Combined<'a> {
     fleet: Option<FleetView>,
 }
 
+/// Content key for the session verdict cache (idempotency): a claim is identified by
+/// its TEXT plus the exact evidence it would be judged against, so changing either the
+/// claim or the references yields a fresh key (and thus a fresh verdict).
+fn verdict_key(text: &str, evidence: &[String]) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(text.as_bytes());
+    for e in evidence {
+        hasher.update(b"\x00");
+        hasher.update(e.as_bytes());
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
 /// What the auto-depth planner decided for this check — recorded so a bearing
 /// conclusion that was NOT cross-checked is honestly distinguishable in the audit from
 /// a clean deterministic claim (which it would otherwise look identical to).
@@ -513,6 +526,12 @@ pub struct AppState {
     cancel: Mutex<Option<(u64, Cancel)>>,
     /// Monotonic generation counter for cancel reservations.
     cancel_gen: std::sync::atomic::AtomicU64,
+    /// SESSION verdict cache (idempotency): keyed by a hash of the claim text + its
+    /// retrieved evidence, so an identical claim+evidence is fleet-verified ONCE per
+    /// session and a re-check after an unrelated edit reuses the verdict instead of
+    /// re-paying the fleet. In-memory and CLEARED on project close/switch — never
+    /// reused across sessions, so it can't surface a stale verdict.
+    verdict_cache: Mutex<HashMap<String, FleetVerdict>>,
 }
 
 impl AppState {
@@ -525,9 +544,22 @@ impl AppState {
     }
     fn set(&self, wb: Arc<Workbench>) {
         *self.current.lock().unwrap_or_else(|p| p.into_inner()) = Some(wb);
+        // Switching projects: drop the previous project's verdict cache so a verdict
+        // can never leak across projects.
+        self.cache_clear();
     }
     fn clear(&self) {
         *self.current.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        self.cache_clear();
+    }
+    fn cache_get(&self, key: &str) -> Option<FleetVerdict> {
+        self.verdict_cache.lock().unwrap_or_else(|p| p.into_inner()).get(key).cloned()
+    }
+    fn cache_put(&self, key: String, v: FleetVerdict) {
+        self.verdict_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(key, v);
+    }
+    fn cache_clear(&self) {
+        self.verdict_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
     fn current_id(&self) -> Option<String> {
         self.current
@@ -772,25 +804,68 @@ pub async fn check_draft(
         evidence_map = em;
         injected = inj;
 
-        let total = bearing.len();
-        let _ = app.emit("check_progress", serde_json::json!({ "done": 0, "total": total }));
-        let verdicts = run_batch(
-            bearing,
+        // 2b. IDEMPOTENCY (P4.4): an identical claim+evidence is fleet-verified ONCE.
+        //     Group the bearing claims by content key; reuse a session-cached verdict
+        //     where present; dispatch only the unique, uncached claims; then fan each
+        //     verdict back to EVERY claim_id that shares its key. This dedups duplicate
+        //     sentences (so identical claims get identical verdicts — ties off review
+        //     #21) and skips re-paying the fleet for unchanged claims on a re-check.
+        let fleet_size = members.len();
+        let mut key_to_ids: HashMap<String, Vec<String>> = HashMap::new();
+        let mut key_work: HashMap<String, (String, Vec<String>)> = HashMap::new();
+        for (id, text, ev) in bearing {
+            let key = verdict_key(&text, &ev);
+            key_to_ids.entry(key.clone()).or_default().push(id);
+            key_work.entry(key).or_insert((text, ev));
+        }
+        // Split unique claims into session-cache hits vs work to dispatch.
+        let mut key_verdicts: HashMap<String, FleetVerdict> = HashMap::new();
+        let mut to_dispatch: Vec<(String, String, Vec<String>)> = Vec::new();
+        for (key, (text, ev)) in key_work {
+            match state.cache_get(&key) {
+                Some(v) => {
+                    key_verdicts.insert(key, v);
+                }
+                None => to_dispatch.push((key, text, ev)),
+            }
+        }
+        let total = key_to_ids.len();
+        let cached_done = key_verdicts.len();
+        let _ = app.emit("check_progress", serde_json::json!({ "done": cached_done, "total": total }));
+        let fresh = run_batch(
+            to_dispatch,
             6,
             &cancel,
-            |(id, text, ev)| {
+            |(key, text, ev)| {
                 let members = members.clone();
                 async move {
                     let backend = MultiProviderRigBackend;
-                    (id, verify_bearing_claim(&text, &ev, &members, &backend).await)
+                    (key, verify_bearing_claim(&text, &ev, &members, &backend).await)
                 }
             },
-            |done, total| {
-                let _ = app.emit("check_progress", serde_json::json!({ "done": done, "total": total }));
+            |done, _batch_total| {
+                let _ = app
+                    .emit("check_progress", serde_json::json!({ "done": cached_done + done, "total": total }));
             },
         )
         .await;
-        fleet_verdicts.extend(verdicts);
+        // Memoize only COMPLETE verdicts (every fleet member weighed in) — a verdict
+        // missing a member (a transient failure dropped it) is not cached, so a
+        // re-check gives the absent vendor another chance.
+        for (key, v) in fresh {
+            if v.judgements.len() == fleet_size {
+                state.cache_put(key.clone(), v.clone());
+            }
+            key_verdicts.insert(key, v);
+        }
+        // Fan each unique verdict back to every claim_id that shares its content key.
+        for (key, ids) in key_to_ids {
+            if let Some(v) = key_verdicts.get(&key) {
+                for id in ids {
+                    fleet_verdicts.insert(id, v.clone());
+                }
+            }
+        }
     }
 
     // (`_check` clears the cancel reservation when this function returns.)
@@ -874,6 +949,33 @@ mod tests {
         let st = wb.status().unwrap();
         assert_eq!(st.event_count, 1, "event survived reopen");
         assert!(st.chain_ok);
+    }
+
+    #[test]
+    fn verdict_key_is_content_addressed() {
+        let a = verdict_key("claim X", &["e1".into(), "e2".into()]);
+        assert_eq!(a, verdict_key("claim X", &["e1".into(), "e2".into()]), "same input → same key");
+        assert_ne!(a, verdict_key("claim Y", &["e1".into(), "e2".into()]), "claim text matters");
+        assert_ne!(a, verdict_key("claim X", &["e1".into()]), "evidence matters");
+        // The NUL separator prevents a boundary collision (text+ev vs concatenation).
+        assert_ne!(verdict_key("ab", &["c".into()]), verdict_key("a", &["bc".into()]));
+    }
+
+    #[test]
+    fn session_verdict_cache_round_trips_and_clears() {
+        let state = AppState::default();
+        let v = FleetVerdict {
+            status: VerdictStatus::Verified,
+            independence: Independence::MultiFamily,
+            reason: "multi_family_supported".into(),
+            judgements: vec![],
+        };
+        assert!(state.cache_get("k").is_none());
+        state.cache_put("k".into(), v.clone());
+        assert_eq!(state.cache_get("k"), Some(v));
+        // Closing/switching a project drops the cache so a verdict can't leak across.
+        state.clear();
+        assert!(state.cache_get("k").is_none(), "cache cleared on project close/switch");
     }
 
     #[test]
