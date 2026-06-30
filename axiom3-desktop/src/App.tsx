@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t, verdictLabel, indepLabel, findingDesc, reasonLabel } from "./i18n";
 import "./App.css";
 
@@ -46,6 +46,14 @@ type DraftCheck = {
   flagged: number;
   fleet_verified: number;
   entries: ClaimEntry[];
+};
+
+type ExportSummary = {
+  path: string;
+  bytes: number;
+  claims: number;
+  event_seq: number;
+  chain_intact: boolean;
 };
 
 function statusColor(s: string): string {
@@ -168,6 +176,21 @@ function App() {
 
   async function cancelCheck() {
     await invoke("cancel_check");
+  }
+
+  async function exportProvenance() {
+    const path = await save({
+      defaultPath: `${name.trim() || "axiom3"}-provenance.json`,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    if (typeof path === "string") {
+      const r = await run(() => invoke<ExportSummary>("export_provenance", { path }));
+      if (r) {
+        note(
+          `${t(lang, "exported")}: ${r.path.split(/[/\\]/).pop()} · ${r.claims} ${t(lang, "claims")} · ${t(lang, r.chain_intact ? "chain_intact" : "chain_broken")}`
+        );
+      }
+    }
   }
 
   async function closeProject() {
@@ -356,12 +379,22 @@ function App() {
                     {check.fleet_verified} {t(lang, "cross_vendor_n")} · {t(lang, "event_no")} #
                     {check.event_seq}
                   </span>
-                  <button
-                    onClick={() => setNotableOnly(!notableOnly)}
-                    style={{ fontSize: 12, padding: "2px 8px" }}
-                  >
-                    {notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}
-                  </button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={exportProvenance}
+                      disabled={busy}
+                      title={t(lang, "export_provenance_hint")}
+                      style={{ fontSize: 12, padding: "2px 8px" }}
+                    >
+                      {t(lang, "export_provenance")}
+                    </button>
+                    <button
+                      onClick={() => setNotableOnly(!notableOnly)}
+                      style={{ fontSize: 12, padding: "2px 8px" }}
+                    >
+                      {notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}
+                    </button>
+                  </div>
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {check.entries

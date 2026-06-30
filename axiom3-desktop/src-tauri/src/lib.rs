@@ -41,6 +41,7 @@ pub fn run() {
             workbench::cancel_check,
             workbench::import_document,
             workbench::vector_self_test,
+            workbench::export_provenance,
             workbench::close_project,
         ])
         .run(tauri::generate_context!())
