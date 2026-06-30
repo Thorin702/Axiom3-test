@@ -31,41 +31,41 @@
    accent (Codex-family). Forced by [data-theme="dark"]; follows the OS otherwise. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ax-paper: #0F1110;
-    --ax-surface: #1A1D1C;
-    --ax-surface-2: #161918;
-    --ax-ink: #ECEDE8;
-    --ax-ink-soft: #A7AEAA;
-    --ax-ink-faint: #727976;
-    --ax-line: #2C302E;
-    --ax-line-soft: #232625;
+    --ax-paper: #0E0E0D;
+    --ax-surface: #1C1C1A;
+    --ax-surface-2: #131311;
+    --ax-ink: #ECECEA;
+    --ax-ink-soft: #9A9A96;
+    --ax-ink-faint: #6E6E6A;
+    --ax-line: #262624;
+    --ax-line-soft: #1A1A18;
     --ax-accent: #2DBF98;
-    --ax-accent-soft: #16302A;
+    --ax-accent-soft: #15302A;
     --ax-lamp-green: #3FBF87;
     --ax-lamp-amber: #E0AC4D;
-    --ax-lamp-neutral: #8A918D;
+    --ax-lamp-neutral: #6E6E6A;
     --ax-lamp-violet: #9B81C4;
     --ax-lamp-red: #DD6A5E;
-    --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px rgba(0, 0, 0, 0.45);
+    --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.55);
   }
 }
 :root[data-theme="dark"] {
-  --ax-paper: #0F1110;
-  --ax-surface: #1A1D1C;
-  --ax-surface-2: #161918;
-  --ax-ink: #ECEDE8;
-  --ax-ink-soft: #A7AEAA;
-  --ax-ink-faint: #727976;
-  --ax-line: #2C302E;
-  --ax-line-soft: #232625;
+  --ax-paper: #0E0E0D;
+  --ax-surface: #1C1C1A;
+  --ax-surface-2: #131311;
+  --ax-ink: #ECECEA;
+  --ax-ink-soft: #9A9A96;
+  --ax-ink-faint: #6E6E6A;
+  --ax-line: #262624;
+  --ax-line-soft: #1A1A18;
   --ax-accent: #2DBF98;
-  --ax-accent-soft: #16302A;
+  --ax-accent-soft: #15302A;
   --ax-lamp-green: #3FBF87;
   --ax-lamp-amber: #E0AC4D;
-  --ax-lamp-neutral: #8A918D;
+  --ax-lamp-neutral: #6E6E6A;
   --ax-lamp-violet: #9B81C4;
   --ax-lamp-red: #DD6A5E;
-  --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px rgba(0, 0, 0, 0.45);
+  --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.55);
 }
 
 /* ── status lamp (green=nothing flagged · amber=needs attention · never a truth mark) */
@@ -100,7 +100,7 @@
 }
 .ax-iconbtn:hover { border-color: var(--ax-line); background: var(--ax-surface-2); color: var(--ax-ink); }
 .ax-iconbtn:disabled { opacity: 0.45; cursor: default; }
-.ax-iconbtn.is-active { color: var(--ax-accent); background: var(--ax-accent-soft); border-color: transparent; }
+.ax-iconbtn.is-active { color: var(--ax-ink); background: var(--ax-surface-2); border-color: transparent; }
 
 /* ── results panel */
 .ax-results__head {
@@ -316,14 +316,14 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-composer { position: relative; margin-top: 8px; border: 1px solid var(--ax-line);
   border-radius: var(--ax-radius-lg); background: var(--ax-surface); padding: 6px 6px 4px;
   transition: border-color 0.15s ease, box-shadow 0.15s ease; }
-.ax-composer:focus-within { border-color: var(--ax-accent); box-shadow: var(--ax-focus); }
+.ax-composer:focus-within { border-color: var(--ax-ink-faint); }
 .ax-composer > .ax-textarea, .ax-composer > * > .ax-textarea { border: none; background: transparent; padding: 8px 9px; resize: none; }
 .ax-composer .ax-textarea:focus { box-shadow: none; border: none; }
 .ax-composer .ax-toolrow { padding: 2px 6px 2px; }
 .ax-send { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
-  border-radius: 50%; border: none; background: var(--ax-accent); color: #fff; cursor: pointer;
-  transition: filter 0.12s ease, background 0.12s ease; }
-.ax-send:hover:not(:disabled) { filter: brightness(1.08); }
+  border-radius: 50%; border: none; background: var(--ax-ink); color: var(--ax-paper); cursor: pointer;
+  transition: filter 0.12s ease, background 0.12s ease, opacity 0.12s ease; }
+.ax-send:hover:not(:disabled) { filter: brightness(0.9); }
 .ax-send:disabled { background: var(--ax-surface-2); color: var(--ax-ink-faint); cursor: default;
   box-shadow: inset 0 0 0 1px var(--ax-line); }
 .ax-composer details { padding: 0 4px; }
@@ -349,7 +349,7 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   border: none; background: transparent; border-radius: 8px; padding: 7px 9px; cursor: pointer;
   font-family: var(--ax-sans); font-size: 13.5px; color: var(--ax-ink-soft); position: relative; }
 .ax-nav__item:hover { background: var(--ax-surface-2); color: var(--ax-ink); }
-.ax-nav__item.is-active { background: var(--ax-accent-soft); color: var(--ax-accent); font-weight: 500; }
+.ax-nav__item.is-active { background: var(--ax-surface); color: var(--ax-ink); font-weight: 500; }
 .ax-nav__item.is-active::before { content: ""; position: absolute; left: -8px; top: 8px; bottom: 8px;
   width: 2.5px; border-radius: 2px; background: var(--ax-accent); }
 .ax-nav__item svg { flex-shrink: 0; opacity: 0.85; }
@@ -478,7 +478,7 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   border: 0.5px solid var(--ax-line); background: var(--ax-surface); color: var(--ax-ink);
   border-radius: 10px; padding: 9px 12px; cursor: pointer; font-family: var(--ax-sans);
   font-size: 13.5px; font-weight: 500; }
-.ax-side-new:hover { background: var(--ax-accent-soft); border-color: var(--ax-accent); color: var(--ax-accent); }
+.ax-side-new:hover { background: var(--ax-surface); border-color: var(--ax-ink-faint); }
 .ax-side-scroll { flex: 1; overflow-y: auto; margin: 0 -6px; padding: 2px 6px; display: flex; flex-direction: column; gap: 1px; min-height: 0; }
 .ax-recent { display: block; width: 100%; text-align: left; border: none; background: transparent;
   border-radius: 8px; padding: 7px 9px; cursor: pointer; font-family: var(--ax-sans); }
@@ -496,7 +496,7 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   background: var(--ax-surface); border-radius: var(--ax-radius); padding: 6px 12px; cursor: pointer;
   font-family: var(--ax-sans); font-size: 12.5px; color: var(--ax-ink-soft);
   transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease; }
-.ax-chip:hover { border-color: var(--ax-accent); color: var(--ax-accent); background: var(--ax-accent-soft); }
+.ax-chip:hover { border-color: var(--ax-ink-faint); color: var(--ax-ink); background: var(--ax-surface-2); }
 .ax-chip__d { color: var(--ax-ink-faint); }
 
 /* pinned tools group (kept out of the recents scroll) */
