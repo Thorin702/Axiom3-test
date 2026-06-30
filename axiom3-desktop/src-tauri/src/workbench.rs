@@ -460,8 +460,11 @@ fn vector_round_trip(dir: &Path) -> anyhow::Result<String> {
 #[derive(Default)]
 pub struct AppState {
     current: Mutex<Option<Arc<Workbench>>>,
-    /// The cancel handle of the in-flight draft check, if any.
-    cancel: Mutex<Option<Cancel>>,
+    /// The cancel handle of the in-flight draft check, tagged with a generation so a
+    /// finishing check only clears ITS OWN reservation (see [`CheckGuard`]).
+    cancel: Mutex<Option<(u64, Cancel)>>,
+    /// Monotonic generation counter for cancel reservations.
+    cancel_gen: std::sync::atomic::AtomicU64,
 }
 
 impl AppState {
@@ -485,16 +488,45 @@ impl AppState {
             .as_ref()
             .map(|w| w.id().to_string())
     }
-    fn set_cancel(&self, c: Cancel) {
-        *self.cancel.lock().unwrap_or_else(|p| p.into_inner()) = Some(c);
+    /// Reserve the single cancel slot for a draft check. Returns `None` if a check is
+    /// already in flight (RE-ENTRY GUARD — concurrent checks would otherwise clobber
+    /// each other's cancel handle). The returned guard clears ONLY its own reservation
+    /// on drop, so it can never wipe a later check's handle, and it clears on EVERY
+    /// exit path (success / error / panic) — no leaked stale handle.
+    fn begin_check(&self, c: Cancel) -> Option<CheckGuard<'_>> {
+        use std::sync::atomic::Ordering;
+        let mut slot = self.cancel.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.is_some() {
+            return None;
+        }
+        let gen = self.cancel_gen.fetch_add(1, Ordering::Relaxed);
+        *slot = Some((gen, c));
+        Some(CheckGuard { state: self, gen })
     }
-    fn clear_cancel(&self) {
-        *self.cancel.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    fn clear_check(&self, gen: u64) {
+        let mut slot = self.cancel.lock().unwrap_or_else(|p| p.into_inner());
+        if slot.as_ref().is_some_and(|(g, _)| *g == gen) {
+            *slot = None;
+        }
     }
     fn cancel_current(&self) {
-        if let Some(c) = self.cancel.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        if let Some((_, c)) = self.cancel.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             c.cancel();
         }
+    }
+}
+
+/// RAII reservation of [`AppState`]'s single cancel slot for one draft check. Dropping
+/// it (normal return, `?`, or unwind) clears the slot iff it still holds this check's
+/// generation — so a slow finisher can't clear a newer check's handle.
+struct CheckGuard<'a> {
+    state: &'a AppState,
+    gen: u64,
+}
+
+impl Drop for CheckGuard<'_> {
+    fn drop(&mut self) {
+        self.state.clear_check(self.gen);
     }
 }
 
@@ -609,7 +641,11 @@ pub async fn check_draft(
     use tauri::Emitter;
     let wb = state.get()?;
     let cancel = Cancel::new();
-    state.set_cancel(cancel.clone());
+    // Reserve the cancel slot; reject a concurrent check rather than clobber its
+    // handle. `_check` clears the reservation on EVERY exit (incl. error/panic).
+    let _check = state
+        .begin_check(cancel.clone())
+        .ok_or_else(|| "a draft check is already running".to_string())?;
 
     // 1. Deterministic tier (CPU) — off the async runtime.
     let reports = {
@@ -696,7 +732,7 @@ pub async fn check_draft(
         fleet_verdicts.extend(verdicts);
     }
 
-    state.clear_cancel();
+    // (`_check` clears the cancel reservation when this function returns.)
 
     // Only claims that were actually adjudicated (fleet-judged) or neutralized carry
     // evidence into the record — a claim skipped by cancellation must not appear to

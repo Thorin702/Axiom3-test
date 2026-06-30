@@ -5,10 +5,12 @@
 //! (many-agent) orchestration grows from: today it supervises the per-claim
 //! verification fleet; later it grows task graphs, budgets, and retries.
 
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures::stream::StreamExt;
+use futures::FutureExt;
 
 /// A shared cancel flag handed to a running job. Flipping it stops NEW work from
 /// being scheduled (in-flight tasks still finish). Cheap to clone (an `Arc`).
@@ -28,9 +30,16 @@ impl Cancel {
 }
 
 /// Run `task` over each item with up to `concurrency` futures in flight, calling
-/// `on_progress(done, total)` as each completes. Stops scheduling once `cancel`
-/// fires (in-flight tasks still finish). Returns the outputs that completed
-/// (≤ `items.len()` if cancelled).
+/// `on_progress(done, total)` as each settles. Returns the outputs that completed
+/// (≤ `items.len()`).
+///
+/// Robustness (the orchestration seam everything else runs on):
+/// - CANCEL is checked at each task's ENTRY (before its work begins) AND after each
+///   completion, so flipping `cancel` skips not-yet-started items immediately —
+///   in-flight tasks still finish (or hit their own timeout).
+/// - PANIC ISOLATION: a task that panics is caught and DROPPED (fail-closed — it
+///   contributes no output), instead of unwinding and destroying the whole batch.
+///   This is the isolation the workspace's `panic = unwind` profile exists to enable.
 pub async fn run_batch<I, T, F, Fut>(
     items: Vec<I>,
     concurrency: usize,
@@ -45,12 +54,22 @@ where
     let total = items.len();
     let mut out = Vec::with_capacity(total);
     let mut stream = futures::stream::iter(items)
-        .map(task)
+        .map(|item| async {
+            // Cancel checked at entry: a not-yet-started item short-circuits the
+            // moment cancel fires, without ever dispatching its (e.g. network) work.
+            if cancel.is_cancelled() {
+                return None;
+            }
+            // Isolate a panicking task so one bad item can't unwind the whole batch.
+            AssertUnwindSafe(task(item)).catch_unwind().await.ok()
+        })
         .buffer_unordered(concurrency.max(1));
     let mut done = 0;
     while let Some(result) = stream.next().await {
-        out.push(result);
         done += 1;
+        if let Some(v) = result {
+            out.push(v);
+        }
         on_progress(done, total);
         if cancel.is_cancelled() {
             break;
@@ -92,6 +111,27 @@ mod tests {
         cancel.cancel(); // pre-cancelled
         let out = run_batch(vec![1, 2, 3, 4, 5, 6], 1, &cancel, |x| async move { x }, |_, _| {}).await;
         assert!(out.len() < 6, "cancellation stopped the batch early: {}", out.len());
+    }
+
+    #[tokio::test]
+    async fn a_panicking_task_is_isolated_not_fatal() {
+        // One item panics; the batch must survive and return the others (fail-closed),
+        // not unwind and lose everything.
+        let cancel = Cancel::new();
+        let out = run_batch(
+            vec![1, 2, 3],
+            3,
+            &cancel,
+            |x| async move {
+                assert!(x != 2, "boom on 2");
+                x * 10
+            },
+            |_, _| {},
+        )
+        .await;
+        let mut sorted = out;
+        sorted.sort_unstable();
+        assert_eq!(sorted, vec![10, 30], "the panicking item is dropped, the rest survive");
     }
 
     #[tokio::test]
