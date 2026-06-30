@@ -14,6 +14,8 @@
 
 pub mod evidence;
 pub mod model;
+pub mod statcheck;
+pub mod stats;
 pub mod store;
 pub mod text;
 pub mod verify;

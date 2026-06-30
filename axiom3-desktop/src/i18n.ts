@@ -87,6 +87,7 @@ const CODE: Record<string, Pair> = {
   absolute_quantifier: { zh: "绝对量词", en: "absolute quantifier" },
   uncited_quantitative: { zh: "数值无引用", en: "uncited quantitative" },
   internal_conflict: { zh: "内部数值冲突", en: "internal numeric conflict" },
+  statcheck: { zh: "统计量重算与 p 值不一致", en: "p-value disagrees with the recomputed statistic" },
   multi_family_supported: { zh: "多厂商一致支持", en: "multi-family supported" },
   multi_family_refuted: { zh: "多厂商一致驳斥", en: "multi-family refuted" },
   cross_vendor_disagreement: { zh: "跨厂商分歧", en: "cross-vendor disagreement" },
@@ -121,6 +122,7 @@ const FINDING_DESC: Record<string, Pair> = {
   absolute_quantifier: { zh: "绝对量词,极少字面成立", en: "absolute quantifier — rarely literally true" },
   uncited_quantitative: { zh: "有数值却无引用", en: "a quantitative claim with no citation" },
   internal_conflict: { zh: "与他处数值冲突,请确认条件是否不同", en: "differs from a value stated elsewhere — confirm the conditions differ" },
+  statcheck: { zh: "重算的 p 值与报告值不符——请核对统计量/自由度/p 值", en: "the recomputed p-value disagrees with the reported one — check the statistic/df/p" },
 };
 
 export function findingDesc(lang: Lang, checker: string): string {

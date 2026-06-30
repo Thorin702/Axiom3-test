@@ -218,6 +218,8 @@ pub fn default_checkers() -> Vec<Box<dyn Checker>> {
         Box::new(AbsoluteQuantifierChecker),
         Box::new(UncitedQuantitativeChecker),
         Box::new(InternalNumericConflictChecker),
+        // Deterministic recompute (moat): statcheck — recompute reported p-values.
+        Box::new(crate::statcheck::StatcheckChecker),
     ]
 }
 
