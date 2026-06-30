@@ -611,6 +611,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "axiom-orchestrate"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "axiom-providers",
+ "axiom-runtime",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "axiom-providers"
 version = "0.0.0"
 dependencies = [

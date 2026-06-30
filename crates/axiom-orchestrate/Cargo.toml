@@ -1,0 +1,21 @@
+[package]
+name = "axiom-orchestrate"
+version = "0.0.0"
+edition = "2021"
+license = "MIT"
+description = "Axiom3 dynamic multi-agent orchestration engine (workflow + coding). Free-form work, never verdicts."
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+axiom-runtime = { path = "../axiom-runtime" }
+axiom-providers = { path = "../axiom-providers" }
+# RED-LINE FIREWALL: axiom-orchestrate MUST NOT depend on axiom-core (the verdict
+# types: VerdictStatus / Independence / adjudicate_fleet). This tier produces free-form
+# work and never judges truth. The dependency edge is intentionally absent; a CI grep
+# guards `use axiom_core` from creeping into this crate's source.
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
