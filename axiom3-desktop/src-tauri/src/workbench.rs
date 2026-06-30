@@ -14,7 +14,8 @@ use std::sync::{Arc, Mutex};
 
 use axiom_core::model::{new_id, Independence, Verdict, VerdictStatus, Verifier, VerifierKind};
 use axiom_core::store::{DurableStore, EventLog, VectorStore};
-use axiom_core::verify::{verify_draft, ClaimReport};
+use axiom_core::verify::{adjudicate, verify_draft, ClaimReport, Finding, FindingKind};
+use axiom_runtime::crossref::{Crossref, DoiStatus};
 use axiom_runtime::fleet::{verify_bearing_claim, FleetMember, FleetVerdict, MultiProviderRigBackend};
 use axiom_runtime::plan::{plan_verification, PlanBudget, VerificationDepth};
 use axiom_runtime::supervisor::{run_batch, Cancel};
@@ -206,6 +207,60 @@ fn verdict_key(text: &str, evidence: &[String]) -> String {
         put(e.as_bytes());
     }
     hasher.finalize().to_hex().to_string()
+}
+
+/// The DOI prefix up to the first `.` after the `/` — the part that survives the
+/// sentence splitter (which breaks "10.x/word.2020" at `word.2020`). Used to attach a
+/// whole-draft DOI's finding to the (possibly fragmented) claim that cites it.
+fn doi_anchor(doi: &str) -> &str {
+    if let Some(slash) = doi.find('/') {
+        if let Some(dot) = doi[slash..].find('.') {
+            return &doi[..slash + dot];
+        }
+    }
+    doi
+}
+
+/// Attach DOI findings to each claim that cites a problematic DOI, and re-adjudicate it.
+/// `dois` are the COMPLETE DOIs extracted from the whole draft (so the Crossref lookup
+/// is accurate even when the sentence splitter fragments a DOI); a claim is matched by
+/// the DOI's [`doi_anchor`]. DOI findings are Risk, so the claim stays Uncertain.
+fn apply_doi_findings(reports: &mut [ClaimReport], dois: &[String], statuses: &HashMap<String, DoiStatus>) {
+    for r in reports.iter_mut() {
+        let new: Vec<Finding> = dois
+            .iter()
+            .filter(|doi| r.claim.text.contains(doi_anchor(doi)))
+            .filter_map(|doi| doi_finding(doi, statuses.get(doi)))
+            .collect();
+        if new.is_empty() {
+            continue;
+        }
+        r.findings.extend(new);
+        let (status, reason) = adjudicate(&r.findings);
+        r.status = status;
+        r.reason = reason;
+    }
+}
+
+/// A Risk finding for a problematic cited DOI, or `None` for an Ok / unchecked one.
+/// Honest framing: `not_found` is "verify the citation", not "fabricated" (Crossref
+/// isn't exhaustive); `retracted` is the high-signal one.
+fn doi_finding(doi: &str, status: Option<&DoiStatus>) -> Option<Finding> {
+    match status {
+        Some(DoiStatus::Retracted) => Some(Finding {
+            checker: "doi_retracted",
+            kind: FindingKind::Risk,
+            message: format!("cited work {doi} carries a RETRACTION notice (Retraction Watch)"),
+            excerpt: Some(doi.to_string()),
+        }),
+        Some(DoiStatus::NotFound) => Some(Finding {
+            checker: "doi_not_found",
+            kind: FindingKind::Risk,
+            message: format!("DOI {doi} did not resolve in Crossref — verify the citation"),
+            excerpt: Some(doi.to_string()),
+        }),
+        _ => None, // Ok, or unchecked (offline / fail-closed) → no finding
+    }
 }
 
 /// What the auto-depth planner decided for this check — recorded so a bearing
@@ -539,6 +594,9 @@ pub struct AppState {
     /// re-paying the fleet. In-memory and CLEARED on project close/switch — never
     /// reused across sessions, so it can't surface a stale verdict.
     verdict_cache: Mutex<HashMap<String, FleetVerdict>>,
+    /// SESSION DOI cache: a Crossref result per DOI, so a re-check (or the same DOI in
+    /// several claims) isn't re-queried. Cleared on project close/switch.
+    doi_cache: Mutex<HashMap<String, DoiStatus>>,
 }
 
 impl AppState {
@@ -565,8 +623,15 @@ impl AppState {
     fn cache_put(&self, key: String, v: FleetVerdict) {
         self.verdict_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(key, v);
     }
+    fn doi_cache_get(&self, doi: &str) -> Option<DoiStatus> {
+        self.doi_cache.lock().unwrap_or_else(|p| p.into_inner()).get(doi).cloned()
+    }
+    fn doi_cache_put(&self, doi: String, s: DoiStatus) {
+        self.doi_cache.lock().unwrap_or_else(|p| p.into_inner()).insert(doi, s);
+    }
     fn cache_clear(&self) {
         self.verdict_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        self.doi_cache.lock().unwrap_or_else(|p| p.into_inner()).clear();
     }
     fn current_id(&self) -> Option<String> {
         self.current
@@ -734,8 +799,12 @@ pub async fn check_draft(
         .begin_check(cancel.clone())
         .ok_or_else(|| "a draft check is already running".to_string())?;
 
+    // Complete DOIs from the WHOLE draft — extracted before the splitter runs, so the
+    // Crossref lookup is accurate even when sentence-splitting fragments a DOI.
+    let draft_dois = axiom_core::doi::extract_dois(&draft);
+
     // 1. Deterministic tier (CPU) — off the async runtime.
-    let reports = {
+    let mut reports = {
         let wb = wb.clone();
         tauri::async_runtime::spawn_blocking(move || wb.deterministic_reports(&draft))
             .await
@@ -882,6 +951,46 @@ pub async fn check_draft(
     // have been "judged against" passages it never reached.
     evidence_map.retain(|k, _| fleet_verdicts.contains_key(k) || injected.contains(k));
 
+    // 2c. CITATION tier (network, P5.3b): verify each cited DOI against Crossref
+    //     (existence + Retraction Watch) and attach findings. Cached per session;
+    //     FAIL-CLOSED — a DOI we can't reach is simply not flagged (never a false "not
+    //     found"), and the deterministic tier never marks a claim OK on its own.
+    if !draft_dois.is_empty() {
+        let mut statuses: HashMap<String, DoiStatus> = HashMap::new();
+        let mut to_check: Vec<String> = Vec::new();
+        for doi in &draft_dois {
+            match state.doi_cache_get(doi) {
+                Some(s) => {
+                    statuses.insert(doi.clone(), s);
+                }
+                None => to_check.push(doi.clone()),
+            }
+        }
+        if !to_check.is_empty() {
+            let crossref = std::sync::Arc::new(Crossref::new());
+            let checked = run_batch(
+                to_check,
+                4, // be polite to Crossref's free pool
+                &cancel,
+                |doi| {
+                    let crossref = crossref.clone();
+                    async move { (doi.clone(), crossref.check(&doi).await) }
+                },
+                |_, _| {},
+            )
+            .await;
+            for (doi, res) in checked {
+                // Only DEFINITIVE results count; an error (offline/exhausted) is dropped
+                // — fail-closed, never cached, retried on the next check.
+                if let Ok(status) = res {
+                    state.doi_cache_put(doi.clone(), status.clone());
+                    statuses.insert(doi, status);
+                }
+            }
+        }
+        apply_doi_findings(&mut reports, &draft_dois, &statuses);
+    }
+
     // 3. Combine + atomically persist — off the async runtime.
     let wb2 = wb.clone();
     let plan = CheckPlan { fleet_planned, fleet_ran };
@@ -956,6 +1065,51 @@ mod tests {
         let st = wb.status().unwrap();
         assert_eq!(st.event_count, 1, "event survived reopen");
         assert!(st.chain_ok);
+    }
+
+    #[test]
+    fn doi_finding_maps_status_to_risk() {
+        assert!(doi_finding("10.1/x", Some(&DoiStatus::Ok)).is_none());
+        assert!(doi_finding("10.1/x", None).is_none(), "unchecked (offline) → no finding");
+        let ret = doi_finding("10.1/x", Some(&DoiStatus::Retracted)).unwrap();
+        assert_eq!(ret.checker, "doi_retracted");
+        assert_eq!(ret.kind, FindingKind::Risk, "deterministic/network tier stays Risk");
+        assert_eq!(ret.excerpt.as_deref(), Some("10.1/x"));
+        assert_eq!(
+            doi_finding("10.2/y", Some(&DoiStatus::NotFound)).unwrap().checker,
+            "doi_not_found"
+        );
+    }
+
+    #[test]
+    fn doi_anchor_survives_sentence_splitting() {
+        // A DOI with an internal "word.digit" splits; the anchor keeps the prefix.
+        assert_eq!(doi_anchor("10.1016/j.foo.2020.01.001"), "10.1016/j");
+        // No internal '.' in the suffix → the whole DOI is the anchor.
+        assert_eq!(doi_anchor("10.1038/nature12373"), "10.1038/nature12373");
+    }
+
+    #[test]
+    fn apply_doi_findings_flags_and_re_adjudicates() {
+        // The splitter fragments "retracted.2020", but the COMPLETE DOI comes from the
+        // whole draft and the anchor ("10.1016/retracted") matches the first fragment.
+        let mut reports =
+            verify_draft("p", "This result rests on 10.1016/retracted.2020 as support.");
+        let dois = vec!["10.1016/retracted.2020".to_string()];
+        let mut statuses = HashMap::new();
+        statuses.insert("10.1016/retracted.2020".to_string(), DoiStatus::Retracted);
+        apply_doi_findings(&mut reports, &dois, &statuses);
+        let flagged = reports
+            .iter()
+            .find(|r| r.findings.iter().any(|f| f.checker == "doi_retracted"))
+            .expect("the claim citing the retracted DOI is flagged");
+        // The deterministic+network tier never asserts: status stays Uncertain.
+        assert_eq!(flagged.status, VerdictStatus::Uncertain);
+        assert!(
+            flagged.reason.as_deref().unwrap().contains("doi_retracted"),
+            "reason reflects the retraction: {:?}",
+            flagged.reason
+        );
     }
 
     #[test]

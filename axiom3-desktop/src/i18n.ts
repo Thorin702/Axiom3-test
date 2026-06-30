@@ -88,6 +88,8 @@ const CODE: Record<string, Pair> = {
   uncited_quantitative: { zh: "数值无引用", en: "uncited quantitative" },
   internal_conflict: { zh: "内部数值冲突", en: "internal numeric conflict" },
   statcheck: { zh: "统计量重算与 p 值不一致", en: "p-value disagrees with the recomputed statistic" },
+  doi_retracted: { zh: "引文已撤稿", en: "citation retracted" },
+  doi_not_found: { zh: "DOI 未在 Crossref 找到", en: "DOI not found in Crossref" },
   multi_family_supported: { zh: "多厂商一致支持", en: "multi-family supported" },
   multi_family_refuted: { zh: "多厂商一致驳斥", en: "multi-family refuted" },
   cross_vendor_disagreement: { zh: "跨厂商分歧", en: "cross-vendor disagreement" },
@@ -123,6 +125,8 @@ const FINDING_DESC: Record<string, Pair> = {
   uncited_quantitative: { zh: "有数值却无引用", en: "a quantitative claim with no citation" },
   internal_conflict: { zh: "与他处数值冲突,请确认条件是否不同", en: "differs from a value stated elsewhere — confirm the conditions differ" },
   statcheck: { zh: "重算的 p 值与报告值不符——请核对统计量/自由度/p 值", en: "the recomputed p-value disagrees with the reported one — check the statistic/df/p" },
+  doi_retracted: { zh: "所引文献已被撤稿(Retraction Watch)", en: "the cited work has been RETRACTED (Retraction Watch)" },
+  doi_not_found: { zh: "该 DOI 在 Crossref 未解析——请核对引文", en: "this DOI did not resolve in Crossref — verify the citation" },
 };
 
 export function findingDesc(lang: Lang, checker: string): string {
