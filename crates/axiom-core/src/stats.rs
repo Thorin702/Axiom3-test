@@ -127,6 +127,86 @@ pub fn r_to_t(r: f64, df: f64) -> f64 {
     r * (df / denom).sqrt()
 }
 
+/// Lower regularized incomplete gamma `P(a, x)` via the series (good for `x < a+1`).
+fn gser(a: f64, x: f64) -> f64 {
+    let gln = ln_gamma(a);
+    let mut ap = a;
+    let mut sum = 1.0 / a;
+    let mut del = sum;
+    for _ in 0..300 {
+        ap += 1.0;
+        del *= x / ap;
+        sum += del;
+        if del.abs() < sum.abs() * 1e-15 {
+            break;
+        }
+    }
+    sum * (-x + a * x.ln() - gln).exp()
+}
+
+/// Upper regularized incomplete gamma `Q(a, x)` via the continued fraction (`x >= a+1`).
+fn gcf(a: f64, x: f64) -> f64 {
+    const FPMIN: f64 = 1.0e-300;
+    let gln = ln_gamma(a);
+    let mut b = x + 1.0 - a;
+    let mut c = 1.0 / FPMIN;
+    let mut d = 1.0 / b;
+    let mut h = d;
+    for i in 1..300 {
+        let an = -(i as f64) * (i as f64 - a);
+        b += 2.0;
+        d = an * d + b;
+        if d.abs() < FPMIN {
+            d = FPMIN;
+        }
+        c = b + an / c;
+        if c.abs() < FPMIN {
+            c = FPMIN;
+        }
+        d = 1.0 / d;
+        let del = d * c;
+        h *= del;
+        if (del - 1.0).abs() < 1e-15 {
+            break;
+        }
+    }
+    (-x + a * x.ln() - gln).exp() * h
+}
+
+/// Upper regularized incomplete gamma `Q(a, x) = P(X >= x)` for a Gamma(a). Both the
+/// chi-square and normal p-values reduce to this single primitive.
+fn gammq(a: f64, x: f64) -> f64 {
+    if x < 0.0 || a <= 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return 1.0;
+    }
+    if x < a + 1.0 {
+        1.0 - gser(a, x)
+    } else {
+        gcf(a, x)
+    }
+}
+
+/// Upper-tail p-value for a chi-square statistic with `df` degrees of freedom:
+/// `P(χ² >= x)`. Pearson/likelihood-ratio chi-square tests are upper-tailed.
+pub fn chi2_upper_p(chi2: f64, df: f64) -> f64 {
+    if chi2 < 0.0 || df <= 0.0 || !chi2.is_finite() {
+        return f64::NAN;
+    }
+    gammq(df / 2.0, chi2 / 2.0).clamp(0.0, 1.0)
+}
+
+/// Two-tailed p-value for a standard-normal z statistic: `P(|Z| >= |z|)`. Uses the
+/// identity `erfc(|z|/√2) = Q(1/2, z²/2)`.
+pub fn z_two_tailed_p(z: f64) -> f64 {
+    if !z.is_finite() {
+        return f64::NAN;
+    }
+    gammq(0.5, z * z / 2.0).clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +241,26 @@ mod tests {
         assert!(approx(f_upper_p(4.196, 1.0, 28.0), 0.05, 5e-4), "{}", f_upper_p(4.196, 1.0, 28.0));
         // F(2,27) critical for α=0.05 is 3.354 → p ≈ 0.05.
         assert!(approx(f_upper_p(3.354, 2.0, 27.0), 0.05, 5e-4), "{}", f_upper_p(3.354, 2.0, 27.0));
+    }
+
+    #[test]
+    fn chi_square_p_values_match_tables() {
+        // χ²(1) crit α=.05 is 3.841 → p ≈ .05; χ²(2)=5.991 → .05; χ²(10)=18.307 → .05.
+        assert!(approx(chi2_upper_p(3.841, 1.0), 0.05, 5e-4), "{}", chi2_upper_p(3.841, 1.0));
+        assert!(approx(chi2_upper_p(5.991, 2.0), 0.05, 5e-4), "{}", chi2_upper_p(5.991, 2.0));
+        assert!(approx(chi2_upper_p(18.307, 10.0), 0.05, 5e-4), "{}", chi2_upper_p(18.307, 10.0));
+        // χ²(2) at x=0 → p=1; large χ² → p→0.
+        assert!(approx(chi2_upper_p(0.0, 2.0), 1.0, 1e-9));
+        assert!(chi2_upper_p(50.0, 3.0) < 1e-6);
+    }
+
+    #[test]
+    fn normal_two_tailed_p_matches_tables() {
+        // z=1.96 → p≈.05; z=2.576 → .01; z=0 → 1; z=1.645 → .10.
+        assert!(approx(z_two_tailed_p(1.96), 0.05, 5e-4), "{}", z_two_tailed_p(1.96));
+        assert!(approx(z_two_tailed_p(2.576), 0.01, 5e-4), "{}", z_two_tailed_p(2.576));
+        assert!(approx(z_two_tailed_p(0.0), 1.0, 1e-9));
+        assert!(approx(z_two_tailed_p(1.645), 0.10, 1e-3), "{}", z_two_tailed_p(1.645));
     }
 
     #[test]
