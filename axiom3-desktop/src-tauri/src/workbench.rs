@@ -193,10 +193,17 @@ struct Combined<'a> {
 /// claim or the references yields a fresh key (and thus a fresh verdict).
 fn verdict_key(text: &str, evidence: &[String]) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(text.as_bytes());
+    // LENGTH-PREFIX each segment so the framing is unambiguous: distinct (text,
+    // evidence) tuples can never hash equal, even if a segment itself contains the
+    // bytes that would otherwise act as a separator.
+    let mut put = |bytes: &[u8]| {
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    };
+    put(text.as_bytes());
+    put(&(evidence.len() as u64).to_le_bytes());
     for e in evidence {
-        hasher.update(b"\x00");
-        hasher.update(e.as_bytes());
+        put(e.as_bytes());
     }
     hasher.finalize().to_hex().to_string()
 }
@@ -957,8 +964,11 @@ mod tests {
         assert_eq!(a, verdict_key("claim X", &["e1".into(), "e2".into()]), "same input → same key");
         assert_ne!(a, verdict_key("claim Y", &["e1".into(), "e2".into()]), "claim text matters");
         assert_ne!(a, verdict_key("claim X", &["e1".into()]), "evidence matters");
-        // The NUL separator prevents a boundary collision (text+ev vs concatenation).
+        // Length-prefix framing prevents boundary collisions, even with a separator
+        // byte INSIDE the text — distinct tuples never hash equal.
         assert_ne!(verdict_key("ab", &["c".into()]), verdict_key("a", &["bc".into()]));
+        assert_ne!(verdict_key("a\u{0}b", &[]), verdict_key("a", &["b".into()]));
+        assert_ne!(verdict_key("x", &["".into()]), verdict_key("x\u{0}", &[]));
     }
 
     #[test]
