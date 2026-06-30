@@ -74,6 +74,7 @@ export type AgentView = {
   tokensOut: number;
   summary?: string;
   error?: string;
+  steps: string[]; // live per-step notes (reasoning + tool action) — the streamed transcript
 };
 export type RunView = {
   id: string;

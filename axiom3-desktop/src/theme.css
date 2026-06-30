@@ -176,6 +176,25 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-app { display: grid; grid-template-columns: 258px 1fr; height: 100vh; overflow: hidden; }
 .ax-app.has-rail { grid-template-columns: 258px 1fr 360px; }
 
+/* ── boot splash ───────────────────────────────────────────────────── */
+.ax-splash { position: fixed; inset: 0; z-index: 100; background: var(--ax-paper);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  opacity: 1; transition: opacity 0.38s ease; }
+.ax-splash.is-leaving { opacity: 0; pointer-events: none; }
+.ax-splash__mark { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.ax-splash__word { font-family: var(--ax-serif); font-size: 40px; letter-spacing: 0.01em; color: var(--ax-ink);
+  opacity: 0; transform: translateY(6px); animation: ax-splash-rise 0.6s 0.05s ease forwards; }
+.ax-splash__scan { position: relative; width: 132px; height: 2px; border-radius: 2px;
+  background: var(--ax-line); overflow: hidden; }
+.ax-splash__scan span { position: absolute; top: 0; left: 0; height: 100%; width: 42%; border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--ax-accent), transparent);
+  animation: ax-splash-scan 1.05s 0.2s cubic-bezier(0.5, 0, 0.2, 1) infinite; }
+.ax-splash__tag { font-size: 12.5px; color: var(--ax-ink-faint); letter-spacing: 0.02em; margin: 0;
+  opacity: 0; animation: ax-splash-fade 0.6s 0.35s ease forwards; }
+@keyframes ax-splash-rise { to { opacity: 1; transform: translateY(0); } }
+@keyframes ax-splash-fade { to { opacity: 1; } }
+@keyframes ax-splash-scan { 0% { left: -42%; } 100% { left: 100%; } }
+
 .ax-sidebar {
   display: flex; flex-direction: column; gap: 16px;
   padding: 16px 14px;
@@ -406,6 +425,19 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-agent { display: flex; align-items: center; gap: 7px; font-size: 11.5px; }
 .ax-agent__role { color: var(--ax-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ax-agent__model { color: var(--ax-ink-faint); margin-left: auto; font-size: 10.5px; }
+.ax-runcard__exp { border: none; background: transparent; color: var(--ax-ink-faint); cursor: pointer; padding: 0; display: flex; align-items: center; }
+.ax-runcard__exp:hover { color: var(--ax-ink); }
+
+/* expandable per-run transcript (streamed reasoning + tool steps) */
+.ax-tr { border-top: 0.5px solid var(--ax-line-soft); padding-top: 8px; max-height: 300px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px; }
+.ax-tr__agent { display: flex; flex-direction: column; gap: 5px; }
+.ax-tr__role { font-size: 10.5px; color: var(--ax-ink-faint); font-weight: 600; letter-spacing: 0.03em; }
+.ax-tr__step { font-size: 11px; line-height: 1.5; color: var(--ax-ink-soft); white-space: pre-wrap; word-break: break-word;
+  border-left: 1.5px solid var(--ax-line); padding-left: 8px; }
+.ax-tr__sum { font-size: 11.5px; line-height: 1.55; color: var(--ax-ink); white-space: pre-wrap; word-break: break-word;
+  border-left: 1.5px solid var(--ax-accent); padding-left: 8px; }
+.ax-tr__err { font-size: 11px; color: #C25B4F; white-space: pre-wrap; }
 
 /* ── Claude-style task shell (sidebar recents + home composer) ─────── */
 .ax-side-new { display: flex; align-items: center; gap: 8px; width: 100%; justify-content: flex-start;

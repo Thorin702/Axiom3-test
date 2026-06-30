@@ -18,6 +18,7 @@ import { MetricsView } from "./components/MetricsView";
 import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { ActivityRail } from "./components/ActivityRail";
+import { Splash } from "./components/Splash";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
@@ -121,6 +122,7 @@ function App() {
   const [nav, setNav] = useState<NavKey>("tasks");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(localStorage.getItem("axiom3.rail") === "1");
+  const [booting, setBooting] = useState(true);
 
   useEffect(() => {
     applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
@@ -594,6 +596,7 @@ function App() {
 
   return (
     <>
+      {booting && <Splash lang={lang} onDone={() => setBooting(false)} />}
       {!onboarded && <OnboardingWizard lang={lang} onDone={() => setOnboarded(true)} />}
       {settingsOpen && <SettingsModal lang={lang} onLang={setLang} onClose={() => setSettingsOpen(false)} />}
       {paletteOpen && (

@@ -1597,12 +1597,18 @@ pub async fn coding_run(
     let model = ProviderModel { provider: provider.clone(), model: model_id, timeout_s: 90 };
     let budget = CodingBudget::default();
     let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &budget, |step| {
+        let think: String = step.reasoning.chars().take(600).collect();
+        let note = if think.is_empty() {
+            format!("{} {}", step.tool, step.detail)
+        } else {
+            format!("{think}\n→ {} {}", step.tool, step.detail)
+        };
         em.emit(RunEventBody::AgentProgress {
             agent_id: "coder".into(),
             step: step.n,
             tokens_in: 0,
             tokens_out: 0,
-            note: Some(format!("{} {}", step.tool, step.detail)),
+            note: Some(note),
         });
     })
     .await;

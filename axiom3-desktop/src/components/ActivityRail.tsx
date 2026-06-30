@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { X, Boxes, Square } from "lucide-react";
+import { X, Boxes, Square, ChevronRight, ChevronDown } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { RunEvent, RunView } from "../lib/types";
 
@@ -42,10 +42,14 @@ function applyEvent(runs: RunView[], ev: RunEvent): RunView[] {
     case "phase_changed": r.phase = ev.phase; break;
     case "agent_spawned":
       if (!r.agents.some((a) => a.id === ev.agent_id))
-        r.agents.push({ id: ev.agent_id, role: ev.role, model: ev.model, vendor: ev.vendor, status: "running", tokensIn: 0, tokensOut: 0 });
+        r.agents.push({ id: ev.agent_id, role: ev.role, model: ev.model, vendor: ev.vendor, status: "running", tokensIn: 0, tokensOut: 0, steps: [] });
       break;
     case "agent_progress":
-      r.agents = r.agents.map((a) => (a.id === ev.agent_id ? { ...a, tokensIn: ev.tokens_in, tokensOut: ev.tokens_out } : a));
+      r.agents = r.agents.map((a) =>
+        a.id === ev.agent_id
+          ? { ...a, tokensIn: ev.tokens_in, tokensOut: ev.tokens_out, steps: ev.note ? [...a.steps, ev.note] : a.steps }
+          : a
+      );
       break;
     case "agent_finished":
       r.agents = r.agents.map((a) =>
@@ -78,6 +82,7 @@ function lampOf(status: RunView["status"]): string {
 export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => void }) {
   const s = S[lang];
   const [runs, setRuns] = useState<RunView[]>([]);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -118,6 +123,9 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
             return (
               <div className="ax-runcard" key={r.id}>
                 <div className="ax-runcard__head">
+                  <button className="ax-runcard__exp" onClick={() => setOpen((o) => ({ ...o, [r.id]: !o[r.id] }))} aria-label="expand">
+                    {open[r.id] ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+                  </button>
                   <span className={`ax-lamp ${lampOf(r.status)}`} />
                   <span className="ax-runcard__title">{r.title}</span>
                   {r.status === "running" && (
@@ -155,6 +163,25 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                       </div>
                     ))}
                     {r.agents.length > 12 && <div className="ax-agent ax-hint">+{r.agents.length - 12}</div>}
+                  </div>
+                )}
+
+                {open[r.id] && (
+                  <div className="ax-tr">
+                    {r.agents.every((a) => a.steps.length === 0 && !a.summary) ? (
+                      <div className="ax-tr__step ax-hint">{lang === "zh" ? "(暂无步骤)" : "(no steps yet)"}</div>
+                    ) : (
+                      r.agents.map((a) => (
+                        <div className="ax-tr__agent" key={a.id}>
+                          {r.agents.length > 1 && <div className="ax-tr__role">{a.role} · {a.vendor}</div>}
+                          {a.steps.map((st, i) => (
+                            <div className="ax-tr__step" key={i}>{st}</div>
+                          ))}
+                          {a.summary && <div className="ax-tr__sum">{a.summary}</div>}
+                          {a.error && <div className="ax-tr__err">{a.error}</div>}
+                        </div>
+                      ))
+                    )}
                   </div>
                 )}
               </div>

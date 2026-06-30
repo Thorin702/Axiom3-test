@@ -29,6 +29,8 @@ pub struct CodingStepRec {
     pub tool: String,
     pub detail: String,
     pub observation: String,
+    /// The model's free-text reasoning around the action (its "thinking" this turn).
+    pub reasoning: String,
 }
 
 pub struct CodingResult {
@@ -118,7 +120,13 @@ pub async fn run_coding_agent(
             Ok(r) => r,
             Err(e) => return CodingResult { status: "failed".into(), summary: format!("model error: {e}"), steps: n - 1 },
         };
-        let action = extract_json(&reply).unwrap_or_else(|| reply.trim().to_string());
+        let json = extract_json(&reply);
+        // The model's reasoning = its reply minus the JSON action it chose this turn.
+        let reasoning = match &json {
+            Some(j) => reply.replacen(j, "", 1).trim().to_string(),
+            None => String::new(),
+        };
+        let action = json.unwrap_or_else(|| reply.trim().to_string());
         let v: Value = match serde_json::from_str(&action) {
             Ok(v) => v,
             Err(_) => return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n },
@@ -161,8 +169,9 @@ pub async fn run_coding_agent(
             other => (other.to_string(), format!("ERROR: unknown tool '{other}'")),
         };
         let obs = truncate(&observation, 4000);
-        on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone() });
-        transcript.push_str(&format!("\n--- step {n}: {tool} {detail} ---\n{obs}\n"));
+        on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone(), reasoning: reasoning.clone() });
+        let think = if reasoning.is_empty() { String::new() } else { format!("THINKING: {}\n", truncate(&reasoning, 500)) };
+        transcript.push_str(&format!("\n--- step {n}: {tool} {detail} ---\n{think}{obs}\n"));
     }
     CodingResult {
         status: "done".into(),
