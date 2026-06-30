@@ -13,6 +13,7 @@
 //!   `evidence_redacted` (RTBF) is a separate boolean, never a 6th status.
 
 pub mod doi;
+pub mod eval;
 pub mod evidence;
 pub mod model;
 pub mod statcheck;

@@ -126,13 +126,22 @@ fn split_sentences(draft: &str) -> Vec<String> {
 /// abbreviation (`Fig.`, `et al.`), an initial (`J.`), or `e.g.`/`i.e.`. Academic
 /// text is full of these and naive period-splitting shreds it.
 fn period_ends_sentence(chars: &[char], i: usize) -> bool {
-    // A decimal point: digit . digit.
-    if i > 0
-        && chars[i - 1].is_ascii_digit()
-        && i + 1 < chars.len()
-        && chars[i + 1].is_ascii_digit()
-    {
-        return false;
+    // A decimal point: a `.` immediately followed by a digit is the dot inside a
+    // number, NOT a sentence terminator — covering the classic `0.45` / `94.5%` AND a
+    // LEADING-dot value like `.001` / `p < .05` / `(.05)` (the dominant APA p-value
+    // notation) plus signed/negative values `r = -.30`, `+.45` and CI lists `[.01, .05]`.
+    // The ONE exception is a boundary an OCR/PDF extraction glued together with no space:
+    // `percent.80`, `94%.80%`. There the char before the dot ENDS a word or a
+    // number-with-unit — a Latin letter or `%` — so we let it split. Everything else
+    // before the dot (a digit, sign, comparator, paren, bracket, comma, space, or a CJK
+    // char as in `p值为.001`) means the dot opens/continues a number: keep it whole.
+    // Without this, the splitter shreds `p < .001` into `p < .`, blinding statcheck to
+    // the most common p-value notation; with too-broad a rule it shreds `r = -.30`.
+    if i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
+        let ends_word_or_unit = i > 0 && (chars[i - 1].is_ascii_alphabetic() || chars[i - 1] == '%');
+        if !ends_word_or_unit {
+            return false;
+        }
     }
     // The alphabetic run immediately before the period.
     let mut start = i;
@@ -821,6 +830,38 @@ mod tests {
         let claims = extract_claims("p", "The rate constant was 0.45 per second.");
         assert_eq!(claims.len(), 1);
         assert!(claims[0].text.contains("0.45"), "decimal kept intact: {:?}", claims[0].text);
+    }
+
+    #[test]
+    fn leading_dot_decimals_do_not_split_sentences() {
+        // APA p-values omit the leading zero (`.001`, `.05`); the dot must NOT be read
+        // as a sentence terminator, or statcheck never sees the number. A real break
+        // before a digit keeps its space (`. 2 failed`) and still splits.
+        let claims = extract_claims("p", "The effect held, t(28) = 2.50, p < .001.");
+        assert_eq!(claims.len(), 1, "{claims:#?}");
+        assert!(claims[0].text.contains(".001"), "leading-dot p kept intact: {:?}", claims[0].text);
+
+        let two = extract_claims("p", "We tested 3 groups. 2 of them failed.");
+        assert_eq!(two.len(), 2, "a real break before a spaced digit still splits: {two:#?}");
+
+        // A boundary an OCR/PDF extraction glued together (`word.digit`, `%.digit`)
+        // must STILL split — the leading-dot allowance only covers a dot that opens a
+        // numeric token (digit/space/comparator/paren before it), never a letter or %.
+        let glued = extract_claims("p", "Yield was 94 percent.80 percent was seen in controls.");
+        assert_eq!(glued.len(), 2, "glued word.digit boundary still splits: {glued:#?}");
+        let pct = extract_claims("p", "The efficiency reached 94%.80% was the control value.");
+        assert_eq!(pct.len(), 2, "glued %.digit boundary still splits: {pct:#?}");
+
+        // Signed / negative leading-dot decimals (common: negative correlations) and CI
+        // lists are numbers, not boundaries — the dot's predecessor opens a numeric token.
+        for s in [
+            "A negative link, r(48) = -.30, p < .01.",
+            "The change was +.45 units overall.",
+            "The 95% CI was [.01, .05] for the effect.",
+        ] {
+            let c = extract_claims("p", s);
+            assert_eq!(c.len(), 1, "signed/bracketed decimal kept whole: {s:?} -> {c:#?}");
+        }
     }
 
     #[test]
