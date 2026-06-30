@@ -126,12 +126,14 @@ fn split_sentences(draft: &str) -> Vec<String> {
 /// abbreviation (`Fig.`, `et al.`), an initial (`J.`), or `e.g.`/`i.e.`. Academic
 /// text is full of these and naive period-splitting shreds it.
 fn period_ends_sentence(chars: &[char], i: usize) -> bool {
-    // A decimal point: digit . digit.
-    if i > 0
-        && chars[i - 1].is_ascii_digit()
-        && i + 1 < chars.len()
-        && chars[i + 1].is_ascii_digit()
-    {
+    // A decimal point: a `.` IMMEDIATELY followed by a digit is the dot inside a
+    // number — both the usual `0.45` / `94.5%` and a LEADING-dot value like `.001`
+    // or `p < .05` (the dominant APA p-value notation, where the char before the dot
+    // is a space, not a digit). A genuine sentence break before a number has a space
+    // between them (`". 2 failed"`), so requiring the digit to be adjacent keeps this
+    // from swallowing real boundaries. Without this, the splitter shreds `p < .001`
+    // into `p < .`, blinding statcheck to the most common way p-values are reported.
+    if i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
         return false;
     }
     // The alphabetic run immediately before the period.
@@ -821,6 +823,19 @@ mod tests {
         let claims = extract_claims("p", "The rate constant was 0.45 per second.");
         assert_eq!(claims.len(), 1);
         assert!(claims[0].text.contains("0.45"), "decimal kept intact: {:?}", claims[0].text);
+    }
+
+    #[test]
+    fn leading_dot_decimals_do_not_split_sentences() {
+        // APA p-values omit the leading zero (`.001`, `.05`); the dot must NOT be read
+        // as a sentence terminator, or statcheck never sees the number. A real break
+        // before a digit keeps its space (`. 2 failed`) and still splits.
+        let claims = extract_claims("p", "The effect held, t(28) = 2.50, p < .001.");
+        assert_eq!(claims.len(), 1, "{claims:#?}");
+        assert!(claims[0].text.contains(".001"), "leading-dot p kept intact: {:?}", claims[0].text);
+
+        let two = extract_claims("p", "We tested 3 groups. 2 of them failed.");
+        assert_eq!(two.len(), 2, "a real break before a spaced digit still splits: {two:#?}");
     }
 
     #[test]
