@@ -37,6 +37,12 @@ const UI: Record<string, Pair> = {
   unchecked: { zh: "未校验", en: "unchecked" },
   show_all: { zh: "显示全部", en: "show all" },
   only_notable: { zh: "只看有结论/标记的", en: "only flagged/verdicted" },
+  export_provenance: { zh: "导出溯源", en: "Export provenance" },
+  export_provenance_hint: {
+    zh: "导出本次校对的可审计溯源记录(JSON):每条断言跑了哪些检查器、哪些独立厂商投票、依据哪些证据,并锚定到哈希链。",
+    en: "Export an auditable provenance record (JSON) for this check: which checkers ran per claim, which independent vendors voted, the grounding evidence — anchored to the hash chain.",
+  },
+  exported: { zh: "已导出", en: "exported" },
   checking: { zh: "校对中…", en: "checking…" },
   cancel: { zh: "取消", en: "cancel" },
   references_title: { zh: "参考来源(可选,裁决基于此)", en: "References (optional — verdicts are grounded in these)" },

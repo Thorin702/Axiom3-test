@@ -16,6 +16,7 @@ pub mod doi;
 pub mod eval;
 pub mod evidence;
 pub mod model;
+pub mod provenance;
 pub mod statcheck;
 pub mod stats;
 pub mod store;
