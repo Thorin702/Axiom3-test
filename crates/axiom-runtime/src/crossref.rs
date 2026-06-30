@@ -107,7 +107,9 @@ impl Crossref {
                 if !status.is_success() {
                     anyhow::bail!("crossref returned HTTP {}", status.as_u16());
                 }
-                let body: Value = resp.json().await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                // Bound the body before materializing it (defense against an over-size
+                // upstream response — same guard as the OpenAlex client).
+                let body = crate::http::json_bounded(resp).await?;
                 Ok(Some(body))
             }
         })
