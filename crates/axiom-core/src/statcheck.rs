@@ -12,7 +12,7 @@
 //! verify", not "this is false". The deterministic tier still emits only `Uncertain`.
 
 use crate::model::Claim;
-use crate::stats::{f_upper_p, r_to_t, t_two_tailed_p};
+use crate::stats::{chi2_upper_p, f_upper_p, r_to_t, t_two_tailed_p};
 use crate::verify::{Checker, DraftContext, Finding, FindingKind};
 
 /// A parsed null-hypothesis test report.
@@ -44,6 +44,7 @@ impl Checker for StatcheckChecker {
                     't' => t_two_tailed_p(n.stat, n.df1),
                     'F' => f_upper_p(n.stat, n.df1, n.df2),
                     'r' => t_two_tailed_p(r_to_t(n.stat, n.df1), n.df1),
+                    'c' => chi2_upper_p(n.stat, n.df1),
                     _ => return None,
                 };
                 if !recomputed.is_finite() {
@@ -72,7 +73,8 @@ const ALPHA: f64 = 0.05;
 /// NEITHER. A "decision FLIPS" message is reserved for the gross case where, even
 /// two-tailed, the significance verdict at .05 changes.
 fn inconsistency(n: &Nhst, p_two: f64) -> Option<String> {
-    let candidates = if n.kind == 'F' { [p_two, p_two] } else { [p_two, p_two / 2.0] };
+    // F and χ² are intrinsically one-tailed (upper); t/r have a one-tailed half.
+    let candidates = if matches!(n.kind, 'F' | 'c') { [p_two, p_two] } else { [p_two, p_two / 2.0] };
     if candidates.iter().any(|&p| satisfies(n, p)) {
         return None;
     }
@@ -118,6 +120,7 @@ fn decision_flips(reported: f64, recomputed: f64) -> bool {
 fn describe_test(n: &Nhst) -> String {
     match n.kind {
         'F' => format!("F({},{})={}", fmt_num(n.df1), fmt_num(n.df2), fmt_num(n.stat)),
+        'c' => format!("χ²({})={}", fmt_num(n.df1), fmt_num(n.stat)),
         k => format!("{k}({})={}", fmt_num(n.df1), fmt_num(n.stat)),
     }
 }
@@ -144,7 +147,10 @@ fn fmt_p(p: f64) -> String {
 /// range where the incomplete beta is accurate.
 const MAX_DF: f64 = 1.0e7;
 
-/// Parse every reported NHST test in `text`.
+/// Parse every reported NHST test in `text`. Supports the parens-delimited tests
+/// t/F/r and chi-square (kind `'c'`); a bare `z` is intentionally NOT parsed — a
+/// lone `z =` is a false-positive magnet (z-coordinates, variables) and needs a
+/// dedicated guard before it's safe to add.
 fn parse_nhst(text: &str) -> Vec<Nhst> {
     let c: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
@@ -153,11 +159,18 @@ fn parse_nhst(text: &str) -> Vec<Nhst> {
         // A test symbol must stand alone: preceded by a non-ALPHANUMERIC, so neither
         // "first(" (letter before) nor "3r(" (digit before) matches.
         let prev_is_alnum = i > 0 && c[i - 1].is_alphanumeric();
-        if !prev_is_alnum && matches!(c[i], 't' | 'F' | 'r') && c.get(i + 1) == Some(&'(') {
-            if let Some((nhst, next)) = parse_one(&c, i) {
-                out.push(nhst);
-                i = next;
-                continue;
+        if !prev_is_alnum {
+            let test = if matches!(c[i], 't' | 'F' | 'r') && c.get(i + 1) == Some(&'(') {
+                Some((c[i], i + 1)) // (kind, index of '(')
+            } else {
+                chi2_paren(&c, i).map(|paren| ('c', paren))
+            };
+            if let Some((kind, paren)) = test {
+                if let Some((nhst, next)) = parse_paren_test(&c, i, kind, paren) {
+                    out.push(nhst);
+                    i = next;
+                    continue;
+                }
             }
         }
         i += 1;
@@ -165,10 +178,33 @@ fn parse_nhst(text: &str) -> Vec<Nhst> {
     out
 }
 
-/// Parse a single test starting at the symbol index `start` (`c[start]` ∈ t/F/r).
-fn parse_one(c: &[char], start: usize) -> Option<(Nhst, usize)> {
-    let kind = c[start];
-    let mut i = start + 2; // past "t("
+/// If a chi-square symbol starts at `i`, return the index of its `(`. Recognises the
+/// Unicode `χ`(`²`/`2`) and the ASCII forms `chi2`/`chisq`/`chi-square(d)`/`chi square`.
+fn chi2_paren(c: &[char], i: usize) -> Option<usize> {
+    if c[i] == 'χ' {
+        let mut j = i + 1;
+        if matches!(c.get(j), Some('2') | Some('²')) {
+            j += 1;
+        }
+        return (c.get(j) == Some(&'(')).then_some(j);
+    }
+    for form in ["chi-squared", "chi-square", "chi square", "chisquare", "chisq", "chi2"] {
+        let fc: Vec<char> = form.chars().collect();
+        let end = i + fc.len();
+        if end < c.len()
+            && c[i..end].iter().zip(&fc).all(|(a, b)| a.to_ascii_lowercase() == *b)
+            && c.get(end) == Some(&'(')
+        {
+            return Some(end);
+        }
+    }
+    None
+}
+
+/// Parse a single parens-delimited test. `start` is the symbol index; `kind` ∈
+/// t/F/r/c; `paren` is the index of the opening `(`.
+fn parse_paren_test(c: &[char], start: usize, kind: char, paren: usize) -> Option<(Nhst, usize)> {
+    let mut i = paren + 1; // past '('
     let (df1, _, after) = read_num(c, i)?;
     if !(1.0..=MAX_DF).contains(&df1) {
         return None; // not a plausible df (citation year, index, glitch)
@@ -396,6 +432,26 @@ mod tests {
         // PDF-extracted text uses tabs/newlines as whitespace — a real test there must
         // still be checked (under-detection, not a false positive, but cheap to close).
         assert!(!flags("t(28)\t=\t2.05,\tp\t=\t.50").is_empty(), "tab-separated test is checked");
+    }
+
+    #[test]
+    fn chi_square_is_parsed_and_checked() {
+        // Unicode and ASCII forms both parse, with one df.
+        let p = parse_nhst("χ²(1) = 3.84, p = .05 and chi-square(2) = 5.99, p = .05");
+        assert_eq!(p.len(), 2, "{p:#?}");
+        assert_eq!(p[0].kind, 'c');
+        assert_eq!(p[0].df1, 1.0);
+        assert_eq!(p[1].kind, 'c');
+        assert_eq!(p[1].df1, 2.0);
+        // χ²(1)=3.84 → p≈.0500 → consistent.
+        assert!(flags("The association held, χ²(1) = 3.84, p = .05.").is_empty());
+        // chi2(2)=5.99 → p≈.0501 reported as p=.80 → inconsistent.
+        let f = flags("chi2(2) = 5.99, p = .80.");
+        assert_eq!(f.len(), 1, "{f:#?}");
+        assert!(f[0].message.contains("χ²(2)"), "{}", f[0].message);
+        assert_eq!(f[0].kind, FindingKind::Risk);
+        // A bare "z = …" must NOT parse (intentionally unsupported, false-positive risk).
+        assert!(parse_nhst("the coordinate z = 2.0, p = .04").is_empty());
     }
 
     #[test]
