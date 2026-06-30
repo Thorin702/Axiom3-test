@@ -2,67 +2,13 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { Lang, t, verdictLabel, indepLabel, findingDesc, reasonLabel } from "./i18n";
+import { Lang, t } from "./i18n";
 import "./App.css";
+import "./theme.css";
+import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary } from "./lib/types";
+import { ClaimDossier } from "./components/ClaimDossier";
+import { Download, ListFilter } from "lucide-react";
 
-type ProjectStatus = {
-  project_id: string;
-  root: string;
-  event_count: number;
-  chain_head: string | null;
-  chain_ok: boolean;
-};
-
-type EventInfo = {
-  seq: number;
-  ts: number;
-  actor: string;
-  op: string;
-  entry_hash: string;
-};
-
-type FindingView = { checker: string; message: string; excerpt: string | null };
-type VendorView = { family: string; model: string; status: string; reasoning: string };
-type FleetView = {
-  status: string;
-  independence: string;
-  reason: string;
-  vendors: VendorView[];
-};
-type ClaimEntry = {
-  claim_id: string;
-  text: string;
-  claim_type: string;
-  is_bearing: boolean;
-  status: string;
-  reason: string | null;
-  findings: FindingView[];
-  fleet: FleetView | null;
-  evidence: string[];
-};
-type DraftCheck = {
-  event_seq: number;
-  total: number;
-  flagged: number;
-  fleet_verified: number;
-  entries: ClaimEntry[];
-};
-
-type ExportSummary = {
-  path: string;
-  bytes: number;
-  claims: number;
-  event_seq: number;
-  chain_intact: boolean;
-};
-
-function statusColor(s: string): string {
-  if (s === "verified") return "var(--text-success, green)";
-  if (s === "refuted") return "var(--text-danger, crimson)";
-  if (s === "uncertain") return "#b8860b";
-  if (s === "injection_neutralized" || s === "quarantined") return "#7b2fbe";
-  return "gray";
-}
 
 function App() {
   const [lang, setLangState] = useState<Lang>(
@@ -202,15 +148,6 @@ function App() {
 
   // A clean claim (no deterministic flag, no fleet verdict) is "unchecked" — shown
   // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
-  function entryStatus(e: ClaimEntry): { label: string; color: string } {
-    if (e.fleet) return { label: verdictLabel(lang, e.status), color: statusColor(e.status) };
-    // A neutralized injection is a terminal verdict in its own right (no fleet ran).
-    if (e.status === "injection_neutralized")
-      return { label: verdictLabel(lang, e.status), color: statusColor(e.status) };
-    if (e.findings.length > 0)
-      return { label: verdictLabel(lang, "uncertain"), color: statusColor("uncertain") };
-    return { label: t(lang, "unchecked"), color: "gray" };
-  }
 
   return (
     <main className="container" style={{ maxWidth: 720, textAlign: "left" }}>
@@ -364,132 +301,49 @@ function App() {
             )}
 
             {check && (
-              <div style={{ marginTop: 12 }}>
-                <div
-                  style={{
-                    fontSize: 13,
-                    marginBottom: 8,
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <span>
-                    {check.total} {t(lang, "claims")} · <b>{check.flagged} {t(lang, "flagged")}</b> ·{" "}
-                    {check.fleet_verified} {t(lang, "cross_vendor_n")} · {t(lang, "event_no")} #
-                    {check.event_seq}
-                  </span>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <button
-                      onClick={exportProvenance}
-                      disabled={busy}
-                      title={t(lang, "export_provenance_hint")}
-                      style={{ fontSize: 12, padding: "2px 8px" }}
-                    >
-                      {t(lang, "export_provenance")}
-                    </button>
-                    <button
-                      onClick={() => setNotableOnly(!notableOnly)}
-                      style={{ fontSize: 12, padding: "2px 8px" }}
-                    >
-                      {notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}
-                    </button>
-                  </div>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {check.entries
-                    .filter(
-                      (e) =>
-                        !notableOnly ||
-                        e.findings.length > 0 ||
-                        e.fleet ||
-                        e.status === "injection_neutralized" ||
-                        // A bearing conclusion that lost the fleet budget is notable —
-                        // an unverified conclusion the user should see (won't flood: only
-                        // the over-cap overflow, not the no-providers case).
-                        e.reason?.includes("fleet_cap_exceeded")
-                    )
-                    .map((e) => {
-                      const st = entryStatus(e);
-                      return (
-                        <div
-                          key={e.claim_id}
-                          style={{
-                            border: "0.5px solid #8884",
-                            borderLeft: `3px solid ${st.color}`,
-                            borderRadius: 6,
-                            padding: "8px 10px",
-                          }}
-                        >
-                          <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-                            <span style={{ fontSize: 11, color: st.color, minWidth: 56 }}>{st.label}</span>
-                            <span style={{ fontSize: 14 }}>{e.text}</span>
-                          </div>
-                          {/* Why the verdict landed where it did — the grounded direction
-                              for fleet-judged claims, and for a BEARING conclusion the
-                              honest reason it was (or wasn't) cross-checked (budget /
-                              unavailable). Not shown for clean non-bearing claims. */}
-                          {e.reason &&
-                            (e.fleet || e.is_bearing || e.status === "injection_neutralized") &&
-                            e.reason !== "clean_pending" && (
-                              <div style={{ margin: "4px 0 0 64px", fontSize: 12, opacity: 0.85, color: st.color }}>
-                                {reasonLabel(lang, e.reason)}
-                              </div>
-                            )}
-                          {e.findings.length > 0 && (
-                            <ul style={{ margin: "6px 0 0 64px", fontSize: 12, color: "#a05a00" }}>
-                              {e.findings.map((f, i) => (
-                                <li key={i}>
-                                  {findingDesc(lang, f.checker)}
-                                  {f.excerpt ? ` 「${f.excerpt}」` : ""}
-                                </li>
-                              ))}
-                            </ul>
-                          )}
-                          {e.fleet && (
-                            <div style={{ margin: "6px 0 0 64px", fontSize: 12 }}>
-                              <div style={{ opacity: 0.7, marginBottom: 2 }}>
-                                {t(lang, "cross_vendor")}({indepLabel(lang, e.fleet.independence)})
-                              </div>
-                              {e.fleet.vendors.map((v, i) => (
-                                <div key={i} style={{ marginBottom: 2 }}>
-                                  {v.family}/{v.model}{" "}
-                                  <b style={{ color: statusColor(v.status) }}>
-                                    {verdictLabel(lang, v.status)}
-                                  </b>
-                                  {v.reasoning ? (
-                                    <span style={{ opacity: 0.7 }}> — {v.reasoning}</span>
-                                  ) : null}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                          {e.evidence.length > 0 &&
-                            (e.fleet || e.status === "injection_neutralized") && (
-                            <div style={{ margin: "6px 0 0 64px", fontSize: 12 }}>
-                              <div style={{ opacity: 0.7, marginBottom: 2 }}>
-                                {t(
-                                  lang,
-                                  e.status === "injection_neutralized"
-                                    ? "injection_evidence_label"
-                                    : "evidence_label"
-                                )}
-                              </div>
-                              <ol style={{ margin: 0, paddingLeft: 18, opacity: 0.85 }}>
-                                {e.evidence.map((p, i) => (
-                                  <li key={i} style={{ marginBottom: 2 }}>
-                                    {p}
-                                  </li>
-                                ))}
-                              </ol>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+            <div style={{ marginTop: 16 }}>
+              <div className="ax-results__head">
+                <span className="ax-results__meta">
+                  {check.total} {t(lang, "claims")} · {check.flagged} {t(lang, "flagged")} ·{" "}
+                  {check.fleet_verified} {t(lang, "cross_vendor_n")}
+                </span>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <button
+                    className="ax-iconbtn"
+                    onClick={exportProvenance}
+                    disabled={busy}
+                    title={t(lang, "export_provenance")}
+                    aria-label={t(lang, "export_provenance")}
+                  >
+                    <Download size={16} aria-hidden />
+                  </button>
+                  <button
+                    className="ax-iconbtn"
+                    onClick={() => setNotableOnly(!notableOnly)}
+                    title={notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}
+                    aria-label={notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}
+                  >
+                    <ListFilter size={16} aria-hidden />
+                  </button>
                 </div>
               </div>
-            )}
+              <p className="ax-philosophy">{t(lang, "results_philosophy")}</p>
+              <div className="ax-results__list" style={{ marginTop: 10 }}>
+                {check.entries
+                  .filter(
+                    (e) =>
+                      !notableOnly ||
+                      e.findings.length > 0 ||
+                      e.fleet ||
+                      e.status === "injection_neutralized" ||
+                      e.reason?.includes("fleet_cap_exceeded")
+                  )
+                  .map((e) => (
+                    <ClaimDossier key={e.claim_id} entry={e} lang={lang} />
+                  ))}
+              </div>
+            </div>
+          )}
           </section>
         </>
       )}

@@ -1,0 +1,149 @@
+/* Axiom3 design tokens — editorial / publication aesthetic.
+   Cold-paper deep-ink + oxidized-copper-green accent; serif "voice" for claims.
+   Light by default; auto-adapts to dark (a Settings theme override comes later). */
+:root {
+  --ax-paper: #F4F4F0;
+  --ax-surface: #FCFCFA;
+  --ax-surface-2: #F6F6F1;
+  --ax-ink: #23282B;
+  --ax-ink-soft: #586065;
+  --ax-ink-faint: #8C9499;
+  --ax-line: #E1E0D7;
+  --ax-line-soft: #ECEBE3;
+  --ax-accent: #3F7E6C;
+  --ax-accent-soft: #E7F0EC;
+  --ax-lamp-green: #4F9D77;
+  --ax-lamp-amber: #C2922F;
+  --ax-lamp-neutral: #AAB0B3;
+  --ax-lamp-violet: #7B5EA7;
+  --ax-radius: 10px;
+  --ax-serif: "Source Han Serif SC", "Songti SC", "Noto Serif CJK SC", Georgia, "Times New Roman", serif;
+  --ax-sans: "Inter", -apple-system, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ax-paper: #1A1D1E;
+    --ax-surface: #232728;
+    --ax-surface-2: #1F2324;
+    --ax-ink: #E8E7DF;
+    --ax-ink-soft: #AEB4B6;
+    --ax-ink-faint: #7E868A;
+    --ax-line: #343A3C;
+    --ax-line-soft: #2A2F30;
+    --ax-accent: #6FB3A0;
+    --ax-accent-soft: #21302C;
+    --ax-lamp-green: #5FB088;
+    --ax-lamp-amber: #D2A24A;
+    --ax-lamp-neutral: #7E868A;
+    --ax-lamp-violet: #9B81C4;
+  }
+}
+
+/* ── status lamp (green=nothing flagged · amber=needs attention · never a truth mark) */
+.ax-lamp {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--ax-lamp-neutral);
+}
+.ax-lamp.is-green { background: var(--ax-lamp-green); }
+.ax-lamp.is-amber { background: var(--ax-lamp-amber); }
+.ax-lamp.is-neutral { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ax-lamp-neutral); }
+.ax-lamp.is-violet { background: var(--ax-lamp-violet); }
+
+/* ── icon button: bare, name-on-hover (global convention) */
+.ax-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border: 0.5px solid transparent;
+  border-radius: var(--ax-radius);
+  background: transparent;
+  color: var(--ax-ink-soft);
+  cursor: pointer;
+  font-size: 13px;
+  font-family: var(--ax-sans);
+}
+.ax-iconbtn:hover { border-color: var(--ax-line); background: var(--ax-surface-2); color: var(--ax-ink); }
+.ax-iconbtn:disabled { opacity: 0.45; cursor: default; }
+
+/* ── results panel */
+.ax-results__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.ax-results__meta { font-size: 13px; color: var(--ax-ink-soft); }
+.ax-philosophy {
+  font-family: var(--ax-serif);
+  font-style: italic;
+  font-size: 13px;
+  color: var(--ax-ink-faint);
+}
+.ax-results__list { display: flex; flex-direction: column; gap: 10px; }
+
+/* ── claim dossier card */
+.ax-dossier {
+  background: var(--ax-surface);
+  border: 0.5px solid var(--ax-line);
+  border-radius: 12px;
+  padding: 14px 18px;
+}
+.ax-dossier__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.ax-claim {
+  font-family: var(--ax-serif);
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ax-ink);
+  margin: 0;
+}
+.ax-att {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ax-ink-soft);
+  white-space: nowrap;
+  padding-top: 2px;
+}
+.ax-sep { border-top: 0.5px solid var(--ax-line-soft); margin: 12px 0; }
+.ax-sec-label {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--ax-ink-faint);
+  margin: 0 0 8px;
+}
+
+/* checks */
+.ax-check { display: flex; gap: 9px; align-items: flex-start; margin-bottom: 9px; }
+.ax-check:last-child { margin-bottom: 0; }
+.ax-check__title { margin: 0; font-size: 14px; color: var(--ax-ink); }
+.ax-check__detail { margin: 2px 0 0; font-size: 13px; color: var(--ax-ink-soft); line-height: 1.5; }
+
+/* evidence */
+.ax-evi { border-left: 2px solid var(--ax-line); border-radius: 0; padding: 1px 0 1px 11px; margin-bottom: 8px; }
+.ax-evi:last-child { margin-bottom: 0; }
+.ax-evi__src { color: var(--ax-accent); }
+.ax-evi__meta { margin: 0; font-size: 12px; color: var(--ax-ink-faint); }
+.ax-evi__text { margin: 3px 0 0; font-size: 13px; color: var(--ax-ink); line-height: 1.5; }
+
+/* cross-model reading — signal, not a verdict */
+.ax-signal { display: flex; gap: 9px; align-items: flex-start; }
+.ax-signal__title { margin: 0; font-size: 13px; color: var(--ax-ink-soft); }
+.ax-signal__caveat { color: var(--ax-ink-faint); }
+.ax-vote { margin: 4px 0 0; font-size: 13px; color: var(--ax-ink-soft); line-height: 1.5; }
+.ax-vote__family { color: var(--ax-ink); }
+
+.ax-reason { margin: 10px 0 0; font-size: 12px; color: var(--ax-ink-faint); }
