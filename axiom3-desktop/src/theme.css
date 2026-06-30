@@ -2,59 +2,70 @@
    Cold-paper deep-ink + oxidized-copper-green accent; serif "voice" for claims.
    Light by default; auto-adapts to dark (a Settings theme override comes later). */
 :root {
-  --ax-paper: #F4F4F0;
-  --ax-surface: #FCFCFA;
-  --ax-surface-2: #F6F6F1;
-  --ax-ink: #23282B;
-  --ax-ink-soft: #586065;
-  --ax-ink-faint: #8C9499;
-  --ax-line: #E1E0D7;
-  --ax-line-soft: #ECEBE3;
-  --ax-accent: #3F7E6C;
-  --ax-accent-soft: #E7F0EC;
-  --ax-lamp-green: #4F9D77;
-  --ax-lamp-amber: #C2922F;
-  --ax-lamp-neutral: #AAB0B3;
-  --ax-lamp-violet: #7B5EA7;
+  /* light — crisp near-white field with pure-white cards that lift (Codex-clean,
+     editorial-warm). */
+  --ax-paper: #F7F7F5;
+  --ax-surface: #FFFFFF;
+  --ax-surface-2: #F1F1EE;
+  --ax-ink: #1A1D1C;
+  --ax-ink-soft: #5B6360;
+  --ax-ink-faint: #909793;
+  --ax-line: #E4E3DD;
+  --ax-line-soft: #EFEEE9;
+  --ax-accent: #0E8C6E;
+  --ax-accent-soft: #E2F1EB;
+  --ax-lamp-green: #2EA66F;
+  --ax-lamp-amber: #D69A2E;
+  --ax-lamp-neutral: #9AA29E;
+  --ax-lamp-violet: #8A6FC4;
+  --ax-lamp-red: #D2584C;
+  --ax-radius-sm: 6px;
   --ax-radius: 10px;
+  --ax-radius-lg: 14px;
+  --ax-shadow: 0 1px 2px rgba(20, 24, 22, 0.05), 0 8px 24px rgba(20, 24, 22, 0.08);
+  --ax-focus: 0 0 0 3px var(--ax-accent-soft);
   --ax-serif: "Source Han Serif SC", "Songti SC", "Noto Serif CJK SC", Georgia, "Times New Roman", serif;
   --ax-sans: "Inter", -apple-system, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
-/* Dark palette — forced by [data-theme="dark"]; followed from the OS unless the user
-   pinned [data-theme="light"] (Settings → 外观). */
+/* Dark palette — a warm near-black 3-tier stack for real depth + a brighter, alive
+   accent (Codex-family). Forced by [data-theme="dark"]; follows the OS otherwise. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ax-paper: #1A1D1E;
-    --ax-surface: #232728;
-    --ax-surface-2: #1F2324;
-    --ax-ink: #E8E7DF;
-    --ax-ink-soft: #AEB4B6;
-    --ax-ink-faint: #7E868A;
-    --ax-line: #343A3C;
-    --ax-line-soft: #2A2F30;
-    --ax-accent: #6FB3A0;
-    --ax-accent-soft: #21302C;
-    --ax-lamp-green: #5FB088;
-    --ax-lamp-amber: #D2A24A;
-    --ax-lamp-neutral: #7E868A;
+    --ax-paper: #0F1110;
+    --ax-surface: #1A1D1C;
+    --ax-surface-2: #161918;
+    --ax-ink: #ECEDE8;
+    --ax-ink-soft: #A7AEAA;
+    --ax-ink-faint: #727976;
+    --ax-line: #2C302E;
+    --ax-line-soft: #232625;
+    --ax-accent: #2DBF98;
+    --ax-accent-soft: #16302A;
+    --ax-lamp-green: #3FBF87;
+    --ax-lamp-amber: #E0AC4D;
+    --ax-lamp-neutral: #8A918D;
     --ax-lamp-violet: #9B81C4;
+    --ax-lamp-red: #DD6A5E;
+    --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px rgba(0, 0, 0, 0.45);
   }
 }
 :root[data-theme="dark"] {
-  --ax-paper: #1A1D1E;
-  --ax-surface: #232728;
-  --ax-surface-2: #1F2324;
-  --ax-ink: #E8E7DF;
-  --ax-ink-soft: #AEB4B6;
-  --ax-ink-faint: #7E868A;
-  --ax-line: #343A3C;
-  --ax-line-soft: #2A2F30;
-  --ax-accent: #6FB3A0;
-  --ax-accent-soft: #21302C;
-  --ax-lamp-green: #5FB088;
-  --ax-lamp-amber: #D2A24A;
-  --ax-lamp-neutral: #7E868A;
+  --ax-paper: #0F1110;
+  --ax-surface: #1A1D1C;
+  --ax-surface-2: #161918;
+  --ax-ink: #ECEDE8;
+  --ax-ink-soft: #A7AEAA;
+  --ax-ink-faint: #727976;
+  --ax-line: #2C302E;
+  --ax-line-soft: #232625;
+  --ax-accent: #2DBF98;
+  --ax-accent-soft: #16302A;
+  --ax-lamp-green: #3FBF87;
+  --ax-lamp-amber: #E0AC4D;
+  --ax-lamp-neutral: #8A918D;
   --ax-lamp-violet: #9B81C4;
+  --ax-lamp-red: #DD6A5E;
+  --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 28px rgba(0, 0, 0, 0.45);
 }
 
 /* ── status lamp (green=nothing flagged · amber=needs attention · never a truth mark) */
@@ -70,7 +81,7 @@
 .ax-lamp.is-amber { background: var(--ax-lamp-amber); }
 .ax-lamp.is-neutral { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ax-lamp-neutral); }
 .ax-lamp.is-violet { background: var(--ax-lamp-violet); }
-.ax-lamp.is-red { background: #C25B4F; }
+.ax-lamp.is-red { background: var(--ax-lamp-red); }
 
 /* ── icon button: bare, name-on-hover (global convention) */
 .ax-iconbtn {
@@ -220,14 +231,22 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   border-radius: var(--ax-radius); padding: 8px 10px;
 }
 .ax-textarea { resize: vertical; line-height: 1.6; }
-.ax-input:focus, .ax-textarea:focus { outline: none; border-color: var(--ax-accent); }
+.ax-input:focus, .ax-textarea:focus { outline: none; border-color: var(--ax-accent); box-shadow: var(--ax-focus); }
 
 .ax-btn { font-family: var(--ax-sans); font-size: 13px; padding: 7px 14px; border-radius: var(--ax-radius);
-  border: 0.5px solid var(--ax-line); background: var(--ax-surface); color: var(--ax-ink); cursor: pointer; }
-.ax-btn:hover { border-color: var(--ax-ink-faint); }
+  border: 0.5px solid var(--ax-line); background: var(--ax-surface); color: var(--ax-ink); cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, filter 0.1s ease; }
+.ax-btn:hover:not(:disabled) { border-color: var(--ax-ink-faint); background: var(--ax-surface-2); }
+.ax-btn:active:not(:disabled) { filter: brightness(0.97); }
+.ax-btn:focus-visible { outline: none; box-shadow: var(--ax-focus); }
 .ax-btn:disabled { opacity: 0.45; cursor: default; }
-.ax-btn--primary { background: var(--ax-accent); border-color: var(--ax-accent); color: #fff; }
-.ax-btn--primary:hover:not(:disabled) { filter: brightness(1.06); border-color: var(--ax-accent); }
+.ax-btn--primary { background: var(--ax-accent); border-color: var(--ax-accent); color: #fff;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.14); }
+.ax-btn--primary:hover:not(:disabled) { filter: brightness(1.07); background: var(--ax-accent); border-color: var(--ax-accent); }
+.ax-btn--primary:active:not(:disabled) { filter: brightness(0.96); }
+.ax-iconbtn:focus-visible, .ax-nav__item:focus-visible, .ax-recent:focus-visible,
+.ax-set-nav__item:focus-visible, .ax-chip:focus-visible { outline: none; box-shadow: var(--ax-focus); }
+.ax-nav__item, .ax-recent { transition: background 0.12s ease, color 0.12s ease; }
 
 .ax-empty { max-width: 460px; margin: 12vh auto 0; text-align: center; }
 .ax-empty__title { font-family: var(--ax-serif); font-size: 22px; color: var(--ax-ink); margin: 0 0 10px; }
@@ -437,7 +456,7 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   border-left: 1.5px solid var(--ax-line); padding-left: 8px; }
 .ax-tr__sum { font-size: 11.5px; line-height: 1.55; color: var(--ax-ink); white-space: pre-wrap; word-break: break-word;
   border-left: 1.5px solid var(--ax-accent); padding-left: 8px; }
-.ax-tr__err { font-size: 11px; color: #C25B4F; white-space: pre-wrap; }
+.ax-tr__err { font-size: 11px; color: var(--ax-lamp-red); white-space: pre-wrap; }
 
 /* ── Claude-style task shell (sidebar recents + home composer) ─────── */
 .ax-side-new { display: flex; align-items: center; gap: 8px; width: 100%; justify-content: flex-start;
