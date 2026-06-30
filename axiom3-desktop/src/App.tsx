@@ -474,9 +474,8 @@ function App() {
               placeholder={t(lang, "composer_ph")}
             />
             <div className="ax-toolrow" style={{ justifyContent: "flex-end" }}>
-              <span className="ax-hint" style={{ marginRight: "auto" }}>{t(lang, "composer_hint")}</span>
               <button
-                className="ax-iconbtn"
+                className="ax-send"
                 onClick={() => submitFreeText()}
                 disabled={busy || !slash.trim() || slashOpen}
                 title={t(lang, "task_run")}
@@ -552,9 +551,6 @@ function App() {
                   <button className="ax-btn ax-btn--primary" onClick={() => runWorkflow(draft)} disabled={busy || !draft.trim()}>
                     {t(lang, "task_run")}
                   </button>
-                  <span className="ax-hint">
-                    {lang === "zh" ? "多智能体 · 实时显示在右侧活动栏" : "multi-agent · streams to the activity rail"}
-                  </span>
                 </div>
               </>
             ) : cmd === "code" ? (
@@ -580,9 +576,6 @@ function App() {
                   <button className="ax-btn ax-btn--primary" onClick={() => runCoding(draft)} disabled={busy || !draft.trim() || !codeWs}>
                     {t(lang, "task_run")}
                   </button>
-                  <span className="ax-hint">
-                    {lang === "zh" ? "只读编码智能体 · 不写入、不执行构建" : "read-only coding agent · no writes, no builds"}
-                  </span>
                 </div>
               </>
             ) : (
@@ -757,9 +750,6 @@ function App() {
           ) : view === "home" ? (
             <div className="ax-home">
               <h1 className="ax-home__greeting">{greeting()}</h1>
-              <p className="ax-home__sub">
-                {lang === "zh" ? "今天检查点什么?在下面输入,用 / 选择任务类型。" : "What shall we look at today? Type below — and / to pick a task type."}
-              </p>
               {composerBlock()}
               <div className="ax-chips">
                 {["check_draft", "verify", "research", "write", "ppt", "code"].map((k) => {

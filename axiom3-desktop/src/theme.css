@@ -320,6 +320,12 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-composer > .ax-textarea, .ax-composer > * > .ax-textarea { border: none; background: transparent; padding: 8px 9px; resize: none; }
 .ax-composer .ax-textarea:focus { box-shadow: none; border: none; }
 .ax-composer .ax-toolrow { padding: 2px 6px 2px; }
+.ax-send { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
+  border-radius: 50%; border: none; background: var(--ax-accent); color: #fff; cursor: pointer;
+  transition: filter 0.12s ease, background 0.12s ease; }
+.ax-send:hover:not(:disabled) { filter: brightness(1.08); }
+.ax-send:disabled { background: var(--ax-surface-2); color: var(--ax-ink-faint); cursor: default;
+  box-shadow: inset 0 0 0 1px var(--ax-line); }
 .ax-composer details { padding: 0 4px; }
 .ax-composer details .ax-textarea { border: 1px solid var(--ax-line-soft); background: var(--ax-surface-2); border-radius: var(--ax-radius); padding: 8px 10px; }
 .ax-composer__chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
