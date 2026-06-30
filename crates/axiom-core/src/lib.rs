@@ -12,6 +12,7 @@
 //! - `verdict.status` is a strict 5-state enum ([`model::VerdictStatus`]);
 //!   `evidence_redacted` (RTBF) is a separate boolean, never a 6th status.
 
+pub mod doi;
 pub mod evidence;
 pub mod model;
 pub mod statcheck;

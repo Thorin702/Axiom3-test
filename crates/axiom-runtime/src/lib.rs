@@ -10,6 +10,7 @@
 //! history, tool / signed-thinking blocks, and usage extraction (needs Rig's
 //! lower-level CompletionModel, which carries `Usage`).
 
+pub mod crossref;
 pub mod fleet;
 pub mod plan;
 pub mod supervisor;
