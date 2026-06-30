@@ -4,20 +4,47 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, TaskType } from "./lib/types";
+import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft } from "lucide-react";
 
 
-// Slash-command task types — typed after "/" in the composer (like Claude). Only
-// check_draft runs today; the rest are visible as "即将" so the platform's shape shows.
-const COMMANDS: { type: TaskType; cmdKey: string; descKey: string; active: boolean }[] = [
-  { type: "check_draft", cmdKey: "cmd_check", descKey: "tt_check_draft_d", active: true },
-  { type: "code", cmdKey: "cmd_code", descKey: "tt_code_d", active: false },
-  { type: "ppt", cmdKey: "cmd_ppt", descKey: "tt_ppt_d", active: false },
-  { type: "research", cmdKey: "cmd_research", descKey: "tt_research_d", active: false },
+// The platform's task capabilities — typed after "/" in the composer (like Claude).
+// Researched against 2026 AI work platforms and mapped to the four core capabilities:
+// rigor/checking (the differentiator), research, multimodal generation, coding — plus a
+// dynamic-workflow catch-all. Only check_draft runs today; the rest are visible as 即将,
+// so the platform's shape is complete. Every output is meant to be held to the rigor bar.
+type SlashCmd = { key: string; cat: string; zh: string; en: string; dzh: string; den: string; active: boolean };
+const COMMANDS: SlashCmd[] = [
+  // 检查与核验 (rigor — the moat)
+  { key: "check_draft", cat: "检查", zh: "校对", en: "check", dzh: "拆成断言,确定性检查 + 证据", den: "claims → deterministic checks + evidence", active: true },
+  { key: "verify", cat: "检查", zh: "核查", en: "verify", dzh: "核查单条主张:文献 + 跨模型 + 溯源", den: "verify one claim: literature + cross-model + provenance", active: false },
+  { key: "cite", cat: "检查", zh: "查引", en: "cite", dzh: "引文 / DOI / 撤稿核验", den: "citation / DOI / retraction check", active: false },
+  // 研究 (research)
+  { key: "research", cat: "研究", zh: "调研", en: "research", dzh: "多智能体检索 + 综述,带证据", den: "multi-agent search + synthesis, with evidence", active: false },
+  { key: "ask", cat: "研究", zh: "答疑", en: "ask", dzh: "带来源的问答", den: "Q&A grounded in sources", active: false },
+  // 写作 (writing)
+  { key: "write", cat: "写作", zh: "写作", en: "write", dzh: "起草文稿 / 邮件 / 报告", den: "draft prose / email / report", active: false },
+  { key: "polish", cat: "写作", zh: "润色", en: "polish", dzh: "改写 / 精炼 / 语法", den: "rewrite / tighten / grammar", active: false },
+  { key: "translate", cat: "写作", zh: "翻译", en: "translate", dzh: "翻译并保术语一致", den: "translate, keep terminology consistent", active: false },
+  { key: "summarize", cat: "写作", zh: "摘要", en: "summarize", dzh: "提炼要点", den: "distil key points", active: false },
+  // 多模态生成 (multimodal generation)
+  { key: "ppt", cat: "生成", zh: "PPT", en: "slides", dzh: "多模态:文本 + 图片 agent 协同", den: "multimodal: text + image agents", active: false },
+  { key: "doc", cat: "生成", zh: "文档", en: "doc", dzh: "生成结构化文档 / 报告", den: "structured document / report", active: false },
+  { key: "chart", cat: "生成", zh: "图表", en: "chart", dzh: "数据 → 图表", den: "data → chart", active: false },
+  { key: "image", cat: "生成", zh: "图片", en: "image", dzh: "文生图", den: "text-to-image", active: false },
+  // 数据与多模态处理 (data / multimodal processing)
+  { key: "analyze", cat: "数据", zh: "分析", en: "analyze", dzh: "数据分析:统计 + 可视化", den: "data analysis: stats + viz", active: false },
+  { key: "extract", cat: "数据", zh: "解析", en: "extract", dzh: "文档解析:图片 / 表格 / 公式提取", den: "parse a doc: images / tables / formulas", active: false },
+  { key: "transcribe", cat: "数据", zh: "转写", en: "transcribe", dzh: "音频转写", den: "audio transcription", active: false },
+  // 编程 (coding)
+  { key: "code", cat: "编程", zh: "编程", en: "code", dzh: "写 + 编译 + 测试(自带 in-loop 校验)", den: "write + compile + test (in-loop checks)", active: false },
+  { key: "debug", cat: "编程", zh: "调试", en: "debug", dzh: "定位 + 修复", den: "locate + fix", active: false },
+  { key: "review", cat: "编程", zh: "审查", en: "review", dzh: "代码审查", den: "code review", active: false },
+  // 编排 (orchestration)
+  { key: "workflow", cat: "编排", zh: "工作流", en: "workflow", dzh: "自定义动态多智能体工作流(任意任务)", den: "custom dynamic multi-agent workflow (any task)", active: false },
 ];
 
 function App() {
@@ -44,7 +71,7 @@ function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [view, setView] = useState<"board" | "detail">("board");
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [cmd, setCmd] = useState<TaskType | null>(null);
+  const [cmd, setCmd] = useState<string | null>(null);
   const [slash, setSlash] = useState("");
   const [notableOnly, setNotableOnly] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
@@ -322,20 +349,20 @@ function App() {
                           <div className="ax-slash-menu">
                             {COMMANDS.filter((c) => {
                               const q = slash.trimStart().slice(1).toLowerCase();
-                              return q === "" || t(lang, c.cmdKey).toLowerCase().includes(q);
+                              return q === "" || (lang === "zh" ? c.zh : c.en).toLowerCase().includes(q) || c.cat.includes(q);
                             }).map((c) => (
                               <button
-                                key={c.type}
+                                key={c.key}
                                 className="ax-slash-item"
                                 disabled={!c.active}
                                 onClick={() => {
-                                  setCmd(c.type);
+                                  setCmd(c.key);
                                   setSlash("");
                                 }}
                               >
-                                <span className="ax-slash-cmd">/{t(lang, c.cmdKey)}</span>
+                                <span className="ax-slash-cmd">/{lang === "zh" ? c.zh : c.en}</span>
                                 <span className="ax-slash-desc">
-                                  {t(lang, c.descKey)}
+                                  {lang === "zh" ? c.dzh : c.den}
                                   {!c.active ? ` · ${t(lang, "coming_soon")}` : ""}
                                 </span>
                               </button>
@@ -346,7 +373,7 @@ function App() {
                     ) : (
                       <>
                         <div className="ax-composer__chip">
-                          /{t(lang, COMMANDS.find((c) => c.type === cmd)!.cmdKey)}
+                          /{(() => { const c = COMMANDS.find((x) => x.key === cmd); return c ? (lang === "zh" ? c.zh : c.en) : ""; })()}
                           <button className="ax-iconbtn" onClick={() => setCmd(null)} title={t(lang, "close")} aria-label={t(lang, "close")}>
                             <X size={13} aria-hidden />
                           </button>
