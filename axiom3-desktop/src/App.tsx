@@ -4,12 +4,21 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task } from "./lib/types";
+import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, TaskType } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft } from "lucide-react";
 
+
+// Slash-command task types — typed after "/" in the composer (like Claude). Only
+// check_draft runs today; the rest are visible as "即将" so the platform's shape shows.
+const COMMANDS: { type: TaskType; cmdKey: string; descKey: string; active: boolean }[] = [
+  { type: "check_draft", cmdKey: "cmd_check", descKey: "tt_check_draft_d", active: true },
+  { type: "code", cmdKey: "cmd_code", descKey: "tt_code_d", active: false },
+  { type: "ppt", cmdKey: "cmd_ppt", descKey: "tt_ppt_d", active: false },
+  { type: "research", cmdKey: "cmd_research", descKey: "tt_research_d", active: false },
+];
 
 function App() {
   const [lang, setLangState] = useState<Lang>(
@@ -33,8 +42,10 @@ function App() {
   );
   const [references, setReferences] = useState("");
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [view, setView] = useState<"board" | "new" | "detail">("board");
+  const [view, setView] = useState<"board" | "detail">("board");
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [cmd, setCmd] = useState<TaskType | null>(null);
+  const [slash, setSlash] = useState("");
   const [notableOnly, setNotableOnly] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [onboarded, setOnboarded] = useState(localStorage.getItem("axiom3.onboarded") === "1");
@@ -124,6 +135,8 @@ function App() {
     setTasks((ts) => [{ id, type: "check_draft", title, status: "running", ts: Date.now() }, ...ts]);
     setActiveId(id);
     setView("detail");
+    setCmd(null);
+    setSlash("");
     setProgress(null);
     const litsearch = localStorage.getItem("axiom3.lit") !== "off";
     const fmRaw = parseInt(localStorage.getItem("axiom3.fleetmax") || "", 10);
@@ -269,19 +282,8 @@ function App() {
             <div className="ax-canvas">
               {view === "board" && (
                 <>
-                  <div className="ax-results__head">
-                    <span className="ax-block-label" style={{ margin: 0 }}>{t(lang, "tasks_title")}</span>
-                    <button className="ax-btn ax-btn--primary" onClick={() => setView("new")}>
-                      {t(lang, "new_task")}
-                    </button>
-                  </div>
-                  {tasks.length === 0 ? (
-                    <div className="ax-empty" style={{ marginTop: "6vh" }}>
-                      <p className="ax-empty__title">{t(lang, "no_tasks")}</p>
-                      <p className="ax-empty__sub">{t(lang, "no_tasks_sub")}</p>
-                    </div>
-                  ) : (
-                    <div className="ax-results__list">
+                  {tasks.length > 0 && (
+                    <div className="ax-results__list" style={{ marginBottom: 18 }}>
                       {tasks.map((tk) => (
                         <button
                           key={tk.id}
@@ -298,13 +300,86 @@ function App() {
                           />
                           <span className="ax-task__title">{tk.title}</span>
                           <span className="ax-task__meta">
-                            {t(lang, "tt_check_draft")} · {t(lang, `st_${tk.status}`)}
+                            /{t(lang, "cmd_check")} · {t(lang, `st_${tk.status}`)}
                             {tk.result ? ` · ${tk.result.total} ${t(lang, "claims")}` : ""}
                           </span>
                         </button>
                       ))}
                     </div>
                   )}
+
+                  <div className="ax-composer">
+                    {cmd === null ? (
+                      <>
+                        <textarea
+                          className="ax-textarea"
+                          value={slash}
+                          onChange={(e) => setSlash(e.currentTarget.value)}
+                          rows={3}
+                          placeholder={t(lang, "composer_ph")}
+                        />
+                        {slash.trimStart().startsWith("/") && (
+                          <div className="ax-slash-menu">
+                            {COMMANDS.filter((c) => {
+                              const q = slash.trimStart().slice(1).toLowerCase();
+                              return q === "" || t(lang, c.cmdKey).toLowerCase().includes(q);
+                            }).map((c) => (
+                              <button
+                                key={c.type}
+                                className="ax-slash-item"
+                                disabled={!c.active}
+                                onClick={() => {
+                                  setCmd(c.type);
+                                  setSlash("");
+                                }}
+                              >
+                                <span className="ax-slash-cmd">/{t(lang, c.cmdKey)}</span>
+                                <span className="ax-slash-desc">
+                                  {t(lang, c.descKey)}
+                                  {!c.active ? ` · ${t(lang, "coming_soon")}` : ""}
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <div className="ax-composer__chip">
+                          /{t(lang, COMMANDS.find((c) => c.type === cmd)!.cmdKey)}
+                          <button className="ax-iconbtn" onClick={() => setCmd(null)} title={t(lang, "close")} aria-label={t(lang, "close")}>
+                            <X size={13} aria-hidden />
+                          </button>
+                        </div>
+                        {cmd === "check_draft" ? (
+                          <>
+                            <textarea className="ax-textarea" value={draft} onChange={(e) => setDraft(e.currentTarget.value)} rows={9} placeholder={t(lang, "check_placeholder")} />
+                            <div className="ax-toolrow">
+                              <button className="ax-btn ax-btn--primary" onClick={runCheckDraft} disabled={busy || !draft.trim()}>
+                                {t(lang, "task_run")}
+                              </button>
+                              <button className="ax-iconbtn" onClick={() => importInto(setDraft)} disabled={busy} title={t(lang, "import_btn")} aria-label={t(lang, "import_btn")}>
+                                <Upload size={16} aria-hidden />
+                              </button>
+                              <span className="ax-hint">{draft.length.toLocaleString()} {t(lang, "chars")}</span>
+                            </div>
+                            <details style={{ marginTop: 12 }}>
+                              <summary className="ax-block-label" style={{ cursor: "pointer" }}>{t(lang, "references_title")}</summary>
+                              <textarea className="ax-textarea" style={{ marginTop: 6 }} value={references} onChange={(e) => setReferences(e.currentTarget.value)} rows={6} placeholder={t(lang, "references_placeholder")} />
+                              <div className="ax-toolrow">
+                                <button className="ax-iconbtn" onClick={() => importInto(setReferences)} disabled={busy} title={t(lang, "import_refs")} aria-label={t(lang, "import_refs")}>
+                                  <Upload size={16} aria-hidden />
+                                </button>
+                                <span className="ax-hint">{references.length.toLocaleString()} {t(lang, "chars")}</span>
+                              </div>
+                            </details>
+                          </>
+                        ) : (
+                          <p className="ax-hint">{t(lang, "soon_note")}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
 
                   <details className="ax-dev">
                     <summary>{t(lang, "dev_tools")}</summary>
@@ -327,51 +402,6 @@ function App() {
                           ))}
                         </ul>
                       )}
-                    </div>
-                  </details>
-                </>
-              )}
-
-              {view === "new" && (
-                <>
-                  <button className="ax-iconbtn" onClick={() => setView("board")} title={t(lang, "back")} aria-label={t(lang, "back")} style={{ marginBottom: 10 }}>
-                    <ChevronLeft size={18} aria-hidden />
-                  </button>
-                  <p className="ax-sec-label">{t(lang, "task_pick_type")}</p>
-                  <div className="ax-type-grid">
-                    <button className="ax-type ax-type--active">
-                      <span className="ax-type__name">{t(lang, "tt_check_draft")}</span>
-                      <span className="ax-type__d">{t(lang, "tt_check_draft_d")}</span>
-                    </button>
-                    {(["ppt", "code", "research"] as const).map((tt) => (
-                      <button key={tt} className="ax-type" disabled>
-                        <span className="ax-type__name">
-                          {t(lang, `tt_${tt}`)} <span className="ax-hint">({t(lang, "coming_soon")})</span>
-                        </span>
-                        <span className="ax-type__d">{t(lang, `tt_${tt}_d`)}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  <p className="ax-block-label" style={{ marginTop: 16 }}>{t(lang, "check_title")}</p>
-                  <textarea className="ax-textarea" value={draft} onChange={(e) => setDraft(e.currentTarget.value)} rows={9} placeholder={t(lang, "check_placeholder")} />
-                  <div className="ax-toolrow">
-                    <button className="ax-btn ax-btn--primary" onClick={runCheckDraft} disabled={busy || !draft.trim()}>
-                      {t(lang, "task_run")}
-                    </button>
-                    <button className="ax-iconbtn" onClick={() => importInto(setDraft)} disabled={busy} title={t(lang, "import_btn")} aria-label={t(lang, "import_btn")}>
-                      <Upload size={16} aria-hidden />
-                    </button>
-                    <span className="ax-hint">{draft.length.toLocaleString()} {t(lang, "chars")}</span>
-                  </div>
-                  <details style={{ marginTop: 12 }}>
-                    <summary className="ax-block-label" style={{ cursor: "pointer" }}>{t(lang, "references_title")}</summary>
-                    <textarea className="ax-textarea" style={{ marginTop: 6 }} value={references} onChange={(e) => setReferences(e.currentTarget.value)} rows={6} placeholder={t(lang, "references_placeholder")} />
-                    <div className="ax-toolrow">
-                      <button className="ax-iconbtn" onClick={() => importInto(setReferences)} disabled={busy} title={t(lang, "import_refs")} aria-label={t(lang, "import_refs")}>
-                        <Upload size={16} aria-hidden />
-                      </button>
-                      <span className="ax-hint">{references.length.toLocaleString()} {t(lang, "chars")}</span>
                     </div>
                   </details>
                 </>

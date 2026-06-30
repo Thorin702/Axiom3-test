@@ -288,3 +288,19 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-type--active { border: 2px solid var(--ax-accent); padding: 11px 13px; }
 .ax-type__name { font-size: 14px; font-weight: 500; color: var(--ax-ink); }
 .ax-type__d { font-size: 12px; color: var(--ax-ink-soft); line-height: 1.4; }
+
+/* ── task composer (slash commands) ────────────────────────────────── */
+.ax-composer { position: relative; margin-top: 8px; }
+.ax-composer__chip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+  color: var(--ax-accent); background: var(--ax-accent-soft); border-radius: var(--ax-radius);
+  padding: 3px 6px 3px 10px; margin-bottom: 8px; }
+.ax-slash-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 5;
+  background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(20,24,25,0.12); padding: 6px; max-height: 260px; overflow-y: auto; }
+.ax-slash-item { display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
+  border: none; background: transparent; border-radius: var(--ax-radius); padding: 8px 10px;
+  cursor: pointer; font-family: var(--ax-sans); }
+.ax-slash-item:hover:not(:disabled) { background: var(--ax-surface-2); }
+.ax-slash-item:disabled { opacity: 0.55; cursor: default; }
+.ax-slash-cmd { font-size: 14px; color: var(--ax-ink); white-space: nowrap; }
+.ax-slash-desc { font-size: 12px; color: var(--ax-ink-faint); }
