@@ -1,5 +1,5 @@
 import { AlertTriangle, ShieldAlert, Bot } from "lucide-react";
-import { Lang, t, codeLabel, findingDesc, verdictLabel, reasonLabel } from "../i18n";
+import { Lang, t, codeLabel, findingDesc, vendorSignalLabel, reasonLabel } from "../i18n";
 import type { ClaimEntry } from "../lib/types";
 import { attentionOf, lampClass, attentionKey } from "../lib/attention";
 
@@ -83,7 +83,7 @@ export function ClaimDossier({ entry, lang }: { entry: ClaimEntry; lang: Lang })
               </p>
               {entry.fleet.vendors.map((v, i) => (
                 <p className="ax-vote" key={i}>
-                  <span className="ax-vote__family">{v.family}</span> · {verdictLabel(lang, v.status)}
+                  <span className="ax-vote__family">{v.family}</span> · {vendorSignalLabel(lang, v.status)}
                   {v.reasoning ? ` — ${v.reasoning}` : ""}
                 </p>
               ))}

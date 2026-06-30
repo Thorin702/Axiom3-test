@@ -36,7 +36,8 @@ const UI: Record<string, Pair> = {
   chars: { zh: "字符", en: "chars" },
   unchecked: { zh: "未校验", en: "unchecked" },
   show_all: { zh: "显示全部", en: "show all" },
-  only_notable: { zh: "只看有结论/标记的", en: "only flagged/verdicted" },
+  only_notable: { zh: "只看已标记或跨模型核验的", en: "only flagged or cross-checked" },
+  switch_language: { zh: "切换语言", en: "Switch language" },
   export_provenance: { zh: "导出溯源", en: "Export provenance" },
   export_provenance_hint: {
     zh: "导出本次校对的可审计溯源记录(JSON):每条断言跑了哪些检查器、哪些独立厂商投票、依据哪些证据,并锚定到哈希链。",
@@ -121,6 +122,19 @@ const VERDICT: Record<string, Pair> = {
 
 export function verdictLabel(lang: Lang, code: string): string {
   return VERDICT[code]?.[lang] ?? code;
+}
+
+// A model's read is a SIGNAL, not a verdict — so the per-vendor line in the dossier
+// shows an evidence DIRECTION, never the truth-coded nouns "verified/refuted". The raw
+// machine status still lives in the auditable provenance export.
+const VENDOR_SIGNAL: Record<string, Pair> = {
+  verified: { zh: "倾向支持", en: "leans support" },
+  refuted: { zh: "倾向存疑", en: "leans against" },
+  uncertain: { zh: "存疑", en: "inconclusive" },
+};
+
+export function vendorSignalLabel(lang: Lang, code: string): string {
+  return VENDOR_SIGNAL[code]?.[lang] ?? verdictLabel(lang, code);
 }
 
 const INDEP: Record<string, Pair> = {

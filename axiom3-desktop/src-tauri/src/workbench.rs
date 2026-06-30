@@ -735,6 +735,12 @@ impl AppState {
             c.cancel();
         }
     }
+    /// True while a draft check is in flight (its cancel slot is reserved). Used to
+    /// refuse mutating provider keys mid-check — the fleet reads keys from the process
+    /// env concurrently, and a `set_var`/`getenv` overlap is a data race.
+    fn is_checking(&self) -> bool {
+        self.cancel.lock().unwrap_or_else(|p| p.into_inner()).is_some()
+    }
 }
 
 /// RAII reservation of [`AppState`]'s single cancel slot for one draft check. Dropping
@@ -872,13 +878,38 @@ fn provider_key_name(family: &str) -> String {
 /// Run `bin args…` and return its trimmed stdout if it exits 0 — used to detect a
 /// runtime's presence/version without assuming any path.
 fn cmd_version(bin: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(bin).args(args).output().ok()?;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+    // Bound the wait — a hanging pyenv/nvm/asdf PATH shim must not stall the onboarding
+    // system check. `--version` output is tiny, so the unread pipe can't deadlock.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(_) => return None,
+        }
+    }
+    let out = child.wait_with_output().ok()?;
     if !out.status.success() {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
     let s = if s.is_empty() {
-        String::from_utf8_lossy(&out.stderr).trim().to_string() // node prints to stdout; some print stderr
+        String::from_utf8_lossy(&out.stderr).trim().to_string() // some runtimes print version to stderr
     } else {
         s
     };
@@ -954,8 +985,14 @@ pub fn provider_status() -> Vec<ProviderState> {
 
 /// Store a BYO provider key in the OS keychain (never on disk, never in the event log)
 /// and bridge it into the process env so the (env-based) fleet picks it up this session.
+/// REFUSED while a check is in flight: the fleet reads keys from env concurrently, so a
+/// live `set_var` would data-race those reads. (The deeper fix — passing keys explicitly
+/// into the Rig backend instead of via env — is a follow-up.)
 #[tauri::command]
-pub fn set_provider_key(provider: String, key: String) -> Result<(), String> {
+pub fn set_provider_key(state: tauri::State<'_, AppState>, provider: String, key: String) -> Result<(), String> {
+    if state.is_checking() {
+        return Err("a check is running — change keys after it finishes".into());
+    }
     let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
     let key = key.trim();
     if key.is_empty() {
@@ -964,14 +1001,17 @@ pub fn set_provider_key(provider: String, key: String) -> Result<(), String> {
     KeyringSecretStore::new(KEYCHAIN_SERVICE)
         .set(&provider_key_name(p.family()), key)
         .map_err(|e| e.to_string())?;
-    // Bridge to env for the current session (keychain is the durable store).
     std::env::set_var(p.env_var(), key);
     Ok(())
 }
 
-/// Forget a provider's stored key (keychain + this session's env).
+/// Forget a provider's stored key (keychain + this session's env). Refused mid-check
+/// for the same data-race reason as [`set_provider_key`].
 #[tauri::command]
-pub fn delete_provider_key(provider: String) -> Result<(), String> {
+pub fn delete_provider_key(state: tauri::State<'_, AppState>, provider: String) -> Result<(), String> {
+    if state.is_checking() {
+        return Err("a check is running — change keys after it finishes".into());
+    }
     let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
     KeyringSecretStore::new(KEYCHAIN_SERVICE)
         .delete(&provider_key_name(p.family()))

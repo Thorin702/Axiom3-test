@@ -209,7 +209,7 @@ function App() {
             className="ax-iconbtn"
             onClick={() => setLang(lang === "zh" ? "en" : "zh")}
             title={lang === "zh" ? "English" : "中文"}
-            aria-label="language"
+            aria-label={t(lang, "switch_language")}
           >
             <Languages size={16} aria-hidden />
             <span style={{ fontSize: 12 }}>{lang === "zh" ? "EN" : "中"}</span>
@@ -362,7 +362,8 @@ function App() {
                           e.findings.length > 0 ||
                           e.fleet ||
                           e.status === "injection_neutralized" ||
-                          e.reason?.includes("fleet_cap_exceeded")
+                          e.reason?.includes("fleet_cap_exceeded") ||
+                          e.reason?.includes("cross_vendor_unavailable")
                       )
                       .map((e) => (
                         <ClaimDossier key={e.claim_id} entry={e} lang={lang} />
