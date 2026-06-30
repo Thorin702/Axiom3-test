@@ -7,6 +7,7 @@ import "./theme.css";
 import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { OnboardingWizard } from "./components/OnboardingWizard";
+import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { Download, ListFilter, X, Languages, Settings, Upload } from "lucide-react";
 
 
@@ -35,6 +36,11 @@ function App() {
   const [notableOnly, setNotableOnly] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [onboarded, setOnboarded] = useState(localStorage.getItem("axiom3.onboarded") === "1");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  useEffect(() => {
+    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
+  }, []);
 
   useEffect(() => {
     const un = listen<{ done: number; total: number }>("check_progress", (e) => setProgress(e.payload));
@@ -109,7 +115,10 @@ function App() {
 
   async function checkDraft() {
     setProgress(null);
-    const c = await run(() => invoke<DraftCheck>("check_draft", { draft, references }));
+    const litsearch = localStorage.getItem("axiom3.lit") !== "off";
+    const fmRaw = parseInt(localStorage.getItem("axiom3.fleetmax") || "", 10);
+    const fleetmax = Number.isFinite(fmRaw) && fmRaw > 0 ? fmRaw : null;
+    const c = await run(() => invoke<DraftCheck>("check_draft", { draft, references, litsearch, fleetmax }));
     setProgress(null);
     if (c) {
       setCheck(c);
@@ -153,6 +162,7 @@ function App() {
   return (
     <>
       {!onboarded && <OnboardingWizard lang={lang} onDone={() => setOnboarded(true)} />}
+      {settingsOpen && <SettingsModal lang={lang} onLang={setLang} onClose={() => setSettingsOpen(false)} />}
       <div className="ax-app">
       <aside className="ax-sidebar">
         <div className="ax-brand">
@@ -204,7 +214,7 @@ function App() {
             <Languages size={16} aria-hidden />
             <span style={{ fontSize: 12 }}>{lang === "zh" ? "EN" : "中"}</span>
           </button>
-          <button className="ax-iconbtn" disabled title={t(lang, "settings_soon")} aria-label="settings">
+          <button className="ax-iconbtn" onClick={() => setSettingsOpen(true)} title={t(lang, "settings")} aria-label={t(lang, "settings")}>
             <Settings size={16} aria-hidden />
           </button>
         </div>

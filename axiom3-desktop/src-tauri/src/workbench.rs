@@ -1107,6 +1107,10 @@ pub async fn check_draft(
     state: tauri::State<'_, AppState>,
     draft: String,
     references: String,
+    // Settings overrides from the UI (None ⇒ fall back to env/default). Keep param names
+    // underscore-free so the JS invoke keys match exactly.
+    litsearch: Option<bool>,
+    fleetmax: Option<usize>,
 ) -> Result<DraftCheck, String> {
     use tauri::Emitter;
     let wb = state.get()?;
@@ -1143,7 +1147,8 @@ pub async fn check_draft(
     // within budget, prioritizing flagged conclusions over a long tail (build-spec C.2).
     // Computed unconditionally so the audit can record each bearing claim's planned
     // depth even when no fleet runs.
-    let depths = plan_verification(&reports, &PlanBudget { max_fleet_claims: max_fleet_claims() });
+    let budget = fleetmax.filter(|n| *n > 0).unwrap_or_else(max_fleet_claims);
+    let depths = plan_verification(&reports, &PlanBudget { max_fleet_claims: budget });
     let fleet_planned: HashSet<String> = reports
         .iter()
         .zip(depths.iter())
@@ -1178,7 +1183,7 @@ pub async fn check_draft(
         //     retrieval adds bounded (never infinite) backoff before falling back — set
         //     AXIOM_LITSEARCH=0 for offline runs. (A live fleet already needs the network,
         //     so the offline-with-keys case is degenerate.)
-        let retrieved: HashMap<String, Vec<String>> = if litsearch_enabled() {
+        let retrieved: HashMap<String, Vec<String>> = if litsearch.unwrap_or_else(litsearch_enabled) {
             let lit = std::sync::Arc::new(LitSearch::new());
             let got = run_batch(
                 bearing_src.clone(),

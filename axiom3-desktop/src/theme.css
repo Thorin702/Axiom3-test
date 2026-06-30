@@ -20,8 +20,10 @@
   --ax-serif: "Source Han Serif SC", "Songti SC", "Noto Serif CJK SC", Georgia, "Times New Roman", serif;
   --ax-sans: "Inter", -apple-system, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
+/* Dark palette — forced by [data-theme="dark"]; followed from the OS unless the user
+   pinned [data-theme="light"] (Settings → 外观). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --ax-paper: #1A1D1E;
     --ax-surface: #232728;
     --ax-surface-2: #1F2324;
@@ -37,6 +39,22 @@
     --ax-lamp-neutral: #7E868A;
     --ax-lamp-violet: #9B81C4;
   }
+}
+:root[data-theme="dark"] {
+  --ax-paper: #1A1D1E;
+  --ax-surface: #232728;
+  --ax-surface-2: #1F2324;
+  --ax-ink: #E8E7DF;
+  --ax-ink-soft: #AEB4B6;
+  --ax-ink-faint: #7E868A;
+  --ax-line: #343A3C;
+  --ax-line-soft: #2A2F30;
+  --ax-accent: #6FB3A0;
+  --ax-accent-soft: #21302C;
+  --ax-lamp-green: #5FB088;
+  --ax-lamp-amber: #D2A24A;
+  --ax-lamp-neutral: #7E868A;
+  --ax-lamp-violet: #9B81C4;
 }
 
 /* ── status lamp (green=nothing flagged · amber=needs attention · never a truth mark) */
@@ -236,3 +254,20 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-wiz-opt { display: block; width: 100%; text-align: left; padding: 10px 12px; border: 0.5px solid var(--ax-line); border-radius: var(--ax-radius); background: var(--ax-surface); color: var(--ax-ink); cursor: pointer; font-size: 14px; margin-bottom: 8px; line-height: 1.45; }
 .ax-wiz-opt.sel { border: 2px solid var(--ax-accent); padding: 9px 11px; }
 .ax-wiz-consent { border: 2px solid var(--ax-accent); border-radius: 12px; padding: 12px; background: var(--ax-accent-soft); }
+
+/* ── settings modal ────────────────────────────────────────────────── */
+.ax-set-overlay { position: fixed; inset: 0; z-index: 40; background: rgba(20,24,25,0.5); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.ax-set { width: 100%; max-width: 560px; max-height: 80vh; background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 16px; display: flex; flex-direction: column; }
+.ax-set__head { display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-bottom: 0.5px solid var(--ax-line); }
+.ax-set__title { margin: 0; font-size: 16px; font-weight: 500; color: var(--ax-ink); }
+.ax-set__body { overflow-y: auto; padding: 18px 20px; }
+.ax-set-group { margin-bottom: 22px; }
+.ax-set-group:last-child { margin-bottom: 0; }
+.ax-set-group__label { font-size: 11px; letter-spacing: 0.04em; color: var(--ax-ink-faint); margin: 0 0 10px; text-transform: none; }
+.ax-set-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 0; font-size: 14px; color: var(--ax-ink); }
+.ax-seg { display: inline-flex; border: 0.5px solid var(--ax-line); border-radius: var(--ax-radius); overflow: hidden; }
+.ax-seg button { border: none; background: var(--ax-surface); color: var(--ax-ink-soft); font-size: 13px; padding: 5px 12px; cursor: pointer; }
+.ax-seg button.on { background: var(--ax-accent); color: #fff; }
+.ax-prov-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 0.5px solid var(--ax-line-soft); font-size: 14px; }
+.ax-toggle { font-size: 13px; padding: 5px 12px; border-radius: var(--ax-radius); border: 0.5px solid var(--ax-line); background: var(--ax-surface); color: var(--ax-ink); cursor: pointer; }
+.ax-toggle.on { background: var(--ax-accent); border-color: var(--ax-accent); color: #fff; }
