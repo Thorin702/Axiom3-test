@@ -126,15 +126,24 @@ fn split_sentences(draft: &str) -> Vec<String> {
 /// abbreviation (`Fig.`, `et al.`), an initial (`J.`), or `e.g.`/`i.e.`. Academic
 /// text is full of these and naive period-splitting shreds it.
 fn period_ends_sentence(chars: &[char], i: usize) -> bool {
-    // A decimal point: a `.` IMMEDIATELY followed by a digit is the dot inside a
-    // number — both the usual `0.45` / `94.5%` and a LEADING-dot value like `.001`
-    // or `p < .05` (the dominant APA p-value notation, where the char before the dot
-    // is a space, not a digit). A genuine sentence break before a number has a space
-    // between them (`". 2 failed"`), so requiring the digit to be adjacent keeps this
-    // from swallowing real boundaries. Without this, the splitter shreds `p < .001`
-    // into `p < .`, blinding statcheck to the most common way p-values are reported.
+    // A decimal point: a `.` immediately followed by a digit is the dot inside a
+    // number, NOT a sentence terminator — but only when the dot plausibly opens or
+    // continues a numeric token. That covers the classic `0.45` / `94.5%` (a digit
+    // before the dot) AND a LEADING-dot value like `.001` / `p < .05` / `(.05)` (the
+    // dominant APA p-value notation, where the dot OPENS the number, so the char before
+    // it is a space, a comparator, or an opening paren). Crucially it does NOT swallow
+    // a real boundary that an OCR/PDF extraction glued together — `percent.80` or
+    // `94%.80%` — where the char before the dot is a letter or `%`, not a numeric-token
+    // opener: those still split. Without the leading-dot half, the splitter shreds
+    // `p < .001` into `p < .`, blinding statcheck to the most common p-value notation.
     if i + 1 < chars.len() && chars[i + 1].is_ascii_digit() {
-        return false;
+        let opens_number = i == 0
+            || chars[i - 1].is_ascii_digit()
+            || chars[i - 1].is_whitespace()
+            || matches!(chars[i - 1], '<' | '>' | '=' | '≤' | '≥' | '≠' | '(' | '（' | ',' | '，');
+        if opens_number {
+            return false;
+        }
     }
     // The alphabetic run immediately before the period.
     let mut start = i;
@@ -836,6 +845,14 @@ mod tests {
 
         let two = extract_claims("p", "We tested 3 groups. 2 of them failed.");
         assert_eq!(two.len(), 2, "a real break before a spaced digit still splits: {two:#?}");
+
+        // A boundary an OCR/PDF extraction glued together (`word.digit`, `%.digit`)
+        // must STILL split — the leading-dot allowance only covers a dot that opens a
+        // numeric token (digit/space/comparator/paren before it), never a letter or %.
+        let glued = extract_claims("p", "Yield was 94 percent.80 percent was seen in controls.");
+        assert_eq!(glued.len(), 2, "glued word.digit boundary still splits: {glued:#?}");
+        let pct = extract_claims("p", "The efficiency reached 94%.80% was the control value.");
+        assert_eq!(pct.len(), 2, "glued %.digit boundary still splits: {pct:#?}");
     }
 
     #[test]
