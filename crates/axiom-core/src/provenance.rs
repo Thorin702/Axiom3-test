@@ -16,6 +16,7 @@
 //! is a downstream MAPPING of this same record, never a competing source of truth.
 
 use crate::model::Event;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 
 /// The schema id of THIS record format (bump on a breaking field change; independent
@@ -148,10 +149,18 @@ impl ProvenanceRecord {
 
     /// Parse a stored `draft.checked` event payload back into a record and attach the
     /// event's chain anchor. `chain_intact` is supplied by the caller (it must run the
-    /// log's `verify_chain` to know it). Errors if the payload isn't a provenance
-    /// record (e.g. an event written by an older schema).
+    /// log's `verify_chain` to know it). Errors if the payload isn't a provenance record
+    /// (an older ad-hoc payload) OR carries a `schema` this build doesn't recognize (a
+    /// FUTURE bump) — so schema drift surfaces as an explicit error instead of being
+    /// silently skipped, which would let an exporter return a stale-but-valid record.
     pub fn from_event(ev: &Event, chain_intact: bool) -> serde_json::Result<Self> {
         let mut rec: ProvenanceRecord = serde_json::from_str(&ev.payload_json)?;
+        if rec.schema != PROVENANCE_SCHEMA {
+            return Err(serde_json::Error::custom(format!(
+                "unsupported provenance schema {:?} (this build reads {PROVENANCE_SCHEMA})",
+                rec.schema
+            )));
+        }
         rec.anchor = Some(ChainAnchor {
             event_seq: ev.seq,
             event_ts: ev.ts,
@@ -257,6 +266,24 @@ mod tests {
             actor: "engine".into(),
             op: "draft.checked".into(),
             payload_json: r#"{"claims": 3, "fleet_verified": 1, "verdicts": []}"#.into(),
+            prev_hash: "x".into(),
+            entry_hash: "y".into(),
+        };
+        assert!(ProvenanceRecord::from_event(&ev, true).is_err());
+    }
+
+    #[test]
+    fn a_future_schema_payload_is_rejected_not_silently_accepted() {
+        // Structurally a valid record but a schema this build doesn't read — must be a
+        // clean error so a caller never mistakes it for an exportable current record.
+        let mut rec = sample();
+        rec.schema = "axiom3-provenance/2".into();
+        let ev = Event {
+            seq: 2,
+            ts: 0,
+            actor: "engine".into(),
+            op: "draft.checked".into(),
+            payload_json: serde_json::to_string(&rec).unwrap(),
             prev_hash: "x".into(),
             entry_hash: "y".into(),
         };

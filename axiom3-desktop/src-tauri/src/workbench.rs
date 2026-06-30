@@ -591,19 +591,23 @@ impl Workbench {
     /// Reconstruct the provenance record for the MOST RECENT draft check from the
     /// hash-chained log, attaching the event's chain anchor (so the export is
     /// independently verifiable against the chain) and the whole-chain integrity flag.
-    /// Skips any older event whose payload predates the provenance schema; errors if no
-    /// exportable check exists yet.
+    ///
+    /// Anchors on the NEWEST `draft.checked` event specifically: if that one can't be
+    /// parsed (a future/bumped provenance schema, or a corrupt payload) we BAIL with an
+    /// explicit error rather than fall through to an older, still-verifiable check —
+    /// silently exporting a stale verdict whose anchor checks out is the subtle trap
+    /// (an auditor would trust the wrong record). Errors if no check exists yet.
     pub fn latest_provenance(&self) -> anyhow::Result<ProvenanceRecord> {
         let events = self.durable.replay()?;
         let chain_intact = self.durable.verify_chain()?;
-        for ev in events.iter().rev() {
-            if ev.op == "draft.checked" {
-                if let Ok(rec) = ProvenanceRecord::from_event(ev, chain_intact) {
-                    return Ok(rec);
-                }
-            }
-        }
-        anyhow::bail!("no draft check to export yet")
+        let latest = events
+            .iter()
+            .rev()
+            .find(|ev| ev.op == "draft.checked")
+            .ok_or_else(|| anyhow::anyhow!("no draft check to export yet"))?;
+        ProvenanceRecord::from_event(latest, chain_intact).map_err(|e| {
+            anyhow::anyhow!("the latest draft check (event #{}) cannot be exported — {e}", latest.seq)
+        })
     }
 
     pub fn status(&self) -> anyhow::Result<ProjectStatus> {
@@ -858,6 +862,26 @@ pub struct ExportSummary {
     pub chain_intact: bool,
 }
 
+/// Write `bytes` to `path` atomically: a sibling `<path>.tmp` is written then renamed
+/// into place, so the destination is always either the previous complete file or the
+/// new complete one — never a half-written artifact after a crash/disk-full/yanked
+/// volume. Requires an ABSOLUTE path (the OS save dialog always yields one); rejecting
+/// a relative path is cheap defense-in-depth against a future caller treating this as a
+/// general write primitive. (It is NOT one: it only ever writes a provenance artifact,
+/// to the single path the user picked in the save dialog.)
+fn atomic_export_write(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let dest = std::path::Path::new(path);
+    if !dest.is_absolute() {
+        return Err("export path must be absolute".to_string());
+    }
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| format!("write failed: {e}"))?;
+    std::fs::rename(&tmp, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp); // don't leave a stray temp on failure
+        format!("finalize failed: {e}")
+    })
+}
+
 /// Export the latest draft check's provenance record to `path` (chosen by the OS save
 /// dialog). The record is rebuilt from the hash-chained log and written as JSON — one
 /// purpose-built sink, not a general file-write primitive: the only content it ever
@@ -871,7 +895,7 @@ pub async fn export_provenance(
     tauri::async_runtime::spawn_blocking(move || {
         let record = wb.latest_provenance().map_err(|e| e.to_string())?;
         let json = record.to_export_json().map_err(|e| e.to_string())?;
-        std::fs::write(&path, json.as_bytes()).map_err(|e| format!("write failed: {e}"))?;
+        atomic_export_write(&path, json.as_bytes())?;
         let anchor = record.anchor.as_ref();
         Ok(ExportSummary {
             path,
@@ -1382,6 +1406,39 @@ mod tests {
         let json = rec.to_export_json().unwrap();
         assert_eq!(json, wb.latest_provenance().unwrap().to_export_json().unwrap());
         assert!(json.contains("\"schema\""));
+    }
+
+    #[test]
+    fn export_bails_when_the_newest_check_is_unreadable_instead_of_returning_a_stale_one() {
+        let dir = tempdir().unwrap();
+        let wb = Workbench::open(dir.path().join("p"), "stale-test".into(), &MemorySecretStore::default())
+            .unwrap();
+        // A real, exportable check…
+        let reports = wb.deterministic_reports("The yield was 94%.");
+        wb.persist_check(reports, HashMap::new(), HashMap::new(), HashSet::new(), CheckPlan::default(), "OLD").unwrap();
+        // …then a NEWER draft.checked event the exporter can't parse (a future schema).
+        wb.append_event("engine", "draft.checked", &json!({"schema": "axiom3-provenance/99"})).unwrap();
+        assert!(wb.verify_chain().unwrap(), "the junk event still hashes into the chain");
+        // Must ERROR on the unreadable newest check, NOT silently export the older one.
+        let err = wb.latest_provenance().unwrap_err().to_string();
+        assert!(err.contains("cannot be exported"), "explicit error, got: {err}");
+        assert!(!err.contains("OLD"), "must not leak the stale record");
+    }
+
+    #[test]
+    fn atomic_export_write_requires_absolute_and_replaces_cleanly() {
+        let dir = tempdir().unwrap();
+        // Relative path is rejected (defense-in-depth).
+        assert!(atomic_export_write("relative/out.json", b"{}").is_err());
+        // Absolute write lands the bytes and leaves no stray temp file.
+        let target = dir.path().join("prov.json");
+        let p = target.to_str().unwrap();
+        atomic_export_write(p, b"{\"a\":1}").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"a\":1}");
+        assert!(!dir.path().join("prov.json.tmp").exists(), "no temp left behind");
+        // Overwrite replaces the whole content (all-or-nothing rename).
+        atomic_export_write(p, b"{\"b\":2}").unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"b\":2}");
     }
 
     #[test]
