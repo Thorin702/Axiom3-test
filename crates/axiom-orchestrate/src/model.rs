@@ -31,6 +31,7 @@ pub enum StepStatus {
 pub enum RunStatus {
     Planning,
     Running,
+    Verifying,
     Synthesizing,
     Done,
     Failed,

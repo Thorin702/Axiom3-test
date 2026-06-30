@@ -66,7 +66,7 @@ pub async fn orchestrate(
     let total = plan.steps.len();
     run.steps = plan.steps.iter().cloned().map(StepState::new).collect();
     em.emit(RunEventBody::PlanReady {
-        phases: vec!["planning".into(), "executing".into(), "synthesizing".into(), "done".into()],
+        phases: vec!["planning".into(), "executing".into(), "verifying".into(), "synthesizing".into(), "done".into()],
         planned_agents: total,
         notes: vec![],
     });
@@ -79,7 +79,7 @@ pub async fn orchestrate(
 
     // ── execute: flat fan-out, scheduler == run_batch ──
     run.status = RunStatus::Running;
-    em.emit(RunEventBody::PhaseChanged { phase: "executing".into(), index: 1, total: 4 });
+    em.emit(RunEventBody::PhaseChanged { phase: "executing".into(), index: 1, total: 5 });
 
     let em_task = em.clone();
     let em_prog = em.clone();
@@ -156,13 +156,39 @@ pub async fn orchestrate(
     let ok = run.steps.iter().filter(|s| s.status == StepStatus::Ok).count();
     let err = run.steps.iter().filter(|s| s.status == StepStatus::Failed).count();
 
-    // ── synthesize ──
-    em.emit(RunEventBody::PhaseChanged { phase: "synthesizing".into(), index: 2, total: 4 });
+    // ── verify (adversarial critique, the ultracode review stage) ──
+    em.emit(RunEventBody::PhaseChanged { phase: "verifying".into(), index: 2, total: 5 });
+    run.status = RunStatus::Verifying;
+    let critique = if cancelled {
+        String::new()
+    } else {
+        let vid = format!("{}-verify", opts.run_id);
+        em.emit(RunEventBody::AgentSpawned {
+            agent_id: vid.clone(),
+            role: "reviewer".into(),
+            model: opts.model.clone(),
+            vendor: opts.provider.clone(),
+            phase: "verifying".into(),
+        });
+        let c = synthesize::critique(goal, &run.steps, &opts.provider, &opts.model, cancel).await;
+        em.emit(RunEventBody::AgentFinished {
+            agent_id: vid,
+            outcome: "ok".into(),
+            tokens_in: 0,
+            tokens_out: 0,
+            error: None,
+            summary: Some(if c.trim().is_empty() { "no critique".into() } else { truncate(&c, 120) }),
+        });
+        c
+    };
+
+    // ── synthesize (addressing the critique) ──
+    em.emit(RunEventBody::PhaseChanged { phase: "synthesizing".into(), index: 3, total: 5 });
     run.status = RunStatus::Synthesizing;
-    run.synthesis = Some(synthesize::synthesize(goal, &run.steps, &opts.provider, &opts.model, cancel).await);
+    run.synthesis = Some(synthesize::synthesize(goal, &run.steps, &critique, &opts.provider, &opts.model, cancel).await);
 
     run.status = if cancelled { RunStatus::Cancelled } else { RunStatus::Done };
-    em.emit(RunEventBody::PhaseChanged { phase: "done".into(), index: 3, total: 4 });
+    em.emit(RunEventBody::PhaseChanged { phase: "done".into(), index: 4, total: 5 });
     em.emit(RunEventBody::RunFinished {
         status: if cancelled { "cancelled".into() } else { "done".into() },
         agents_total: total,
@@ -221,8 +247,9 @@ mod tests {
         }
         assert!(matches!(evs.first().unwrap().body, B::RunStarted { .. }));
         assert!(matches!(evs.last().unwrap().body, B::RunFinished { .. }));
-        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentSpawned { .. })).count(), 3);
-        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentFinished { .. })).count(), 3);
+        // 3 step agents + 1 reviewer (the verify stage)
+        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentSpawned { .. })).count(), 4);
+        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentFinished { .. })).count(), 4);
     }
 
     #[tokio::test]
@@ -254,8 +281,9 @@ mod tests {
         assert!(run.synthesis.is_some());
         // it was spawned (before the panic) but never finished
         let evs = sink.events();
-        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentSpawned { .. })).count(), 3);
-        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentFinished { .. })).count(), 2);
+        // 3 step spawns + 1 reviewer = 4; finishes = 2 ok steps + reviewer = 3 (panicked one never finishes)
+        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentSpawned { .. })).count(), 4);
+        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentFinished { .. })).count(), 3);
     }
 
     #[tokio::test]

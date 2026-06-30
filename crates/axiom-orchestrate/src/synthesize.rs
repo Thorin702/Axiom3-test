@@ -7,7 +7,49 @@ use axiom_runtime::supervisor::{is_retryable_error, retry_async, Cancel, RetryPo
 use axiom_runtime::{complete_with, Provider};
 use std::time::Duration;
 
-pub async fn synthesize(goal: &str, steps: &[StepState], provider: &str, model: &str, cancel: &Cancel) -> String {
+/// Adversarial verify stage: one critic reviews the sub-agent outputs against the goal
+/// and names gaps / errors / unsupported claims. Free-form critique — never a verdict.
+/// Returns "" when there's nothing to critique or the provider is unavailable (the
+/// synthesis still runs without it).
+pub async fn critique(goal: &str, steps: &[StepState], provider: &str, model: &str, cancel: &Cancel) -> String {
+    if steps.is_empty() || cancel.is_cancelled() {
+        return String::new();
+    }
+    let Some(p) = Provider::parse(provider) else {
+        return String::new();
+    };
+    let mut body = String::new();
+    for s in steps {
+        if let Some(out) = &s.output {
+            body.push_str(&format!("\n## {} ({})\n{}\n", s.spec.role, s.spec.id, out));
+        }
+    }
+    if body.is_empty() {
+        return String::new();
+    }
+    let system = "You are a critical reviewer of a multi-agent run. Given the goal and the \
+                  sub-agent outputs, list concrete gaps, errors, contradictions, or unsupported \
+                  claims — what a careful reviewer would flag. Be specific and brief; bullet \
+                  points. If the outputs are solid, say so in one line. Do not rewrite them.";
+    let user = format!("GOAL:\n{goal}\n\nSUB-AGENT OUTPUTS:{body}");
+    let req = Request {
+        system: Some(system.into()),
+        messages: vec![Message::user(vec![ContentBlock::text(user)])],
+        model: model.to_string(),
+        max_tokens: None,
+        reasoning_effort: None,
+        tools: Vec::new(),
+    };
+    let r = retry_async(&RetryPolicy::default(), is_retryable_error, || async {
+        tokio::time::timeout(Duration::from_secs(45), complete_with(p, &req))
+            .await
+            .map_err(|_| anyhow::anyhow!("critique timed out after 45s"))?
+    })
+    .await;
+    r.unwrap_or_default()
+}
+
+pub async fn synthesize(goal: &str, steps: &[StepState], critique: &str, provider: &str, model: &str, cancel: &Cancel) -> String {
     let concat = concat_fallback(steps);
     if steps.is_empty() || cancel.is_cancelled() {
         return concat;
@@ -25,8 +67,15 @@ pub async fn synthesize(goal: &str, steps: &[StepState], provider: &str, model: 
         return concat;
     }
     let system = "You fold sub-agent outputs into one coherent result for the user's goal. Be \
-                  concise and faithful to the parts; do not invent. Return only the result.";
-    let user = format!("GOAL:\n{goal}\n\nSUB-AGENT OUTPUTS:{body}");
+                  concise and faithful to the parts; do not invent. A reviewer's critique is \
+                  provided — address its valid points (fix gaps, drop unsupported claims) while \
+                  staying faithful to the work. Return only the result.";
+    let crit = if critique.trim().is_empty() {
+        String::new()
+    } else {
+        format!("\n\nREVIEWER CRITIQUE (address valid points):\n{critique}")
+    };
+    let user = format!("GOAL:\n{goal}\n\nSUB-AGENT OUTPUTS:{body}{crit}");
     let req = Request {
         system: Some(system.into()),
         messages: vec![Message::user(vec![ContentBlock::text(user)])],

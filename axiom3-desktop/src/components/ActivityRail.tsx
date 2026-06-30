@@ -12,18 +12,18 @@ import type { RunEvent, RunView } from "../lib/types";
 const S = {
   zh: {
     title: "活动", none: "暂无运行", noneSub: "用 /工作流 启动一个多智能体任务,这里会实时显示。",
-    agents: "智能体", planning: "规划", executing: "执行", synthesizing: "汇总", done: "完成",
+    agents: "智能体", planning: "规划", executing: "执行", verifying: "审查", synthesizing: "汇总", done: "完成",
     running: "运行中", ok: "完成", failed: "失败", cancelled: "已取消", cancel: "取消", tok: "令牌",
   },
   en: {
     title: "Activity", none: "No runs yet", noneSub: "Start a multi-agent task with /workflow — it streams here live.",
-    agents: "agents", planning: "Planning", executing: "Executing", synthesizing: "Synthesizing", done: "Done",
+    agents: "agents", planning: "Planning", executing: "Executing", verifying: "Reviewing", synthesizing: "Synthesizing", done: "Done",
     running: "running", ok: "done", failed: "failed", cancelled: "cancelled", cancel: "Cancel", tok: "tok",
   },
 };
 
 const PHASE_LABEL: Record<string, keyof typeof S.zh> = {
-  planning: "planning", executing: "executing", synthesizing: "synthesizing", done: "done",
+  planning: "planning", executing: "executing", verifying: "verifying", synthesizing: "synthesizing", done: "done",
 };
 
 function applyEvent(runs: RunView[], ev: RunEvent): RunView[] {
