@@ -910,12 +910,18 @@ pub async fn export_provenance(
     .map_err(|e| e.to_string())?
 }
 
-/// How many works to fetch per claim, how many of those (with an abstract) to keep as
-/// evidence, and the cap on the COMBINED (user + retrieved) passages fed to the fleet.
+/// How many works to fetch per claim, how many user-reference passages and retrieved
+/// passages to keep, and the cap on the COMBINED set fed to the fleet.
 const LIT_SEARCH_RESULTS: usize = 5;
+const USER_REF_PASSAGES: usize = 3;
 const LIT_KEEP: usize = 3;
 const MAX_EVIDENCE_PASSAGES: usize = 6;
 const LIT_ABSTRACT_SNIPPET: usize = 600;
+
+// The combined cap must fit both sources so the final `truncate` never silently drops
+// retrieved literature in favour of user refs (or vice-versa). Compile-time invariant:
+// bump MAX_EVIDENCE_PASSAGES if either source's keep-count grows.
+const _: () = assert!(USER_REF_PASSAGES + LIT_KEEP <= MAX_EVIDENCE_PASSAGES);
 
 /// Literature retrieval is on by default; `AXIOM_LITSEARCH=0` disables it (offline runs,
 /// or to compare grounded-on-user-refs-only behaviour).
@@ -1027,6 +1033,10 @@ pub async fn check_draft(
         //     references. Fail-closed PER CLAIM: a search that errors (offline) yields no
         //     retrieved evidence for that claim — it never aborts the check and never
         //     implies "no literature exists". Screened for injection below, with the rest.
+        //     LATENCY NOTE: on a fully-OFFLINE machine a connect error is retryable, so
+        //     retrieval adds bounded (never infinite) backoff before falling back — set
+        //     AXIOM_LITSEARCH=0 for offline runs. (A live fleet already needs the network,
+        //     so the offline-with-keys case is degenerate.)
         let retrieved: HashMap<String, Vec<String>> = if litsearch_enabled() {
             let lit = std::sync::Arc::new(LitSearch::new());
             let got = run_batch(
@@ -1072,7 +1082,7 @@ pub async fn check_draft(
                         Vec::new()
                     } else {
                         index
-                            .rank(&text, 3)
+                            .rank(&text, USER_REF_PASSAGES)
                             .into_iter()
                             .map(|s| index.passage(s.index).text.clone())
                             .collect()
