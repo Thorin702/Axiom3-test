@@ -820,6 +820,40 @@ mod tests {
     }
 
     #[test]
+    fn budget_deselected_bearing_claim_stays_uncertain() {
+        // Auto-depth (P4.2) may leave a bearing claim at DeterministicOnly when the
+        // fleet budget can't cover it. Such a claim has NO fleet verdict, so it MUST
+        // persist as the deterministic Uncertain/LocalOnly — the prioritization
+        // reshuffle can never let a deselected bearing claim leave Uncertain.
+        let dir = tempdir().unwrap();
+        let wb = Workbench::open(dir.path().join("p"), "deselect".into(), &MemorySecretStore::default())
+            .unwrap();
+        let reports = wb
+            .deterministic_reports("Therefore the drug causes recovery. Therefore the diet causes weight loss.");
+        let bearing: Vec<String> = reports
+            .iter()
+            .filter(|r| r.claim.is_bearing)
+            .map(|r| r.claim.id.clone())
+            .collect();
+        assert!(bearing.len() >= 2, "need >=2 bearing claims: {reports:#?}");
+        // Fleet covers only the FIRST bearing claim (as if budget = 1).
+        let mut fleet = HashMap::new();
+        fleet.insert(
+            bearing[0].clone(),
+            FleetVerdict {
+                status: VerdictStatus::Verified,
+                independence: Independence::MultiFamily,
+                reason: "multi_family_supported".into(),
+                judgements: vec![],
+            },
+        );
+        let check = wb.persist_check(reports, fleet, HashMap::new(), HashSet::new()).unwrap();
+        let deselected = check.entries.iter().find(|e| e.claim_id == bearing[1]).unwrap();
+        assert_eq!(deselected.status, "uncertain", "a deselected bearing claim stays Uncertain");
+        assert!(deselected.fleet.is_none(), "and was not fleet-judged");
+    }
+
+    #[test]
     fn check_draft_persists_claims_and_verdicts() {
         let dir = tempdir().unwrap();
         let wb = Workbench::open(
