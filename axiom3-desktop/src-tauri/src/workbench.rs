@@ -20,6 +20,7 @@ use axiom_core::store::{DurableStore, EventLog, VectorStore};
 use axiom_core::verify::{adjudicate, verify_draft, ClaimReport, Finding, FindingKind};
 use axiom_runtime::crossref::{Crossref, DoiStatus};
 use axiom_runtime::fleet::{verify_bearing_claim, FleetMember, FleetVerdict, MultiProviderRigBackend};
+use axiom_runtime::litsearch::{LitSearch, Work};
 use axiom_runtime::plan::{plan_verification, PlanBudget, VerificationDepth};
 use axiom_runtime::supervisor::{run_batch, Cancel};
 use axiom_runtime::Provider;
@@ -909,6 +910,56 @@ pub async fn export_provenance(
     .map_err(|e| e.to_string())?
 }
 
+/// How many works to fetch per claim, how many user-reference passages and retrieved
+/// passages to keep, and the cap on the COMBINED set fed to the fleet.
+const LIT_SEARCH_RESULTS: usize = 5;
+const USER_REF_PASSAGES: usize = 3;
+const LIT_KEEP: usize = 3;
+const MAX_EVIDENCE_PASSAGES: usize = 6;
+const LIT_ABSTRACT_SNIPPET: usize = 600;
+
+// The combined cap must fit both sources so the final `truncate` never silently drops
+// retrieved literature in favour of user refs (or vice-versa). Compile-time invariant:
+// bump MAX_EVIDENCE_PASSAGES if either source's keep-count grows.
+const _: () = assert!(USER_REF_PASSAGES + LIT_KEEP <= MAX_EVIDENCE_PASSAGES);
+
+/// Literature retrieval is on by default; `AXIOM_LITSEARCH=0` disables it (offline runs,
+/// or to compare grounded-on-user-refs-only behaviour).
+fn litsearch_enabled() -> bool {
+    !matches!(std::env::var("AXIOM_LITSEARCH").ok().as_deref(), Some("0") | Some("false"))
+}
+
+/// Truncate a string to at most `max` BYTES on a char boundary (never mid-multibyte).
+fn char_truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Format a retrieved work as a LABELED evidence passage, distinct from a user
+/// reference (the `[retrieved · …]` prefix carries the citation, so the fleet, the
+/// ledger, and the provenance record all see WHERE the passage came from). Returns
+/// `None` when the work has no abstract — there is no text to ground against, and a bare
+/// title would invite the fleet to "confirm" a claim from a title alone.
+fn work_as_evidence(w: &Work) -> Option<String> {
+    let abs = w.abstract_text.trim();
+    if abs.is_empty() {
+        return None;
+    }
+    let cite = match &w.doi {
+        Some(d) => format!("doi:{d}"),
+        None => w.openalex_id.clone(),
+    };
+    let year = w.year.map(|y| y.to_string()).unwrap_or_else(|| "n.d.".to_string());
+    let snippet = char_truncate(abs, LIT_ABSTRACT_SNIPPET);
+    Some(format!("[retrieved · {cite}] {} ({year}). {snippet}", w.title))
+}
+
 #[tauri::command]
 pub async fn check_draft(
     app: tauri::AppHandle,
@@ -972,6 +1023,51 @@ pub async fn check_draft(
             .filter(|r| fleet_planned.contains(&r.claim.id))
             .map(|r| (r.claim.id.clone(), r.claim.text.clone()))
             .collect();
+
+        // 2a-pre. Literature retrieval (NETWORK): pull CANDIDATE evidence from the
+        //     published record for each planned bearing claim, so a verdict can rest on
+        //     real literature — not only the user's references or the model's memory.
+        //     CONSERVATIVE: retrieved passages are ADVISORY (a grounded verdict still
+        //     caps to Uncertain via the evidence-axis gate in persist_check) and are
+        //     LABELED so the ledger/provenance distinguish them from the user's own
+        //     references. Fail-closed PER CLAIM: a search that errors (offline) yields no
+        //     retrieved evidence for that claim — it never aborts the check and never
+        //     implies "no literature exists". Screened for injection below, with the rest.
+        //     LATENCY NOTE: on a fully-OFFLINE machine a connect error is retryable, so
+        //     retrieval adds bounded (never infinite) backoff before falling back — set
+        //     AXIOM_LITSEARCH=0 for offline runs. (A live fleet already needs the network,
+        //     so the offline-with-keys case is degenerate.)
+        let retrieved: HashMap<String, Vec<String>> = if litsearch_enabled() {
+            let lit = std::sync::Arc::new(LitSearch::new());
+            let got = run_batch(
+                bearing_src.clone(),
+                4,
+                &cancel,
+                |(id, text)| {
+                    let lit = lit.clone();
+                    async move {
+                        let passages: Vec<String> = match lit.search(&text, LIT_SEARCH_RESULTS).await {
+                            Ok(works) => works.iter().filter_map(work_as_evidence).take(LIT_KEEP).collect(),
+                            Err(_) => Vec::new(),
+                        };
+                        (id, passages)
+                    }
+                },
+                |_, _| {},
+            )
+            .await;
+            got.into_iter().collect()
+        } else {
+            HashMap::new()
+        };
+
+        // 2a. Evidence assembly is deterministic CPU work — build the user-reference
+        //     corpus index ONCE, rank each bearing claim against it, MERGE the retrieved
+        //     literature passages, cap the combined set, and SCREEN every passage (user
+        //     OR retrieved) for prompt-injection. Runs off the async runtime
+        //     (spawn_blocking). A claim whose evidence is poisoned is neutralized (never
+        //     sent to the fleet) so untrusted text — wherever it came from — can't drive
+        //     a verdict.
         let refs = references.clone();
         let (bearing, em, inj): (Vec<(String, String, Vec<String>)>, _, _) =
             tauri::async_runtime::spawn_blocking(move || {
@@ -982,15 +1078,21 @@ pub async fn check_draft(
                 let mut evidence_map: HashMap<String, Vec<String>> = HashMap::new();
                 let mut injected: HashSet<String> = HashSet::new();
                 for (id, text) in bearing_src {
-                    let ev: Vec<String> = if index.is_empty() {
+                    let mut ev: Vec<String> = if index.is_empty() {
                         Vec::new()
                     } else {
                         index
-                            .rank(&text, 3)
+                            .rank(&text, USER_REF_PASSAGES)
                             .into_iter()
                             .map(|s| index.passage(s.index).text.clone())
                             .collect()
                     };
+                    // Append retrieved literature (already relevance-ranked by the search),
+                    // then cap so the grounding prompt stays bounded.
+                    if let Some(r) = retrieved.get(&id) {
+                        ev.extend(r.iter().cloned());
+                    }
+                    ev.truncate(MAX_EVIDENCE_PASSAGES);
                     if ev.iter().any(|p| axiom_core::evidence::looks_like_injection(p)) {
                         // Keep the poisoned passage so the audit + UI can show WHAT was
                         // caught, but do not let it reach the fleet.
@@ -1439,6 +1541,35 @@ mod tests {
         // Overwrite replaces the whole content (all-or-nothing rename).
         atomic_export_write(p, b"{\"b\":2}").unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"b\":2}");
+    }
+
+    #[test]
+    fn work_as_evidence_labels_with_citation_and_skips_abstractless_works() {
+        let w = Work {
+            openalex_id: "W1".into(),
+            title: "Ankle sprains".into(),
+            abstract_text: "Sprains are common in athletes.".into(),
+            doi: Some("10.1/x".into()),
+            year: Some(2019),
+            authors: vec![],
+        };
+        let ev = work_as_evidence(&w).unwrap();
+        assert!(ev.starts_with("[retrieved · doi:10.1/x]"), "{ev}");
+        assert!(ev.contains("Ankle sprains") && ev.contains("(2019)"));
+        // No abstract → no evidence (a bare title must never become groundable text).
+        let bare = Work { abstract_text: "   ".into(), ..w.clone() };
+        assert!(work_as_evidence(&bare).is_none());
+        // No DOI → cite by the OpenAlex id instead.
+        let no_doi = Work { doi: None, ..w };
+        assert!(work_as_evidence(&no_doi).unwrap().contains("[retrieved · W1]"));
+    }
+
+    #[test]
+    fn char_truncate_never_splits_a_multibyte_char() {
+        let s = "研究研究研究"; // 6 CJK chars, 18 bytes
+        let t = char_truncate(s, 7); // 7 falls mid-char → floors to 6 bytes (2 chars)
+        assert!(t.len() <= 7 && t.chars().count() == 2, "{t:?}");
+        assert_eq!(char_truncate("abc", 10), "abc");
     }
 
     #[test]
