@@ -63,54 +63,47 @@ impl Checker for StatcheckChecker {
 const ALPHA: f64 = 0.05;
 
 /// Compare a reported test to its recomputed p-value; return a message iff they are
-/// inconsistent. Flags a "decision flips" case (the significance verdict changes)
-/// distinctly, since that is the gross, reviewer-relevant error.
-fn inconsistency(n: &Nhst, recomputed: f64) -> Option<String> {
+/// inconsistent under EVERY benign interpretation.
+///
+/// The recompute is two-tailed; a correctly-reported ONE-TAILED test (common in
+/// directional work) reports half that. To avoid calling a correct paper wrong, the
+/// reported value is checked against BOTH the two-tailed p and the one-tailed (half)
+/// p (for t/r; F is intrinsically one-tailed), and is flagged only when it fits
+/// NEITHER. A "decision FLIPS" message is reserved for the gross case where, even
+/// two-tailed, the significance verdict at .05 changes.
+fn inconsistency(n: &Nhst, p_two: f64) -> Option<String> {
+    let candidates = if n.kind == 'F' { [p_two, p_two] } else { [p_two, p_two / 2.0] };
+    if candidates.iter().any(|&p| satisfies(n, p)) {
+        return None;
+    }
     let test = describe_test(n);
+    if n.p_op == '=' && decision_flips(n.p_reported, p_two) {
+        Some(format!(
+            "statcheck: reported p={} for {test} recomputes to p≈{p_two:.4} (two-tailed) — the significance \
+             decision at .05 FLIPS; verify the statistic/df/p (not explained by a one-tailed test)",
+            fmt_p(n.p_reported)
+        ))
+    } else {
+        Some(format!(
+            "statcheck: reported p{}{} for {test} recomputes to p≈{p_two:.4} (two-tailed) — inconsistent; \
+             verify the statistic/df/p (e.g. a typo or a multiple-comparison correction)",
+            n.p_op,
+            fmt_p(n.p_reported)
+        ))
+    }
+}
+
+/// Is a reported p consistent with the candidate p-value `p` at the reported precision?
+fn satisfies(n: &Nhst, p: f64) -> bool {
     match n.p_op {
         '=' => {
             let d = n.p_decimals.max(2);
             let factor = 10f64.powi(d as i32);
-            let rounded = (recomputed * factor).round() / factor;
-            if (rounded - n.p_reported).abs() <= 1e-12 {
-                return None; // consistent at the reported precision
-            }
-            if decision_flips(n.p_reported, recomputed) {
-                Some(format!(
-                    "statcheck: reported p={} for {test} recomputes to p≈{recomputed:.4} — the significance \
-                     decision at .05 FLIPS (likely a reporting error; confirm it isn't one-tailed/corrected)",
-                    fmt_p(n.p_reported)
-                ))
-            } else {
-                Some(format!(
-                    "statcheck: reported p={} for {test} recomputes to p≈{recomputed:.4} — inconsistent; \
-                     confirm the statistic, df, or p-value",
-                    fmt_p(n.p_reported)
-                ))
-            }
+            ((p * factor).round() / factor - n.p_reported).abs() <= 1e-12
         }
-        '<' => {
-            if recomputed < n.p_reported {
-                return None;
-            }
-            Some(format!(
-                "statcheck: reported p<{} for {test} but the recomputed p≈{recomputed:.4} is NOT below {} \
-                 — inconsistent significance claim",
-                fmt_p(n.p_reported),
-                fmt_p(n.p_reported)
-            ))
-        }
-        '>' => {
-            if recomputed > n.p_reported {
-                return None;
-            }
-            Some(format!(
-                "statcheck: reported p>{} for {test} but the recomputed p≈{recomputed:.4} is not above it \
-                 — inconsistent",
-                fmt_p(n.p_reported)
-            ))
-        }
-        _ => None,
+        '<' => p < n.p_reported,
+        '>' => p > n.p_reported,
+        _ => true,
     }
 }
 
@@ -146,16 +139,21 @@ fn fmt_p(p: f64) -> String {
 // Parser (regex-free)
 // ---------------------------------------------------------------------------
 
+/// Plausibility ceiling on degrees of freedom: above this it isn't a real df (it's a
+/// citation year, an index, or a parser glitch), and it keeps the recompute inside the
+/// range where the incomplete beta is accurate.
+const MAX_DF: f64 = 1.0e7;
+
 /// Parse every reported NHST test in `text`.
 fn parse_nhst(text: &str) -> Vec<Nhst> {
     let c: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
     while i < c.len() {
-        // A test symbol must stand alone: preceded by a non-letter so "first(" etc.
-        // don't match the trailing 't('.
-        let prev_is_letter = i > 0 && c[i - 1].is_alphabetic();
-        if !prev_is_letter && matches!(c[i], 't' | 'F' | 'r') && c.get(i + 1) == Some(&'(') {
+        // A test symbol must stand alone: preceded by a non-ALPHANUMERIC, so neither
+        // "first(" (letter before) nor "3r(" (digit before) matches.
+        let prev_is_alnum = i > 0 && c[i - 1].is_alphanumeric();
+        if !prev_is_alnum && matches!(c[i], 't' | 'F' | 'r') && c.get(i + 1) == Some(&'(') {
             if let Some((nhst, next)) = parse_one(&c, i) {
                 out.push(nhst);
                 i = next;
@@ -172,6 +170,9 @@ fn parse_one(c: &[char], start: usize) -> Option<(Nhst, usize)> {
     let kind = c[start];
     let mut i = start + 2; // past "t("
     let (df1, _, after) = read_num(c, i)?;
+    if !(1.0..=MAX_DF).contains(&df1) {
+        return None; // not a plausible df (citation year, index, glitch)
+    }
     i = after;
     let mut df2 = 0.0;
     if kind == 'F' {
@@ -181,6 +182,9 @@ fn parse_one(c: &[char], start: usize) -> Option<(Nhst, usize)> {
         }
         i = skip_ws(c, i + 1);
         let (d2, _, after2) = read_num(c, i)?;
+        if !(1.0..=MAX_DF).contains(&d2) {
+            return None;
+        }
         df2 = d2;
         i = after2;
     }
@@ -194,37 +198,34 @@ fn parse_one(c: &[char], start: usize) -> Option<(Nhst, usize)> {
     }
     i = skip_ws(c, i + 1);
     let (stat, _, after_stat) = read_num(c, i)?;
+    // A correlation must satisfy |r| < 1.
+    if kind == 'r' && stat.abs() >= 1.0 {
+        return None;
+    }
     i = after_stat;
 
-    // Look ahead a bounded window for the p-value report.
-    let p_start = i;
-    let limit = (i + 40).min(c.len());
-    let mut j = p_start;
-    while j < limit {
-        let prev_letter = j > 0 && c[j - 1].is_alphabetic();
-        if !prev_letter && c[j] == 'p' {
-            let mut k = skip_ws(c, j + 1);
-            let op = match c.get(k) {
-                Some('=') => '=',
-                Some('<') | Some('≤') => '<',
-                Some('>') | Some('≥') => '>',
-                _ => {
-                    j += 1;
-                    continue;
-                }
-            };
-            k = skip_ws(c, k + 1);
-            if let Some((p_reported, p_decimals, after_p)) = read_num(c, k) {
-                let excerpt: String = c[start..after_p].iter().collect();
-                return Some((
-                    Nhst { kind, df1, df2, stat, p_op: op, p_reported, p_decimals, excerpt },
-                    after_p,
-                ));
-            }
-        }
-        j += 1;
+    // The p-value MUST be reported ADJACENT to the statistic — only whitespace / a
+    // comma / semicolon / an opening paren may sit between them. This refuses to
+    // scavenge an unrelated later p across a citation or a second test (the false
+    // positives a 40-char free-scan produced).
+    let mut k = i;
+    while matches!(c.get(k), Some(' ') | Some(',') | Some(';') | Some('(')) {
+        k += 1;
     }
-    None
+    if c.get(k) != Some(&'p') {
+        return None;
+    }
+    let mut m = skip_ws(c, k + 1);
+    let op = match c.get(m) {
+        Some('=') => '=',
+        Some('<') | Some('≤') => '<',
+        Some('>') | Some('≥') => '>',
+        _ => return None,
+    };
+    m = skip_ws(c, m + 1);
+    let (p_reported, p_decimals, after_p) = read_num(c, m)?;
+    let excerpt: String = c[start..after_p].iter().collect();
+    Some((Nhst { kind, df1, df2, stat, p_op: op, p_reported, p_decimals, excerpt }, after_p))
 }
 
 fn skip_ws(c: &[char], mut i: usize) -> usize {
@@ -232,6 +233,18 @@ fn skip_ws(c: &[char], mut i: usize) -> usize {
         i += 1;
     }
     i
+}
+
+/// Is there an exponent (`e`/`E` + optional sign + digit) starting at `i`?
+fn is_exponent_start(c: &[char], i: usize) -> bool {
+    if !matches!(c.get(i), Some('e') | Some('E')) {
+        return false;
+    }
+    let mut j = i + 1;
+    if matches!(c.get(j), Some('-') | Some('+') | Some('−')) {
+        j += 1;
+    }
+    matches!(c.get(j), Some(d) if d.is_ascii_digit())
 }
 
 /// Read a number at `start`: optional sign, digits, optional `.` + digits, incl. a
@@ -261,6 +274,11 @@ fn read_num(c: &[char], start: usize) -> Option<(f64, usize, usize)> {
         }
     }
     if digits == 0 {
+        return None;
+    }
+    // Refuse scientific notation rather than silently truncating to the mantissa
+    // ("2.05e3" must not be read as 2.05). The caller then skips the test.
+    if is_exponent_start(c, i) {
         return None;
     }
     // Normalise a leading dot ("-.04" / ".04") so the parse accepts it.
@@ -330,20 +348,44 @@ mod tests {
 
     #[test]
     fn a_false_significance_claim_is_flagged() {
-        // r(48)=.10 → t≈.70 → p≈.49, but reported p<.01 → inconsistent.
+        // r(48)=.10 → t≈.70 → two-tailed p≈.49, one-tailed≈.245 — neither is < .01.
         let f = flags("There was a correlation, r(48) = .10, p < .01.");
         assert_eq!(f.len(), 1, "{f:#?}");
-        assert!(f[0].message.contains("NOT below"), "{}", f[0].message);
+        assert!(f[0].message.contains("inconsistent"), "{}", f[0].message);
     }
 
     #[test]
     fn a_minor_inconsistency_is_flagged_without_flip() {
-        // t(28)=2.50 → p≈.0185 reported as p=.01 → inconsistent, but BOTH are
-        // significant (< .05) so the decision does NOT flip.
-        let f = flags("t(28) = 2.50, p = .01.");
+        // t(10)=2.0 → two-tailed p≈.073, one-tailed≈.037; reported .30 fits NEITHER.
+        // Both reported and recomputed are non-significant, so no decision flip.
+        let f = flags("t(10) = 2.0, p = .30.");
         assert_eq!(f.len(), 1, "{f:#?}");
         assert!(f[0].message.contains("inconsistent"), "{}", f[0].message);
         assert!(!f[0].message.contains("FLIPS"), "{}", f[0].message);
+    }
+
+    #[test]
+    fn a_one_tailed_result_is_not_falsely_flagged() {
+        // t(28)=2.05 → two-tailed p≈.0498; a directional test reports the one-tailed
+        // half ≈ .025, so "p = .02" must NOT be flagged (it's a valid one-tailed report).
+        assert!(flags("Directional test held, t(28) = 2.05, p = .02.").is_empty());
+    }
+
+    #[test]
+    fn loose_parsing_false_positives_are_gone() {
+        // A citation between the statistic and an unrelated later p — must NOT pair them.
+        assert!(flags("the function F(2, 27) = 3.35 (Smith, 1999) was used; later p = .80").is_empty());
+        // Two tests near one p: the first has no adjacent p; the second (t(30)=3.0,
+        // p=.01) is consistent — so no false flag and the real test isn't dropped.
+        assert!(flags("t(28) = 2.05 and t(30) = 3.0, p = .01").is_empty());
+        // Sequence/index notation with a non-adjacent p (a word sits between).
+        assert!(flags("The sequence a(n), t(5) = 3.0, threshold p = .5.").is_empty());
+        // A digit before the symbol ("3r(") must not parse as a test.
+        assert!(flags("Model 3r(48) = .5, p = .01").is_empty());
+        // Scientific notation is skipped, not truncated to the mantissa.
+        assert!(flags("t(28) = 2.05e3, p = .04").is_empty());
+        // An implausibly large df (above the ceiling) is not a real test.
+        assert!(flags("t(20000000) = 2.0, p = .04").is_empty());
     }
 
     #[test]
