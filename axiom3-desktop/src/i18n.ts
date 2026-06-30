@@ -93,6 +93,8 @@ const CODE: Record<string, Pair> = {
   single_family_independence_unmet: { zh: "独立性不足(单厂商)", en: "single-family (independence unmet)" },
   insufficient_corroboration: { zh: "佐证不足", en: "insufficient corroboration" },
   deterministic_flags_block_verify: { zh: "确定性标记阻止核实", en: "deterministic flags block verify" },
+  fleet_cap_exceeded: { zh: "未跨厂商核验(超出本次预算)", en: "not cross-vendor checked (over this run's budget)" },
+  cross_vendor_unavailable: { zh: "未跨厂商核验(无可用厂商/全部失败)", en: "not cross-vendor checked (no providers / all failed)" },
   evidence_supports: { zh: "你的来源支持此断言", en: "your sources support this claim" },
   evidence_contradicts: { zh: "你的来源与此断言矛盾", en: "your sources contradict this claim" },
   grounded_single_source: { zh: "证据仅来自单一来源,未独立佐证(故存疑)", en: "evidence from a single source — not independently corroborated (so: uncertain)" },

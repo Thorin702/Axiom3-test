@@ -370,7 +370,11 @@ function App() {
                         !notableOnly ||
                         e.findings.length > 0 ||
                         e.fleet ||
-                        e.status === "injection_neutralized"
+                        e.status === "injection_neutralized" ||
+                        // A bearing conclusion that lost the fleet budget is notable —
+                        // an unverified conclusion the user should see (won't flood: only
+                        // the over-cap overflow, not the no-providers case).
+                        e.reason?.includes("fleet_cap_exceeded")
                     )
                     .map((e) => {
                       const st = entryStatus(e);
@@ -388,10 +392,12 @@ function App() {
                             <span style={{ fontSize: 11, color: st.color, minWidth: 56 }}>{st.label}</span>
                             <span style={{ fontSize: 14 }}>{e.text}</span>
                           </div>
-                          {/* The grounded direction + why the verdict landed where it did —
-                              shown for fleet-judged or neutralized claims (not clean ones). */}
+                          {/* Why the verdict landed where it did — the grounded direction
+                              for fleet-judged claims, and for a BEARING conclusion the
+                              honest reason it was (or wasn't) cross-checked (budget /
+                              unavailable). Not shown for clean non-bearing claims. */}
                           {e.reason &&
-                            (e.fleet || e.status === "injection_neutralized") &&
+                            (e.fleet || e.is_bearing || e.status === "injection_neutralized") &&
                             e.reason !== "clean_pending" && (
                               <div style={{ margin: "4px 0 0 64px", fontSize: 12, opacity: 0.85, color: st.color }}>
                                 {reasonLabel(lang, e.reason)}
