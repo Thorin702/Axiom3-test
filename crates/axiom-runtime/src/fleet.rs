@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 use std::future::Future;
 
 use axiom_core::model::{Independence, VerdictStatus};
+use axiom_providers::capability::is_local_family;
 use axiom_providers::message::{ContentBlock, Message, Request};
 use axiom_providers::routing::independence_of_families;
 
@@ -82,10 +83,14 @@ pub async fn verify_bearing_claim<B: FleetBackend>(
 
 /// Aggregate per-vendor judgements through the cross-vendor independence gate.
 pub fn adjudicate_fleet(judgements: Vec<VendorJudgement>) -> FleetVerdict {
+    // Local/offline families are ignored for adjudication ENTIRELY: a local model is
+    // the user's own and provides no third-party corroboration, so it must neither
+    // PRODUCE an assertive verdict (the independence gate already enforces this) nor
+    // VETO one via the disagreement test below. Build cloud-only support/refute sets.
     let families_with = |status: VerdictStatus| -> Vec<String> {
         judgements
             .iter()
-            .filter(|j| j.status == status)
+            .filter(|j| j.status == status && !is_local_family(&j.family))
             .map(|j| j.family.clone())
             .collect()
     };
@@ -187,14 +192,21 @@ pub fn build_verify_request(claim: &str, model: &str, evidence: &[String]) -> Re
 /// Parse a model reply into a verdict. Conservative: anything unrecognised → Uncertain
 /// (a verifier can never accidentally up-vote to Verified/Refuted on garbled output).
 pub fn parse_verdict(reply: &str) -> VerdictStatus {
-    let low = reply.to_lowercase();
-    if let Some(idx) = low.find("verdict:") {
-        let tail = low[idx + "verdict:".len()..].trim_start();
-        if word_at_start(tail, "refuted") {
-            return VerdictStatus::Refuted;
-        }
-        if word_at_start(tail, "verified") {
-            return VerdictStatus::Verified;
+    // Anchor to a LINE that starts with `verdict:` (after trimming). Prose that merely
+    // mentions "verdict:" mid-sentence — a quoted protocol, an echoed evidence passage —
+    // does not start a line with it, so it cannot flip the result. The first such line
+    // is the model's own verdict; anything unrecognised stays Uncertain.
+    for line in reply.lines() {
+        let low = line.trim().to_lowercase();
+        if let Some(tail) = low.strip_prefix("verdict:") {
+            let tail = tail.trim_start();
+            if word_at_start(tail, "refuted") {
+                return VerdictStatus::Refuted;
+            }
+            if word_at_start(tail, "verified") {
+                return VerdictStatus::Verified;
+            }
+            return VerdictStatus::Uncertain;
         }
     }
     VerdictStatus::Uncertain
@@ -373,6 +385,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_family_cannot_veto_a_multi_cloud_verdict() {
+        // Two independent CLOUD families verify; one LOCAL family dissents (refutes).
+        // The local dissent must NOT manufacture a cross_vendor_disagreement — a local
+        // model provides no corroboration and so cannot veto an honest cloud verdict.
+        let v = run(
+            &[member("anthropic", "opus"), member("openai", "gpt"), member("ollama", "local")],
+            &[
+                ("opus", Ok(VerdictStatus::Verified)),
+                ("gpt", Ok(VerdictStatus::Verified)),
+                ("local", Ok(VerdictStatus::Refuted)),
+            ],
+        )
+        .await;
+        assert_eq!(v.status, VerdictStatus::Verified, "local dissent cannot block a 2-cloud verdict");
+        assert_eq!(v.reason, "multi_family_supported");
+        assert_eq!(v.independence, Independence::MultiFamily);
+    }
+
+    #[tokio::test]
     async fn all_uncertain_is_insufficient_corroboration() {
         let v = run(
             &[member("anthropic", "opus"), member("openai", "gpt")],
@@ -407,5 +438,15 @@ mod tests {
         assert_eq!(parse_verdict("VERDICT: refutedness is unclear"), VerdictStatus::Uncertain);
         // A boundary char after the keyword is fine.
         assert_eq!(parse_verdict("VERDICT: refuted."), VerdictStatus::Refuted);
+        // Line-anchored: prose that merely MENTIONS "verdict:" mid-sentence can't flip
+        // it; the actual verdict line wins.
+        assert_eq!(
+            parse_verdict("the source said verdict: verified, however\nVERDICT: uncertain"),
+            VerdictStatus::Uncertain
+        );
+        assert_eq!(
+            parse_verdict("Note: their verdict: refuted is wrong.\nVERDICT: verified"),
+            VerdictStatus::Verified
+        );
     }
 }

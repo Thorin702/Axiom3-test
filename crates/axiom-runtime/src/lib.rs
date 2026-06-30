@@ -33,6 +33,15 @@ pub enum Provider {
 /// DashScope's OpenAI-compatible base URL (Chat Completions API), used for Qwen.
 const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
+/// Canonical OpenAI base URL — PINNED. rig's `openai::Client::from_env()` honors an
+/// `OPENAI_BASE_URL` env override; if that pointed the `openai` family at a shared
+/// gateway (e.g. the same DashScope endpoint that serves Qwen, or any OpenRouter/
+/// LiteLLM proxy), two "independent" families could resolve to ONE physical model and
+/// fake the cross-vendor corroboration H2 requires. We build the OpenAI client with
+/// this fixed base URL so the env cannot redirect it. A user who wants a custom
+/// OpenAI-compatible endpoint connects it as its OWN distinct family, never as `openai`.
+const OPENAI_BASE_URL: &str = "https://api.openai.com/v1";
+
 impl Provider {
     /// Parse a provider label (case-insensitive); `google` aliases Gemini,
     /// `dashscope` aliases Qwen.
@@ -93,7 +102,21 @@ macro_rules! run_provider_agent {
 pub async fn complete_with(provider: Provider, req: &Request) -> anyhow::Result<String> {
     match provider {
         Provider::Anthropic => run_provider_agent!(anthropic::Client::from_env().map_err(anyerr)?, req),
-        Provider::OpenAi => run_provider_agent!(openai::Client::from_env().map_err(anyerr)?, req),
+        // Build explicitly with the PINNED base URL (see OPENAI_BASE_URL) rather than
+        // from_env, which would honor an OPENAI_BASE_URL override and could collapse
+        // cross-vendor independence.
+        Provider::OpenAi => {
+            let key = std::env::var(Provider::OpenAi.env_var())
+                .map_err(|_| anyhow::anyhow!("{} not set", Provider::OpenAi.env_var()))?;
+            run_provider_agent!(
+                openai::Client::builder()
+                    .api_key(&key)
+                    .base_url(OPENAI_BASE_URL)
+                    .build()
+                    .map_err(anyerr)?,
+                req
+            )
+        }
         Provider::DeepSeek => run_provider_agent!(deepseek::Client::from_env().map_err(anyerr)?, req),
         Provider::Gemini => run_provider_agent!(gemini::Client::from_env().map_err(anyerr)?, req),
         // OpenAI-compatible (Chat Completions) at DashScope's endpoint.
