@@ -59,7 +59,7 @@ fn fleet_from_env() -> Vec<FleetMember> {
     let candidates = [
         (Provider::Anthropic, "claude-haiku-4-5-20251001"),
         (Provider::OpenAi, "gpt-4o-mini"),
-        (Provider::DeepSeek, "deepseek-chat"),
+        (Provider::DeepSeek, "deepseek-v4-flash"),
         (Provider::Gemini, "gemini-1.5-flash"),
         (Provider::Qwen, "qwen-plus"),
     ];
