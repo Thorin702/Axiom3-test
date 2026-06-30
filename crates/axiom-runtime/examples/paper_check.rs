@@ -4,15 +4,17 @@
 //! Usage:
 //!   cargo run -p axiom-runtime --example paper_check -- <path-to-doc> [max_fleet_claims]
 //!
-//! Extracts text (pdf/docx/txt/md), runs the deterministic tier, then sends the
-//! first N bearing claims through the real cross-vendor fleet (knowledge mode — no
-//! references — i.e. the "researcher self-check" flow). Needs >=2 cloud provider
-//! keys in env (e.g. DEEPSEEK_API_KEY, QWEN_API_KEY) for an assertive fleet verdict.
+//! Exercises the M4 pipeline: extract → deterministic tier → AUTO-DEPTH plan
+//! (P4.2, which bearing claims earn the fleet within budget, flagged-first) →
+//! IDEMPOTENCY dedup (P4.4, verify each unique claim once) → cross-vendor fleet with
+//! RETRY (P4.1). Knowledge mode (no references), the "researcher self-check" flow.
+//! Needs >=2 cloud provider keys in env (e.g. DEEPSEEK_API_KEY, QWEN_API_KEY).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use axiom_core::verify::verify_draft;
 use axiom_runtime::fleet::{verify_bearing_claim, FleetMember, MultiProviderRigBackend};
+use axiom_runtime::plan::{plan_verification, PlanBudget, VerificationDepth};
 use axiom_runtime::Provider;
 
 #[tokio::main]
@@ -63,8 +65,50 @@ async fn main() -> anyhow::Result<()> {
             model: (*model).to_string(),
         })
         .collect();
+    // --- auto-depth plan (P4.2): which bearing claims earn the fleet within budget ---
+    let depths = plan_verification(&reports, &PlanBudget { max_fleet_claims: max });
+    let planned: Vec<&axiom_core::verify::ClaimReport> = reports
+        .iter()
+        .zip(depths.iter())
+        .filter(|(_, d)| **d == VerificationDepth::Fleet)
+        .map(|(r, _)| r)
+        .collect();
+    let planned_flagged = planned.iter().filter(|r| !r.findings.is_empty()).count();
+    println!("\n--- auto-depth plan (P4.2) ---");
+    println!("fleet budget: {max}");
     println!(
-        "\n--- cross-vendor fleet ({} vendors: {:?}) ---",
+        "fleet-planned: {} of {} bearing claims ({} flagged-first), deterministic-only: {}",
+        planned.len(),
+        bearing.len(),
+        planned_flagged,
+        total - planned.len()
+    );
+    if bearing.len() > max {
+        println!(
+            "  (>{max} bearing claims — {} crowded out by budget, the LEAST important)",
+            bearing.len() - max
+        );
+    }
+
+    // --- idempotency (P4.4): verify each UNIQUE claim once (knowledge mode → key = text) ---
+    let mut unique: Vec<String> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for r in &planned {
+        if !seen.contains_key(&r.claim.text) {
+            seen.insert(r.claim.text.clone(), unique.len());
+            unique.push(r.claim.text.clone());
+        }
+    }
+    println!("\n--- idempotency (P4.4) ---");
+    println!(
+        "unique fleet claims: {} (deduped from {} planned — {} duplicate dispatch(es) saved)",
+        unique.len(),
+        planned.len(),
+        planned.len() - unique.len()
+    );
+
+    println!(
+        "\n--- cross-vendor fleet ({} vendors: {:?}, retry-enabled) ---",
         fleet.len(),
         fleet.iter().map(|m| m.family.as_str()).collect::<Vec<_>>()
     );
@@ -72,17 +116,16 @@ async fn main() -> anyhow::Result<()> {
         println!("need >=2 cloud keys for an assertive verdict; skipping fleet.");
         return Ok(());
     }
-
-    let n = max.min(bearing.len());
-    println!("judging the first {n} bearing claims (knowledge mode, no references)…\n");
+    println!("judging {} unique bearing claims…\n", unique.len());
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for (i, r) in bearing.iter().take(n).enumerate() {
-        let v = verify_bearing_claim(&r.claim.text, &[], &fleet, &MultiProviderRigBackend).await;
+    for (i, claim) in unique.iter().enumerate() {
+        let v = verify_bearing_claim(claim, &[], &fleet, &MultiProviderRigBackend).await;
         *counts.entry(v.status.code()).or_insert(0) += 1;
-        let snippet: String = r.claim.text.chars().take(90).collect();
+        let snippet: String = claim.chars().take(90).collect();
         println!(
-            "[{:>2}/{n}] {:>9} ({:<13}) :: {snippet}",
+            "[{:>2}/{}] {:>9} ({:<13}) :: {snippet}",
             i + 1,
+            unique.len(),
             v.status.code(),
             v.independence.code()
         );
