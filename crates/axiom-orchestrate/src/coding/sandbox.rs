@@ -8,11 +8,21 @@ use std::time::Duration;
 
 const MAX_READ: usize = 256 * 1024;
 const MAX_OUT: usize = 64 * 1024;
-/// Path components never exposed, even inside the root (secrets / vcs internals).
+const MAX_WRITE: usize = 2 * 1024 * 1024;
+/// Path components never exposed/written, even inside the root (secrets / vcs internals).
 const DENY: &[&str] = &[".git", ".env", ".ssh", ".aws", "id_rsa", "id_ed25519", ".npmrc"];
+
+/// Read-only (production default) vs read-write (an opted-in coding task / eval scratch).
+/// Writes and build/test execution are refused entirely in `ReadOnly`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxMode {
+    ReadOnly,
+    ReadWrite,
+}
 
 pub struct Sandbox {
     root: PathBuf,
+    mode: SandboxMode,
 }
 
 #[derive(Debug)]
@@ -22,17 +32,26 @@ pub struct CmdResult {
 }
 
 impl Sandbox {
+    /// Read-only sandbox (the production default).
     pub fn new(root: impl AsRef<Path>) -> anyhow::Result<Self> {
+        Self::with_mode(root, SandboxMode::ReadOnly)
+    }
+
+    pub fn with_mode(root: impl AsRef<Path>, mode: SandboxMode) -> anyhow::Result<Self> {
         let root = std::fs::canonicalize(root.as_ref())
             .map_err(|e| anyhow::anyhow!("workspace not found: {e}"))?;
         if !root.is_dir() {
             anyhow::bail!("workspace is not a directory");
         }
-        Ok(Self { root })
+        Ok(Self { root, mode })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn mode(&self) -> SandboxMode {
+        self.mode
     }
 
     /// Resolve a (relative or absolute) path to a real path strictly inside the root, or
@@ -89,11 +108,59 @@ impl Sandbox {
         Ok(entries.join("\n"))
     }
 
+    /// Resolve a path for WRITING: refused in read-only mode; rejects `..`, DENY
+    /// components, and any target whose existing parent escapes the root (symlink-out
+    /// included, since the parent is canonicalized). The file itself need not exist yet.
+    fn resolve_for_write(&self, p: &str) -> Result<PathBuf, String> {
+        if self.mode != SandboxMode::ReadWrite {
+            return Err("workspace is read-only".into());
+        }
+        let raw = Path::new(p);
+        for c in raw.components() {
+            match c {
+                std::path::Component::ParentDir => return Err(format!("'..' not allowed: {p}")),
+                std::path::Component::Normal(os) if DENY.iter().any(|d| os == *d) => {
+                    return Err(format!("write denied: {p}"))
+                }
+                _ => {}
+            }
+        }
+        let joined = if raw.is_absolute() { raw.to_path_buf() } else { self.root.join(raw) };
+        let parent = joined.parent().ok_or_else(|| format!("no parent dir: {p}"))?;
+        let cparent = std::fs::canonicalize(parent).map_err(|_| format!("parent dir does not exist: {p}"))?;
+        if !cparent.starts_with(&self.root) {
+            return Err(format!("path escapes the workspace: {p}"));
+        }
+        let fname = joined.file_name().ok_or_else(|| format!("no file name: {p}"))?;
+        Ok(cparent.join(fname))
+    }
+
+    /// Create or overwrite a file (read-write mode only). Atomic temp-write + rename so a
+    /// crash never leaves a half-written file.
+    pub fn write_file(&self, p: &str, content: &str) -> Result<(), String> {
+        let path = self.resolve_for_write(p)?;
+        if content.len() > MAX_WRITE {
+            return Err(format!("content too large ({} bytes, max {})", content.len(), MAX_WRITE));
+        }
+        let tmp = path.with_file_name(format!(
+            ".{}.axiomtmp{}",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("f"),
+            std::process::id()
+        ));
+        std::fs::write(&tmp, content).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            e.to_string()
+        })?;
+        Ok(())
+    }
+
     /// Run an allowlisted, shell-free command in the workspace root with a hard timeout.
+    /// The allowlist widens to build/test tools in read-write mode.
     pub async fn run_command(&self, argv: &[String], timeout: Duration) -> Result<CmdResult, String> {
         let prog = argv.first().ok_or("empty command")?;
-        if !cmd_allowed(prog, argv) {
-            return Err(format!("command not allowed in read-only mode: {}", argv.join(" ")));
+        if !cmd_allowed(prog, argv, self.mode) {
+            return Err(format!("command not allowed: {}", argv.join(" ")));
         }
         use tokio::process::Command;
         let mut cmd = Command::new(prog);
@@ -116,16 +183,25 @@ impl Sandbox {
     }
 }
 
-/// READ-ONLY allowlist: inspect/search only, no build/test (those run project code) and
-/// no shell. `git` is limited to read-only subcommands. Anything else is refused.
-fn cmd_allowed(prog: &str, argv: &[String]) -> bool {
-    const SAFE: &[&str] = &["ls", "cat", "rg", "grep", "find", "wc", "head", "tail", "tree"];
+/// Command allowlist. Inspect/search + read-only `git` are always allowed; build/test
+/// runners (which execute project code) are allowed ONLY in read-write mode. No shell
+/// ever; `git push`/`rm`/`curl`/network fetchers are always refused.
+fn cmd_allowed(prog: &str, argv: &[String], mode: SandboxMode) -> bool {
+    const READ: &[&str] = &["ls", "cat", "rg", "grep", "find", "wc", "head", "tail", "tree"];
+    const BUILD: &[&str] = &[
+        "cargo", "rustc", "npm", "pnpm", "yarn", "bun", "node", "deno", "tsc",
+        "python", "python3", "pytest", "go", "make", "jest", "mocha", "vitest",
+    ];
     const GIT_RO: &[&str] = &["status", "log", "diff", "show", "ls-files", "branch", "rev-parse", "describe", "blame"];
     let base = Path::new(prog).file_name().and_then(|s| s.to_str()).unwrap_or(prog);
     if base == "git" {
+        // git is always read-only (no push/remote-mutating subcommands), even in RW mode.
         return argv.get(1).map(|s| GIT_RO.contains(&s.as_str())).unwrap_or(false);
     }
-    SAFE.contains(&base)
+    if READ.contains(&base) {
+        return true;
+    }
+    mode == SandboxMode::ReadWrite && BUILD.contains(&base)
 }
 
 /// Keep the first `max` bytes (on a char boundary); note truncation.
@@ -204,14 +280,41 @@ mod tests {
 
     #[test]
     fn allowlist_blocks_dangerous_commands() {
-        assert!(cmd_allowed("rg", &["rg".into(), "foo".into()]));
-        assert!(cmd_allowed("/usr/bin/grep", &["grep".into(), "x".into()]));
-        assert!(cmd_allowed("git", &["git".into(), "status".into()]));
-        assert!(!cmd_allowed("git", &["git".into(), "push".into()]));
-        assert!(!cmd_allowed("rm", &["rm".into(), "-rf".into(), "/".into()]));
-        assert!(!cmd_allowed("curl", &["curl".into(), "evil".into()]));
-        assert!(!cmd_allowed("cargo", &["cargo".into(), "run".into()]));
-        assert!(!cmd_allowed("sh", &["sh".into(), "-c".into(), "x".into()]));
+        use SandboxMode::*;
+        // read tools allowed in either mode
+        assert!(cmd_allowed("rg", &["rg".into(), "foo".into()], ReadOnly));
+        assert!(cmd_allowed("/usr/bin/grep", &["grep".into(), "x".into()], ReadOnly));
+        assert!(cmd_allowed("git", &["git".into(), "status".into()], ReadOnly));
+        // git push refused even in RW
+        assert!(!cmd_allowed("git", &["git".into(), "push".into()], ReadWrite));
+        // dangerous always refused
+        assert!(!cmd_allowed("rm", &["rm".into(), "-rf".into(), "/".into()], ReadWrite));
+        assert!(!cmd_allowed("curl", &["curl".into(), "evil".into()], ReadWrite));
+        assert!(!cmd_allowed("sh", &["sh".into(), "-c".into(), "x".into()], ReadWrite));
+        // build/test runners: refused in ReadOnly, allowed in ReadWrite
+        assert!(!cmd_allowed("cargo", &["cargo".into(), "test".into()], ReadOnly));
+        assert!(cmd_allowed("cargo", &["cargo".into(), "test".into()], ReadWrite));
+        assert!(cmd_allowed("pytest", &["pytest".into()], ReadWrite));
+        assert!(!cmd_allowed("pytest", &["pytest".into()], ReadOnly));
+    }
+
+    #[test]
+    fn writes_only_in_rw_and_stay_inside_root() {
+        let root = tmp("wr");
+        // read-only sandbox refuses writes
+        let ro = Sandbox::new(&root).unwrap();
+        assert!(ro.write_file("a.txt", "hi").is_err());
+        // read-write sandbox writes inside root
+        let rw = Sandbox::with_mode(&root, SandboxMode::ReadWrite).unwrap();
+        assert!(rw.write_file("a.txt", "hello").is_ok());
+        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "hello");
+        assert_eq!(rw.read_file("a.txt").unwrap(), "hello");
+        // escapes + denied paths refused even in RW
+        assert!(rw.write_file("../escape.txt", "x").is_err());
+        assert!(rw.write_file("/tmp/escape.txt", "x").is_err());
+        assert!(rw.write_file(".git/config", "x").is_err());
+        assert!(rw.write_file(".env", "x").is_err());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

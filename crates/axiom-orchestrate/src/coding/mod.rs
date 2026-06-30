@@ -1,14 +1,16 @@
-//! The coding agent: a bounded tool-use loop over a read-only [`Sandbox`]. This first
-//! cut uses a strict-JSON action envelope over the existing text seam (no native
-//! tool-use / token usage yet — that's the `complete_blocks` follow-up). It reads,
-//! lists, and searches the workspace, reasons across turns, and returns a final answer
-//! (findings / proposed changes). It CANNOT write or run build/test commands.
+//! The coding agent: a bounded tool-use loop over a fail-closed [`Sandbox`]. Uses a
+//! strict-JSON action envelope over the text seam (native tool-use / token usage is the
+//! `complete_blocks` follow-up). In read-only mode it reads/lists/searches and proposes;
+//! in read-write mode it can also write_file and run build/test commands, so it can
+//! implement a change, run the tests, and iterate to green (verified live in
+//! examples/coding_live.rs). The sandbox keeps every path inside the workspace and runs
+//! commands shell-free against a mode-gated allowlist.
 pub mod sandbox;
 
 use axiom_providers::message::{ContentBlock, Message, Request};
 use axiom_runtime::supervisor::{is_retryable_error, retry_async, Cancel, RetryPolicy};
 use axiom_runtime::{complete_with, Provider};
-use sandbox::Sandbox;
+use sandbox::{Sandbox, SandboxMode};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -89,15 +91,33 @@ impl CodingModel for ProviderModel {
     }
 }
 
-const SYSTEM: &str = "You are a coding agent working READ-ONLY inside a sandboxed workspace. \
-Each turn respond with EXACTLY ONE JSON object and nothing else — one of:\n\
-{\"tool\":\"read_file\",\"path\":\"<relative path>\"}\n\
-{\"tool\":\"list_dir\",\"path\":\"<relative path>\"}\n\
-{\"tool\":\"search\",\"query\":\"<text to grep for>\"}\n\
-{\"tool\":\"run\",\"cmd\":[\"prog\",\"arg\",...]}   (read-only allowlisted commands only)\n\
-{\"final\":\"<your findings and proposed changes>\"}\n\
-You CANNOT write files or run build/test commands here — describe any changes in your final answer. \
-Explore as needed, then finish. Be efficient; do not repeat a read you already did.";
+fn system_prompt(mode: SandboxMode) -> String {
+    let mut s = String::from(
+        "You are a coding agent working inside a sandboxed workspace. Each turn respond with \
+         EXACTLY ONE JSON object and nothing else — one of:\n\
+         {\"tool\":\"read_file\",\"path\":\"<relative path>\"}\n\
+         {\"tool\":\"list_dir\",\"path\":\"<relative path>\"}\n\
+         {\"tool\":\"search\",\"query\":\"<text to grep for>\"}\n",
+    );
+    if mode == SandboxMode::ReadWrite {
+        s.push_str(
+            "{\"tool\":\"write_file\",\"path\":\"<relative path>\",\"content\":\"<COMPLETE new file contents>\"}\n\
+             {\"tool\":\"run\",\"cmd\":[\"prog\",\"arg\",...]}   (build/test, e.g. [\"cargo\",\"test\"] or [\"pytest\",\"-q\"])\n\
+             {\"final\":\"<what you changed and the test result>\"}\n\
+             You CAN create/overwrite files and run build/test commands. Make the change, RUN the \
+             tests, read failures, and iterate until they pass — THEN finish. write_file replaces the \
+             WHOLE file, so include its complete contents.",
+        );
+    } else {
+        s.push_str(
+            "{\"tool\":\"run\",\"cmd\":[\"prog\",\"arg\",...]}   (read-only allowlisted commands only)\n\
+             {\"final\":\"<your findings and proposed changes>\"}\n\
+             You CANNOT write files or run build/test commands here — describe any changes in your final answer.",
+        );
+    }
+    s.push_str(" Be efficient; do not repeat a read you already did.");
+    s
+}
 
 /// Run the loop. `on_step` is called after each tool execution (the shell streams it as
 /// an event). Cancellation is checked every turn (cooperative — an in-flight command
@@ -110,13 +130,14 @@ pub async fn run_coding_agent(
     budget: &CodingBudget,
     mut on_step: impl FnMut(CodingStepRec),
 ) -> CodingResult {
+    let sys = system_prompt(sandbox.mode());
     let mut transcript = format!("GOAL:\n{goal}\n\nWorkspace root: {}\n", sandbox.root().display());
     for n in 1..=budget.max_steps {
         if cancel.is_cancelled() {
             return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1 };
         }
         let user = format!("{transcript}\nNext action (one JSON object only):");
-        let reply = match model.complete(SYSTEM, &user, cancel).await {
+        let reply = match model.complete(&sys, &user, cancel).await {
             Ok(r) => r,
             Err(e) => return CodingResult { status: "failed".into(), summary: format!("model error: {e}"), steps: n - 1 },
         };
@@ -143,6 +164,15 @@ pub async fn run_coding_agent(
             "list_dir" => {
                 let p = arg_str(&v, "path");
                 (p.to_string(), sandbox.list_dir(p).unwrap_or_else(|e| format!("ERROR: {e}")))
+            }
+            "write_file" => {
+                let p = arg_str(&v, "path").to_string();
+                let content = arg_str(&v, "content");
+                let obs = match sandbox.write_file(&p, content) {
+                    Ok(()) => format!("wrote {p} ({} bytes)", content.len()),
+                    Err(e) => format!("ERROR: {e}"),
+                };
+                (p, obs)
             }
             "search" => {
                 let q = arg_str(&v, "query").to_string();
@@ -256,8 +286,8 @@ mod tests {
         }
     }
 
-    fn tmp() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("axiom-coding-{}", std::process::id()));
+    fn tmp(label: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("axiom-coding-{label}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("main.rs"), "fn main() { println!(\"hi\"); }").unwrap();
@@ -266,7 +296,7 @@ mod tests {
 
     #[tokio::test]
     async fn loop_reads_then_finalizes() {
-        let root = tmp();
+        let root = tmp("reads");
         let sb = Sandbox::new(&root).unwrap();
         let model = ScriptModel {
             replies: Mutex::new(vec![
@@ -284,8 +314,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn rw_loop_writes_a_file() {
+        let root = tmp("rw");
+        let sb = Sandbox::with_mode(&root, SandboxMode::ReadWrite).unwrap();
+        let model = ScriptModel {
+            replies: Mutex::new(vec![
+                r#"{"tool":"write_file","path":"hello.txt","content":"hi there"}"#.into(),
+                r#"{"tool":"read_file","path":"hello.txt"}"#.into(),
+                r#"{"final":"created hello.txt"}"#.into(),
+            ]),
+        };
+        let res = run_coding_agent("make hello.txt", &sb, &model, &Cancel::new(), &CodingBudget::default(), |_| {}).await;
+        assert_eq!(res.status, "done");
+        assert_eq!(std::fs::read_to_string(root.join("hello.txt")).unwrap(), "hi there");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn readonly_loop_cannot_write() {
+        let root = tmp("ro");
+        let sb = Sandbox::new(&root).unwrap(); // read-only
+        let model = ScriptModel {
+            replies: Mutex::new(vec![
+                r#"{"tool":"write_file","path":"x.txt","content":"nope"}"#.into(),
+                r#"{"final":"could not write"}"#.into(),
+            ]),
+        };
+        let res = run_coding_agent("try to write", &sb, &model, &Cancel::new(), &CodingBudget::default(), |_| {}).await;
+        assert_eq!(res.status, "done");
+        assert!(!root.join("x.txt").exists(), "read-only sandbox must not create files");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn cancel_stops_the_loop() {
-        let root = tmp();
+        let root = tmp("cancel");
         let sb = Sandbox::new(&root).unwrap();
         let model = ScriptModel { replies: Mutex::new(vec![r#"{"tool":"list_dir","path":"."}"#.into()]) };
         let cancel = Cancel::new();
