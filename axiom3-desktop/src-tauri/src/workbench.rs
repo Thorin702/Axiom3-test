@@ -852,6 +852,147 @@ pub async fn vector_self_test(state: tauri::State<'_, AppState>) -> Result<Strin
         .map_err(|e| e.to_string())?
 }
 
+// ── Onboarding: system check + BYO provider keys ──────────────────────────────
+
+/// The five cloud families the fleet can dispatch to (the unit of cross-vendor
+/// independence). Local engines (Ollama/vLLM) are a separate family handled elsewhere.
+const CLOUD_PROVIDERS: [Provider; 5] = [
+    Provider::Anthropic,
+    Provider::OpenAi,
+    Provider::DeepSeek,
+    Provider::Gemini,
+    Provider::Qwen,
+];
+
+/// Keychain entry name for a provider's BYO key (under [`KEYCHAIN_SERVICE`]).
+fn provider_key_name(family: &str) -> String {
+    format!("api-key:{family}")
+}
+
+/// Run `bin args…` and return its trimmed stdout if it exits 0 — used to detect a
+/// runtime's presence/version without assuming any path.
+fn cmd_version(bin: &str, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new(bin).args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let s = if s.is_empty() {
+        String::from_utf8_lossy(&out.stderr).trim().to_string() // node prints to stdout; some print stderr
+    } else {
+        s
+    };
+    (!s.is_empty()).then_some(s)
+}
+
+/// What the first-run system check found. Lamps in the UI are driven off these.
+#[derive(Serialize)]
+pub struct SystemCheck {
+    pub os: String,
+    pub keychain: bool,
+    pub python: Option<String>,
+    pub node: Option<String>,
+    pub ollama: bool,
+}
+
+/// Detect the local environment (OS, keychain access, Python/Node runtimes, a local
+/// Ollama). Pure detection — no installs, no network beyond a localhost probe.
+#[tauri::command]
+pub async fn system_check() -> SystemCheck {
+    tauri::async_runtime::spawn_blocking(|| {
+        // Keychain probe: round-trip a throwaway entry.
+        let store = KeyringSecretStore::new(KEYCHAIN_SERVICE);
+        let keychain = store
+            .set("probe:onboarding", "1")
+            .and_then(|_| store.get("probe:onboarding"))
+            .map(|v| v.as_deref() == Some("1"))
+            .unwrap_or(false);
+        let _ = store.delete("probe:onboarding");
+
+        let python = cmd_version("python3", &["--version"]).or_else(|| cmd_version("python", &["--version"]));
+        let node = cmd_version("node", &["--version"]);
+        // Ollama default port — a fast localhost TCP probe (no hang).
+        let ollama = std::net::TcpStream::connect_timeout(
+            &"127.0.0.1:11434".parse().unwrap(),
+            std::time::Duration::from_millis(300),
+        )
+        .is_ok();
+
+        SystemCheck { os: std::env::consts::OS.to_string(), keychain, python, node, ollama }
+    })
+    .await
+    .unwrap_or(SystemCheck {
+        os: std::env::consts::OS.to_string(),
+        keychain: false,
+        python: None,
+        node: None,
+        ollama: false,
+    })
+}
+
+/// One provider's connection state for the connect-models step.
+#[derive(Serialize)]
+pub struct ProviderState {
+    pub family: String,
+    pub connected: bool,
+}
+
+/// Which cloud families currently have a usable key — from the keychain OR the process
+/// env (the latter covers `KEY=… pnpm tauri dev`). Drives the "已连接 N 家" UI.
+#[tauri::command]
+pub fn provider_status() -> Vec<ProviderState> {
+    let store = KeyringSecretStore::new(KEYCHAIN_SERVICE);
+    CLOUD_PROVIDERS
+        .iter()
+        .map(|p| {
+            let in_keychain = store.get(&provider_key_name(p.family())).ok().flatten().is_some();
+            let in_env = std::env::var(p.env_var()).is_ok();
+            ProviderState { family: p.family().to_string(), connected: in_keychain || in_env }
+        })
+        .collect()
+}
+
+/// Store a BYO provider key in the OS keychain (never on disk, never in the event log)
+/// and bridge it into the process env so the (env-based) fleet picks it up this session.
+#[tauri::command]
+pub fn set_provider_key(provider: String, key: String) -> Result<(), String> {
+    let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("empty key".into());
+    }
+    KeyringSecretStore::new(KEYCHAIN_SERVICE)
+        .set(&provider_key_name(p.family()), key)
+        .map_err(|e| e.to_string())?;
+    // Bridge to env for the current session (keychain is the durable store).
+    std::env::set_var(p.env_var(), key);
+    Ok(())
+}
+
+/// Forget a provider's stored key (keychain + this session's env).
+#[tauri::command]
+pub fn delete_provider_key(provider: String) -> Result<(), String> {
+    let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
+    KeyringSecretStore::new(KEYCHAIN_SERVICE)
+        .delete(&provider_key_name(p.family()))
+        .map_err(|e| e.to_string())?;
+    std::env::remove_var(p.env_var());
+    Ok(())
+}
+
+/// At startup, hydrate the process env from any keychain-stored provider keys so the
+/// fleet (which reads env) uses the user's BYO keys without re-entry.
+pub fn load_provider_keys_into_env() {
+    let store = KeyringSecretStore::new(KEYCHAIN_SERVICE);
+    for p in CLOUD_PROVIDERS {
+        if std::env::var(p.env_var()).is_err() {
+            if let Ok(Some(k)) = store.get(&provider_key_name(p.family())) {
+                std::env::set_var(p.env_var(), k);
+            }
+        }
+    }
+}
+
 /// What an export wrote — surfaced to the UI so the user sees the artifact landed and
 /// whether it is anchored into an intact chain.
 #[derive(Serialize)]

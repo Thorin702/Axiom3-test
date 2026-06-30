@@ -11,6 +11,10 @@ fn axiom_core_version() -> String {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Hydrate the process env from any keychain-stored BYO provider keys so the fleet
+    // uses them without re-entry (env still wins, so `KEY=… pnpm tauri dev` overrides).
+    workbench::load_provider_keys_into_env();
+
     let mut builder = tauri::Builder::default();
 
     // Single-instance must be registered first (desktop only): a second launch
@@ -42,6 +46,10 @@ pub fn run() {
             workbench::import_document,
             workbench::vector_self_test,
             workbench::export_provenance,
+            workbench::system_check,
+            workbench::provider_status,
+            workbench::set_provider_key,
+            workbench::delete_provider_key,
             workbench::close_project,
         ])
         .run(tauri::generate_context!())
