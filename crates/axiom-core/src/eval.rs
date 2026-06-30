@@ -419,6 +419,35 @@ pub fn corpus() -> Vec<EvalCase> {
             targets: "statcheck",
             note: "CJK-framed inconsistent t-test — guards the ASCII parser against CJK fragility",
         },
+        // ── non-assertive (proposal / plan / goal) — must stay SILENT ────────
+        // Research writing isn't only papers: a grant proposal is mostly aspirational
+        // prose. Such sentences are NOT checkable assertions; the engine surfaces
+        // nothing (no flags, not bearing → no fleet/literature) rather than emitting a
+        // verdict on a goal.
+        EvalCase {
+            draft: "本项目拟开发新型催化剂,预期将反应效率提高 30%。",
+            expect: &[],
+            targets: "non_assertive",
+            note: "proposal goal with a target number — not an uncited established statistic",
+        },
+        EvalCase {
+            draft: "本项目将首次实现室温超导,争取在三年内突破。",
+            expect: &[],
+            targets: "non_assertive",
+            note: "a future novelty PITCH is not an overclaim to flag",
+        },
+        EvalCase {
+            draft: "We aim to be the first to achieve room-temperature superconductivity.",
+            expect: &[],
+            targets: "non_assertive",
+            note: "aspirational English — not a claim asserted as fact",
+        },
+        EvalCase {
+            draft: "据报道,该病在运动员中的发病率约为 25%。",
+            expect: &["uncited_quantitative"],
+            targets: "non_assertive",
+            note: "control: an ASSERTED background statistic is still checked (uncited)",
+        },
     ]
 }
 

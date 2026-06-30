@@ -211,9 +211,47 @@ fn classify(text: &str) -> ClaimType {
     }
 }
 
-/// A bearing (conclusion) claim triggers the LLM adversarial fleet later.
+/// Surface markers that a sentence is ASPIRATIONAL / PLANNING / HYPOTHETICAL — a goal, a
+/// plan, an intention, a question — rather than an assertion of established fact. A
+/// research draft (and a grant proposal especially) is full of these, and they are NOT
+/// empirical claims to verify: "verifying" a future goal against the literature or the
+/// fleet is noise. High-precision COMPOUND phrases (never bare 将/拟/may/will), so genuine
+/// results — "曲线拟合 R²=0.98", "the method reduced error", "据报道发病率约30%" — are NOT
+/// silenced. This is the conservative routing gate: when a sentence isn't a checkable
+/// assertion, the engine stays SILENT on it rather than manufacturing a verdict.
+const NONASSERTIVE_TERMS: &[&str] = &[
+    // CJK — proposal subject / planning / aspiration / future intent
+    "本项目", "本课题", "拟开展", "拟研究", "拟开发", "拟解决", "拟建立", "拟采用", "拟构建",
+    "拟实现", "计划开展", "我们计划", "预期将", "预计将", "有望", "旨在", "力争", "争取实现",
+    "以期", "目标是", "下一步", "未来工作", "亟待解决", "尚需进一步",
+    // English — planning / aspiration / future intent (trailing space avoids "willing" etc.)
+    "we will ", "we plan", "we aim", "aim to ", "aims to ", "plan to ", "plans to ",
+    "intend to ", "propose to ", "proposes to ", "this project ", "this proposal ",
+    "is expected to ", "are expected to ", "future work", "we hope", "we intend",
+    "we seek", "objective of this", "goal of this",
+];
+
+/// True when `text` reads as a plan/goal/hypothesis/question, not an assertion of fact.
+/// Such a sentence is routed to NO verification (not bearing) and the noisy lexical
+/// checkers stay silent on it — so a proposal's goals/budget/plans don't get garbage
+/// "verdicts". Inherently-empirical checks (statcheck, DOI, internal numeric conflict)
+/// are unaffected, since they only match content that IS a checkable assertion.
+pub fn is_non_assertive(text: &str) -> bool {
+    let t = text.trim_end();
+    if t.ends_with('?') || t.ends_with('？') {
+        return true;
+    }
+    let low = text.to_lowercase();
+    NONASSERTIVE_TERMS
+        .iter()
+        .any(|m| if m.is_ascii() { low.contains(m) } else { text.contains(m) })
+}
+
+/// A bearing (conclusion) claim triggers the LLM adversarial fleet + literature later —
+/// but ONLY if it actually asserts a checkable fact. A planning/aspirational sentence,
+/// however causal-sounding ("本项目将解决…导致…的问题"), is NOT a conclusion to verify.
 fn is_bearing(text: &str) -> bool {
-    contains_any(text, BEARING_TERMS) || matches!(classify(text), ClaimType::Causal)
+    !is_non_assertive(text) && (contains_any(text, BEARING_TERMS) || matches!(classify(text), ClaimType::Causal))
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +282,11 @@ impl Checker for OverclaimChecker {
         "overclaim"
     }
     fn check(&self, claim: &Claim, _ctx: &DraftContext) -> Vec<Finding> {
+        // A future/aspirational novelty ("本项目将首次实现…", "we aim to be the first")
+        // is a pitch, not a claim asserted as fact — don't flag it as needing support.
+        if is_non_assertive(&claim.text) {
+            return vec![];
+        }
         flag_terms(&claim.text, OVERCLAIM_TERMS, "overclaim", |t| {
             format!("novelty/superiority claim \"{t}\" needs external support")
         })
@@ -262,6 +305,11 @@ impl Checker for AbsoluteQuantifierChecker {
         "absolute_quantifier"
     }
     fn check(&self, claim: &Claim, _ctx: &DraftContext) -> Vec<Finding> {
+        // An absolute in a plan/goal ("本项目将解决所有难题") is aspirational framing, not a
+        // factual claim — stay silent (the inherently-empirical checks still run).
+        if is_non_assertive(&claim.text) {
+            return vec![];
+        }
         flag_terms(&claim.text, ABSOLUTE_TERMS, "absolute_quantifier", |t| {
             format!("absolute quantifier \"{t}\" is rarely literally true")
         })
@@ -284,10 +332,13 @@ impl Checker for UncitedQuantitativeChecker {
     }
     fn check(&self, claim: &Claim, _ctx: &DraftContext) -> Vec<Finding> {
         // Gate on a real measurement (value + unit), so a bare year like "2021"
-        // is not mistaken for an uncited statistic.
+        // is not mistaken for an uncited statistic. A planning/aspirational number (a
+        // budget line, a target, an expected outcome) is NOT an uncited established
+        // statistic — suppress it, or a grant proposal drowns in false flags.
         if !numeric_mentions(&claim.text).is_empty()
             && !has_citation_marker(&claim.text)
             && !is_own_results_context(&claim.text)
+            && !is_non_assertive(&claim.text)
         {
             vec![Finding {
                 checker: "uncited_quantitative",
@@ -830,6 +881,31 @@ mod tests {
         let claims = extract_claims("p", "The rate constant was 0.45 per second.");
         assert_eq!(claims.len(), 1);
         assert!(claims[0].text.contains("0.45"), "decimal kept intact: {:?}", claims[0].text);
+    }
+
+    #[test]
+    fn non_assertive_gate_silences_plans_but_not_real_assertions() {
+        // Proposal / plan / goal sentences are not checkable assertions → not bearing.
+        for s in [
+            "本项目拟开发新型催化剂,预期将反应效率提高 30%。",
+            "本项目将首次实现室温超导。",
+            "我们计划采用深度学习方法解决该问题。",
+            "We aim to be the first to achieve room-temperature superconductivity.",
+            "This project will reduce mortality by 40% within five years.",
+        ] {
+            assert!(is_non_assertive(s), "should be non-assertive: {s}");
+            assert!(!is_bearing(s), "a plan/goal is not a bearing conclusion: {s}");
+        }
+        // Precision: genuine assertions must NOT be silenced by the gate — including a
+        // past result that uses 将 as the ba-construction ("将误差降低了"), and 拟 inside
+        // 拟合 (curve fitting).
+        for s in [
+            "结果表明,该方法将误差降低了 40%,曲线拟合 R²=0.98。",
+            "据报道,该病发病率约为 25%。",
+            "首次证明了该蛋白的调控作用。",
+        ] {
+            assert!(!is_non_assertive(s), "real assertion wrongly silenced: {s}");
+        }
     }
 
     #[test]
