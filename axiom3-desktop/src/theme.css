@@ -271,3 +271,20 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-prov-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 0.5px solid var(--ax-line-soft); font-size: 14px; }
 .ax-toggle { font-size: 13px; padding: 5px 12px; border-radius: var(--ax-radius); border: 0.5px solid var(--ax-line); background: var(--ax-surface); color: var(--ax-ink); cursor: pointer; }
 .ax-toggle.on { background: var(--ax-accent); border-color: var(--ax-accent); color: #fff; }
+
+/* ── task board + task-type picker ─────────────────────────────────── */
+.ax-task { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 12px;
+  padding: 12px 16px; cursor: pointer; font-family: var(--ax-sans); }
+.ax-task:hover { border-color: var(--ax-ink-faint); }
+.ax-task__title { flex: 1; font-size: 14px; color: var(--ax-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ax-task__meta { font-size: 12px; color: var(--ax-ink-faint); white-space: nowrap; }
+
+.ax-type-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 6px; }
+.ax-type { text-align: left; background: var(--ax-surface); border: 0.5px solid var(--ax-line);
+  border-radius: 12px; padding: 12px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 4px;
+  font-family: var(--ax-sans); }
+.ax-type:disabled { opacity: 0.6; cursor: default; }
+.ax-type--active { border: 2px solid var(--ax-accent); padding: 11px 13px; }
+.ax-type__name { font-size: 14px; font-weight: 500; color: var(--ax-ink); }
+.ax-type__d { font-size: 12px; color: var(--ax-ink-soft); line-height: 1.4; }

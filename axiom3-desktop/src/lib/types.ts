@@ -50,3 +50,18 @@ export type ExportSummary = {
   event_seq: number;
   chain_intact: boolean;
 };
+
+// A unit of work the platform runs. Today only check_draft actually executes; the other
+// types are declared so the workbench is task-oriented from the start (the dynamic-
+// workflow / multimodal / coding engine fills them in).
+export type TaskType = "check_draft" | "ppt" | "code" | "research";
+export type TaskStatus = "running" | "done" | "failed" | "cancelled";
+export type Task = {
+  id: string;
+  type: TaskType;
+  title: string;
+  status: TaskStatus;
+  ts: number;
+  result?: DraftCheck;
+  error?: string;
+};

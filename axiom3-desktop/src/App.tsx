@@ -4,11 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary } from "./lib/types";
+import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
-import { Download, ListFilter, X, Languages, Settings, Upload } from "lucide-react";
+import { Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft } from "lucide-react";
 
 
 function App() {
@@ -32,7 +32,9 @@ function App() {
     "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
   const [references, setReferences] = useState("");
-  const [check, setCheck] = useState<DraftCheck | null>(null);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [view, setView] = useState<"board" | "new" | "detail">("board");
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [notableOnly, setNotableOnly] = useState(true);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [onboarded, setOnboarded] = useState(localStorage.getItem("axiom3.onboarded") === "1");
@@ -70,7 +72,9 @@ function App() {
     const s = await run(() => invoke<ProjectStatus>("open_project", { name }));
     if (s) {
       setStatus(s);
-      setCheck(null);
+      setTasks([]);
+      setView("board");
+      setActiveId(null);
       note(`${t(lang, "opened_project")} "${s.project_id}" · ${s.event_count} ${t(lang, "events")}`);
     }
   }
@@ -113,15 +117,29 @@ function App() {
     }
   }
 
-  async function checkDraft() {
+  async function runCheckDraft() {
+    const id = `t${Date.now()}`;
+    const trimmed = draft.trim();
+    const title = (trimmed.slice(0, 42) || t(lang, "tt_check_draft")) + (trimmed.length > 42 ? "…" : "");
+    setTasks((ts) => [{ id, type: "check_draft", title, status: "running", ts: Date.now() }, ...ts]);
+    setActiveId(id);
+    setView("detail");
     setProgress(null);
     const litsearch = localStorage.getItem("axiom3.lit") !== "off";
     const fmRaw = parseInt(localStorage.getItem("axiom3.fleetmax") || "", 10);
     const fleetmax = Number.isFinite(fmRaw) && fmRaw > 0 ? fmRaw : null;
     const c = await run(() => invoke<DraftCheck>("check_draft", { draft, references, litsearch, fleetmax }));
     setProgress(null);
+    setTasks((ts) =>
+      ts.map((x) =>
+        x.id === id
+          ? c
+            ? { ...x, status: "done", result: c }
+            : { ...x, status: "failed", error: "failed" }
+          : x
+      )
+    );
     if (c) {
-      setCheck(c);
       note(
         `${t(lang, "checked_draft")} → ${c.total} ${t(lang, "claims")} · ${c.flagged} ${t(lang, "flagged")} · ${c.fleet_verified} ${t(lang, "cross_vendor_n")}`
       );
@@ -152,7 +170,9 @@ function App() {
   async function closeProject() {
     await run(() => invoke("close_project"));
     setStatus(null);
-    setCheck(null);
+    setTasks([]);
+    setView("board");
+    setActiveId(null);
     note(t(lang, "closed_project"));
   }
 
@@ -247,154 +267,185 @@ function App() {
             </div>
           ) : (
             <div className="ax-canvas">
-              <p className="ax-block-label">{t(lang, "check_title")}</p>
-              <textarea
-                className="ax-textarea"
-                value={draft}
-                onChange={(e) => setDraft(e.currentTarget.value)}
-                rows={10}
-                placeholder={t(lang, "check_placeholder")}
-              />
-              <div className="ax-toolrow">
-                <button className="ax-btn ax-btn--primary" onClick={checkDraft} disabled={busy || !draft.trim()}>
-                  {t(lang, "check_btn")}
-                </button>
-                <button
-                  className="ax-iconbtn"
-                  onClick={() => importInto(setDraft)}
-                  disabled={busy}
-                  title={t(lang, "import_btn")}
-                  aria-label={t(lang, "import_btn")}
-                >
-                  <Upload size={16} aria-hidden />
-                </button>
-                <span className="ax-hint">
-                  {draft.length.toLocaleString()} {t(lang, "chars")}
-                </span>
-              </div>
-
-              <details style={{ marginTop: 14 }}>
-                <summary className="ax-block-label" style={{ cursor: "pointer" }}>
-                  {t(lang, "references_title")}
-                </summary>
-                <textarea
-                  className="ax-textarea"
-                  style={{ marginTop: 6 }}
-                  value={references}
-                  onChange={(e) => setReferences(e.currentTarget.value)}
-                  rows={6}
-                  placeholder={t(lang, "references_placeholder")}
-                />
-                <div className="ax-toolrow">
-                  <button
-                    className="ax-iconbtn"
-                    onClick={() => importInto(setReferences)}
-                    disabled={busy}
-                    title={t(lang, "import_refs")}
-                    aria-label={t(lang, "import_refs")}
-                  >
-                    <Upload size={16} aria-hidden />
-                  </button>
-                  <span className="ax-hint">
-                    {references.length.toLocaleString()} {t(lang, "chars")}
-                  </span>
-                </div>
-              </details>
-
-              {busy && (
-                <div className="ax-progress">
-                  <span>
-                    {t(lang, "checking")}
-                    {progress ? ` ${progress.done}/${progress.total}` : ""}
-                  </span>
-                  {progress && progress.total > 0 && (
-                    <span className="ax-progress__bar">
-                      <span
-                        className="ax-progress__fill"
-                        style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }}
-                      />
-                    </span>
-                  )}
-                  <button
-                    className="ax-iconbtn"
-                    onClick={cancelCheck}
-                    title={t(lang, "cancel")}
-                    aria-label={t(lang, "cancel")}
-                  >
-                    <X size={14} aria-hidden />
-                  </button>
-                </div>
-              )}
-
-              {check && (
-                <div style={{ marginTop: 18 }}>
+              {view === "board" && (
+                <>
                   <div className="ax-results__head">
-                    <span className="ax-results__meta">
-                      {check.total} {t(lang, "claims")} · {check.flagged} {t(lang, "flagged")} ·{" "}
-                      {check.fleet_verified} {t(lang, "cross_vendor_n")}
-                    </span>
-                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                      <button
-                        className="ax-iconbtn"
-                        onClick={exportProvenance}
-                        disabled={busy}
-                        title={t(lang, "export_provenance")}
-                        aria-label={t(lang, "export_provenance")}
-                      >
-                        <Download size={16} aria-hidden />
-                      </button>
-                      <button
-                        className="ax-iconbtn"
-                        onClick={() => setNotableOnly(!notableOnly)}
-                        title={notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}
-                        aria-label={notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}
-                      >
-                        <ListFilter size={16} aria-hidden />
-                      </button>
+                    <span className="ax-block-label" style={{ margin: 0 }}>{t(lang, "tasks_title")}</span>
+                    <button className="ax-btn ax-btn--primary" onClick={() => setView("new")}>
+                      {t(lang, "new_task")}
+                    </button>
+                  </div>
+                  {tasks.length === 0 ? (
+                    <div className="ax-empty" style={{ marginTop: "6vh" }}>
+                      <p className="ax-empty__title">{t(lang, "no_tasks")}</p>
+                      <p className="ax-empty__sub">{t(lang, "no_tasks_sub")}</p>
                     </div>
-                  </div>
-                  <p className="ax-philosophy">{t(lang, "results_philosophy")}</p>
-                  <div className="ax-results__list" style={{ marginTop: 10 }}>
-                    {check.entries
-                      .filter(
-                        (e) =>
-                          !notableOnly ||
-                          e.findings.length > 0 ||
-                          e.fleet ||
-                          e.status === "injection_neutralized" ||
-                          e.reason?.includes("fleet_cap_exceeded") ||
-                          e.reason?.includes("cross_vendor_unavailable")
-                      )
-                      .map((e) => (
-                        <ClaimDossier key={e.claim_id} entry={e} lang={lang} />
+                  ) : (
+                    <div className="ax-results__list">
+                      {tasks.map((tk) => (
+                        <button
+                          key={tk.id}
+                          className="ax-task"
+                          onClick={() => {
+                            setActiveId(tk.id);
+                            setView("detail");
+                          }}
+                        >
+                          <span
+                            className={`ax-lamp ${
+                              tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"
+                            }`}
+                          />
+                          <span className="ax-task__title">{tk.title}</span>
+                          <span className="ax-task__meta">
+                            {t(lang, "tt_check_draft")} · {t(lang, `st_${tk.status}`)}
+                            {tk.result ? ` · ${tk.result.total} ${t(lang, "claims")}` : ""}
+                          </span>
+                        </button>
                       ))}
-                  </div>
-                </div>
+                    </div>
+                  )}
+
+                  <details className="ax-dev">
+                    <summary>{t(lang, "dev_tools")}</summary>
+                    <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                      <div className="ax-toolrow">
+                        <input className="ax-input" style={{ width: 120 }} value={actor} onChange={(e) => setActor(e.currentTarget.value)} placeholder={t(lang, "actor")} />
+                        <input className="ax-input" style={{ width: 120 }} value={op} onChange={(e) => setOp(e.currentTarget.value)} placeholder={t(lang, "op")} />
+                        <input className="ax-input" style={{ flex: 1, minWidth: 160 }} value={payload} onChange={(e) => setPayload(e.currentTarget.value)} placeholder={t(lang, "payload")} />
+                      </div>
+                      <div className="ax-toolrow">
+                        <button className="ax-btn" onClick={appendEvent} disabled={busy}>{t(lang, "append_event")}</button>
+                        <button className="ax-btn" onClick={verifyChain} disabled={busy}>{t(lang, "verify_chain")}</button>
+                        <button className="ax-btn" onClick={vectorSelfTest} disabled={busy}>{t(lang, "vector_self_test")}</button>
+                      </div>
+                      {status && <div className="ax-hint">{status.root}</div>}
+                      {log.length > 0 && (
+                        <ul className="ax-log">
+                          {log.map((l, i) => (
+                            <li key={i}>{l}</li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </details>
+                </>
               )}
 
-              <details className="ax-dev">
-                <summary>{t(lang, "dev_tools")}</summary>
-                <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                  <div className="ax-toolrow">
-                    <input className="ax-input" style={{ width: 120 }} value={actor} onChange={(e) => setActor(e.currentTarget.value)} placeholder={t(lang, "actor")} />
-                    <input className="ax-input" style={{ width: 120 }} value={op} onChange={(e) => setOp(e.currentTarget.value)} placeholder={t(lang, "op")} />
-                    <input className="ax-input" style={{ flex: 1, minWidth: 160 }} value={payload} onChange={(e) => setPayload(e.currentTarget.value)} placeholder={t(lang, "payload")} />
+              {view === "new" && (
+                <>
+                  <button className="ax-iconbtn" onClick={() => setView("board")} title={t(lang, "back")} aria-label={t(lang, "back")} style={{ marginBottom: 10 }}>
+                    <ChevronLeft size={18} aria-hidden />
+                  </button>
+                  <p className="ax-sec-label">{t(lang, "task_pick_type")}</p>
+                  <div className="ax-type-grid">
+                    <button className="ax-type ax-type--active">
+                      <span className="ax-type__name">{t(lang, "tt_check_draft")}</span>
+                      <span className="ax-type__d">{t(lang, "tt_check_draft_d")}</span>
+                    </button>
+                    {(["ppt", "code", "research"] as const).map((tt) => (
+                      <button key={tt} className="ax-type" disabled>
+                        <span className="ax-type__name">
+                          {t(lang, `tt_${tt}`)} <span className="ax-hint">({t(lang, "coming_soon")})</span>
+                        </span>
+                        <span className="ax-type__d">{t(lang, `tt_${tt}_d`)}</span>
+                      </button>
+                    ))}
                   </div>
+
+                  <p className="ax-block-label" style={{ marginTop: 16 }}>{t(lang, "check_title")}</p>
+                  <textarea className="ax-textarea" value={draft} onChange={(e) => setDraft(e.currentTarget.value)} rows={9} placeholder={t(lang, "check_placeholder")} />
                   <div className="ax-toolrow">
-                    <button className="ax-btn" onClick={appendEvent} disabled={busy}>{t(lang, "append_event")}</button>
-                    <button className="ax-btn" onClick={verifyChain} disabled={busy}>{t(lang, "verify_chain")}</button>
-                    <button className="ax-btn" onClick={vectorSelfTest} disabled={busy}>{t(lang, "vector_self_test")}</button>
+                    <button className="ax-btn ax-btn--primary" onClick={runCheckDraft} disabled={busy || !draft.trim()}>
+                      {t(lang, "task_run")}
+                    </button>
+                    <button className="ax-iconbtn" onClick={() => importInto(setDraft)} disabled={busy} title={t(lang, "import_btn")} aria-label={t(lang, "import_btn")}>
+                      <Upload size={16} aria-hidden />
+                    </button>
+                    <span className="ax-hint">{draft.length.toLocaleString()} {t(lang, "chars")}</span>
                   </div>
-                  {status && <div className="ax-hint">{status.root}</div>}
-                  {log.length > 0 && (
-                    <ul className="ax-log">
-                      {log.map((l, i) => (
-                        <li key={i}>{l}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </details>
+                  <details style={{ marginTop: 12 }}>
+                    <summary className="ax-block-label" style={{ cursor: "pointer" }}>{t(lang, "references_title")}</summary>
+                    <textarea className="ax-textarea" style={{ marginTop: 6 }} value={references} onChange={(e) => setReferences(e.currentTarget.value)} rows={6} placeholder={t(lang, "references_placeholder")} />
+                    <div className="ax-toolrow">
+                      <button className="ax-iconbtn" onClick={() => importInto(setReferences)} disabled={busy} title={t(lang, "import_refs")} aria-label={t(lang, "import_refs")}>
+                        <Upload size={16} aria-hidden />
+                      </button>
+                      <span className="ax-hint">{references.length.toLocaleString()} {t(lang, "chars")}</span>
+                    </div>
+                  </details>
+                </>
+              )}
+
+              {view === "detail" &&
+                (() => {
+                  const tk = tasks.find((x) => x.id === activeId);
+                  if (!tk) return null;
+                  return (
+                    <>
+                      <div className="ax-results__head">
+                        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <button className="ax-iconbtn" onClick={() => setView("board")} title={t(lang, "back")} aria-label={t(lang, "back")}>
+                            <ChevronLeft size={18} aria-hidden />
+                          </button>
+                          <span className="ax-block-label" style={{ margin: 0 }}>{tk.title}</span>
+                        </span>
+                        {tk.result && (
+                          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                            <button className="ax-iconbtn" onClick={exportProvenance} disabled={busy} title={t(lang, "export_provenance")} aria-label={t(lang, "export_provenance")}>
+                              <Download size={16} aria-hidden />
+                            </button>
+                            <button className="ax-iconbtn" onClick={() => setNotableOnly(!notableOnly)} title={notableOnly ? t(lang, "show_all") : t(lang, "only_notable")} aria-label={notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}>
+                              <ListFilter size={16} aria-hidden />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {busy && tk.status === "running" && (
+                        <div className="ax-progress">
+                          <span>
+                            {t(lang, "checking")}
+                            {progress ? ` ${progress.done}/${progress.total}` : ""}
+                          </span>
+                          {progress && progress.total > 0 && (
+                            <span className="ax-progress__bar">
+                              <span className="ax-progress__fill" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
+                            </span>
+                          )}
+                          <button className="ax-iconbtn" onClick={cancelCheck} title={t(lang, "cancel")} aria-label={t(lang, "cancel")}>
+                            <X size={14} aria-hidden />
+                          </button>
+                        </div>
+                      )}
+
+                      {tk.result && (
+                        <>
+                          <span className="ax-results__meta">
+                            {tk.result.total} {t(lang, "claims")} · {tk.result.flagged} {t(lang, "flagged")} ·{" "}
+                            {tk.result.fleet_verified} {t(lang, "cross_vendor_n")}
+                          </span>
+                          <p className="ax-philosophy">{t(lang, "results_philosophy")}</p>
+                          <div className="ax-results__list" style={{ marginTop: 10 }}>
+                            {tk.result.entries
+                              .filter(
+                                (e) =>
+                                  !notableOnly ||
+                                  e.findings.length > 0 ||
+                                  e.fleet ||
+                                  e.status === "injection_neutralized" ||
+                                  e.reason?.includes("fleet_cap_exceeded") ||
+                                  e.reason?.includes("cross_vendor_unavailable")
+                              )
+                              .map((e) => (
+                                <ClaimDossier key={e.claim_id} entry={e} lang={lang} />
+                              ))}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  );
+                })()}
             </div>
           )}
         </div>
