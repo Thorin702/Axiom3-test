@@ -20,3 +20,4 @@ axiom-providers = { path = "../axiom-providers" }
 axiom-ingest = { path = "../axiom-ingest" }
 axiom-core = { path = "../axiom-core" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+http = "1"

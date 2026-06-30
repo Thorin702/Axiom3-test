@@ -12,6 +12,7 @@
 
 pub mod crossref;
 pub mod fleet;
+pub mod http;
 pub mod litsearch;
 pub mod plan;
 pub mod supervisor;

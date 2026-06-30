@@ -112,13 +112,17 @@ pub fn reconstruct_abstract(inv: &Value) -> String {
 }
 
 /// Strip the resolver prefix from an OpenAlex DOI URL (`https://doi.org/10.x` → `10.x`).
+/// The scheme+host is matched CASE-INSENSITIVELY (a `HTTPS://DOI.ORG/` variant must not
+/// silently drop a citable DOI); the prefix is ASCII so a lowercased-prefix test maps to
+/// the original byte offsets exactly.
 fn strip_doi_prefix(doi: &str) -> Option<String> {
-    let d = doi
-        .trim()
-        .trim_start_matches("https://doi.org/")
-        .trim_start_matches("http://doi.org/")
-        .trim_start_matches("doi.org/");
-    d.starts_with("10.").then(|| d.to_string())
+    let d = doi.trim();
+    let lower = d.to_ascii_lowercase();
+    let rest = ["https://doi.org/", "http://doi.org/", "doi.org/"]
+        .iter()
+        .find_map(|p| lower.strip_prefix(p).map(|_| &d[p.len()..]))
+        .unwrap_or(d);
+    rest.starts_with("10.").then(|| rest.to_string())
 }
 
 /// Pull the last path segment of an OpenAlex id URL (`…/W123` → `W123`).
@@ -212,7 +216,9 @@ impl LitSearch {
                 if !status.is_success() {
                     anyhow::bail!("openalex returned HTTP {}", status.as_u16());
                 }
-                let body: Value = resp.json().await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                // Bound the body before materializing it (the MAX_* caps are downstream
+                // of this allocation, so an over-size upstream body must be rejected here).
+                let body = crate::http::json_bounded(resp).await?;
                 Ok(body)
             }
         })
@@ -298,6 +304,17 @@ mod tests {
         assert_eq!(works[1].abstract_text, "");
         assert_eq!(works[1].doi, None);
         assert!(works[1].authors.is_empty());
+    }
+
+    #[test]
+    fn doi_prefix_stripping_is_case_insensitive() {
+        assert_eq!(strip_doi_prefix("https://doi.org/10.5/x").as_deref(), Some("10.5/x"));
+        // Case variants in scheme/host must still strip, not silently drop the DOI.
+        assert_eq!(strip_doi_prefix("HTTPS://DOI.ORG/10.6/y").as_deref(), Some("10.6/y"));
+        assert_eq!(strip_doi_prefix("doi.org/10.7/z").as_deref(), Some("10.7/z"));
+        // A bare DOI passes through; a non-DOI is rejected.
+        assert_eq!(strip_doi_prefix("10.8/bare").as_deref(), Some("10.8/bare"));
+        assert_eq!(strip_doi_prefix("https://example.com/not-a-doi"), None);
     }
 
     #[test]
