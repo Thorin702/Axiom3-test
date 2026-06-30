@@ -24,7 +24,9 @@ use axiom_runtime::litsearch::{LitSearch, Work};
 use axiom_runtime::plan::{plan_verification, PlanBudget, VerificationDepth};
 use axiom_runtime::supervisor::{run_batch, Cancel};
 use axiom_runtime::Provider;
-use axiom_orchestrate::events::{EventSink, RunEvent};
+use axiom_orchestrate::coding::sandbox::Sandbox;
+use axiom_orchestrate::coding::{run_coding_agent, CodingBudget, ProviderModel};
+use axiom_orchestrate::events::{EventSink, RunEvent, RunEventBody, SeqEmitter};
 use axiom_orchestrate::model::Run;
 use axiom_orchestrate::step::ProviderStep;
 use axiom_orchestrate::supervisor::LlmDecomposer;
@@ -1536,6 +1538,98 @@ pub async fn run_workflow(
 #[tauri::command]
 pub fn cancel_run(state: tauri::State<'_, AppState>, runid: String) {
     state.cancel_run(&runid);
+}
+
+#[derive(Serialize)]
+pub struct CodingRunResult {
+    pub status: String,
+    pub synthesis: String,
+    pub steps: u32,
+}
+
+/// Run a READ-ONLY coding agent over a chosen workspace: a bounded tool-use loop that
+/// reads / lists / searches the code, reasons across turns, and reports findings +
+/// proposed changes. It cannot write files or run build/test commands (the fail-closed
+/// [`Sandbox`] enforces path-jail + a read-only command allowlist). Streams its steps on
+/// the `run_event` channel into the ActivityRail. Cancel via `cancel_run`.
+#[tauri::command]
+pub async fn coding_run(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    goal: String,
+    runid: String,
+    workspace: String,
+    provider: Option<String>,
+) -> Result<CodingRunResult, String> {
+    if goal.trim().is_empty() {
+        return Err("empty goal".into());
+    }
+    let provider = provider.unwrap_or_else(|| "deepseek".to_string());
+    if Provider::parse(&provider).is_none() {
+        return Err(format!("unknown provider: {provider}"));
+    }
+    let model_id = workflow_model_for(&provider);
+    // Fail-closed: validate + canonicalize the workspace before anything runs.
+    let sandbox = Sandbox::new(&workspace).map_err(|e| e.to_string())?;
+    let cancel = Cancel::new();
+    let _guard = state
+        .begin_run(&runid, cancel.clone())
+        .ok_or("a run with this id is already in flight")?;
+
+    let sink: Arc<dyn EventSink> = Arc::new(TauriSink { app: app.clone() });
+    let em = SeqEmitter::new(sink, runid.clone());
+    let title: String = goal.trim().chars().take(60).collect();
+    em.emit(RunEventBody::RunStarted { task_kind: "coding".into(), title, cancellable: true });
+    em.emit(RunEventBody::PlanReady {
+        phases: vec!["planning".into(), "executing".into(), "done".into()],
+        planned_agents: 1,
+        notes: vec![],
+    });
+    em.emit(RunEventBody::PhaseChanged { phase: "executing".into(), index: 1, total: 3 });
+    em.emit(RunEventBody::AgentSpawned {
+        agent_id: "coder".into(),
+        role: "coder".into(),
+        model: model_id.clone(),
+        vendor: provider.clone(),
+        phase: "executing".into(),
+    });
+
+    let model = ProviderModel { provider: provider.clone(), model: model_id, timeout_s: 90 };
+    let budget = CodingBudget::default();
+    let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &budget, |step| {
+        em.emit(RunEventBody::AgentProgress {
+            agent_id: "coder".into(),
+            step: step.n,
+            tokens_in: 0,
+            tokens_out: 0,
+            note: Some(format!("{} {}", step.tool, step.detail)),
+        });
+    })
+    .await;
+
+    let outcome = match result.status.as_str() {
+        "done" => "ok",
+        "cancelled" => "cancelled",
+        _ => "err",
+    };
+    em.emit(RunEventBody::AgentFinished {
+        agent_id: "coder".into(),
+        outcome: outcome.into(),
+        tokens_in: 0,
+        tokens_out: 0,
+        error: None,
+        summary: Some(result.summary.chars().take(120).collect()),
+    });
+    em.emit(RunEventBody::PhaseChanged { phase: "done".into(), index: 2, total: 3 });
+    em.emit(RunEventBody::RunFinished {
+        status: result.status.clone(),
+        agents_total: 1,
+        agents_ok: if outcome == "ok" { 1 } else { 0 },
+        agents_err: if outcome == "err" { 1 } else { 0 },
+        error: None,
+    });
+
+    Ok(CodingRunResult { status: result.status, synthesis: result.summary, steps: result.steps })
 }
 
 /// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can

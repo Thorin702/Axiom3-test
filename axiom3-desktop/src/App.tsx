@@ -54,7 +54,7 @@ const COMMANDS: SlashCmd[] = [
   { key: "extract", cat: "数据", zh: "解析", en: "extract", dzh: "文档解析:图片 / 表格 / 公式提取", den: "parse a doc: images / tables / formulas", active: false },
   { key: "transcribe", cat: "数据", zh: "转写", en: "transcribe", dzh: "音频转写", den: "audio transcription", active: false },
   // 编程 (coding)
-  { key: "code", cat: "编程", zh: "编程", en: "code", dzh: "写 + 编译 + 测试(自带 in-loop 校验)", den: "write + compile + test (in-loop checks)", active: false },
+  { key: "code", cat: "编程", zh: "编程", en: "code", dzh: "只读分析:读取 / 搜索 / 提议(写入即将)", den: "read-only: read / search / propose (writes soon)", active: true },
   { key: "debug", cat: "编程", zh: "调试", en: "debug", dzh: "定位 + 修复", den: "locate + fix", active: false },
   { key: "review", cat: "编程", zh: "审查", en: "review", dzh: "代码审查", den: "code review", active: false },
   // 编排 (orchestration)
@@ -98,6 +98,7 @@ function App() {
     "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
   const [references, setReferences] = useState("");
+  const [codeWs, setCodeWs] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>(() => {
     // Task history persists like Claude's chat list. A task left "running" when the app
     // closed can't still be running, so normalize it to cancelled on load.
@@ -316,6 +317,38 @@ function App() {
     );
   }
 
+  // Read-only coding agent over a chosen workspace folder. Streams into the rail.
+  async function pickWorkspace() {
+    const dir = await open({ directory: true, multiple: false });
+    if (typeof dir === "string") setCodeWs(dir);
+  }
+  async function runCoding(goal: string) {
+    const g = goal.trim();
+    if (!g || !codeWs) return;
+    const runid = `run-${Date.now()}`;
+    const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
+    setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now() }, ...ts]);
+    setActiveId(runid);
+    setNav("tasks");
+    setView("thread");
+    setCmd(null);
+    setSlash("");
+    setRailOpen(true);
+    localStorage.setItem("axiom3.rail", "1");
+    const r = await run<{ status: string; synthesis: string }>(() =>
+      invoke("coding_run", { goal: g, runid, workspace: codeWs })
+    );
+    setTasks((ts) =>
+      ts.map((x) =>
+        x.id === runid
+          ? r
+            ? { ...x, status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed", synthesis: r.synthesis }
+            : { ...x, status: "failed", error: "failed" }
+          : x
+      )
+    );
+  }
+
   async function cancelCheck() {
     await invoke("cancel_check");
   }
@@ -519,6 +552,34 @@ function App() {
                   </button>
                   <span className="ax-hint">
                     {lang === "zh" ? "多智能体 · 实时显示在右侧活动栏" : "multi-agent · streams to the activity rail"}
+                  </span>
+                </div>
+              </>
+            ) : cmd === "code" ? (
+              <>
+                <div className="ax-toolrow">
+                  <button className="ax-btn" onClick={pickWorkspace}>
+                    {codeWs ? (lang === "zh" ? "更换目录" : "Change folder") : (lang === "zh" ? "选择工作目录" : "Choose workspace")}
+                  </button>
+                  {codeWs && (
+                    <span className="ax-hint" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 300 }}>
+                      {codeWs}
+                    </span>
+                  )}
+                </div>
+                <textarea
+                  className="ax-textarea"
+                  value={draft}
+                  onChange={(e) => setDraft(e.currentTarget.value)}
+                  rows={4}
+                  placeholder={lang === "zh" ? "要分析的任务(只读:读取 / 搜索 / 提议改动)…" : "What to analyze (read-only: read / search / propose)…"}
+                />
+                <div className="ax-toolrow">
+                  <button className="ax-btn ax-btn--primary" onClick={() => runCoding(draft)} disabled={busy || !draft.trim() || !codeWs}>
+                    {t(lang, "task_run")}
+                  </button>
+                  <span className="ax-hint">
+                    {lang === "zh" ? "只读编码智能体 · 不写入、不执行构建" : "read-only coding agent · no writes, no builds"}
                   </span>
                 </div>
               </>
@@ -761,9 +822,9 @@ function App() {
                       </div>
 
                       {tk.status === "running" &&
-                        (tk.type === "workflow" ? (
+                        (tk.type === "workflow" || tk.type === "code" ? (
                           <div className="ax-progress">
-                            <span>{lang === "zh" ? "多智能体运行中 · 见右侧活动栏 →" : "agents running · see the activity rail →"}</span>
+                            <span>{lang === "zh" ? "智能体运行中 · 见右侧活动栏 →" : "agents running · see the activity rail →"}</span>
                             <button className="ax-iconbtn" onClick={() => invoke("cancel_run", { runid: tk.id })} title={t(lang, "cancel")} aria-label={t(lang, "cancel")}>
                               <X size={14} aria-hidden />
                             </button>

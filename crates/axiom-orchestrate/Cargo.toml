@@ -6,7 +6,7 @@ license = "MIT"
 description = "Axiom3 dynamic multi-agent orchestration engine (workflow + coding). Free-form work, never verdicts."
 
 [dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "process"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
