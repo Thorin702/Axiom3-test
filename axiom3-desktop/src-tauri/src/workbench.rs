@@ -16,6 +16,7 @@ use axiom_core::model::{new_id, Independence, Verdict, VerdictStatus, Verifier, 
 use axiom_core::store::{DurableStore, EventLog, VectorStore};
 use axiom_core::verify::{verify_draft, ClaimReport};
 use axiom_runtime::fleet::{verify_bearing_claim, FleetMember, FleetVerdict, MultiProviderRigBackend};
+use axiom_runtime::plan::{plan_verification, PlanBudget, VerificationDepth};
 use axiom_runtime::supervisor::{run_batch, Cancel};
 use axiom_runtime::Provider;
 use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
@@ -669,11 +670,15 @@ pub async fn check_draft(
         //     like the other deterministic tiers. A claim whose evidence is poisoned is
         //     neutralized (never sent to the fleet) so untrusted reference text can't
         //     drive a verdict.
+        // Auto-depth: the supervisor decides which bearing claims earn the fleet within
+        // budget, prioritizing flagged conclusions over a long tail (build-spec C.2).
+        let depths =
+            plan_verification(&reports, &PlanBudget { max_fleet_claims: max_fleet_claims() });
         let bearing_src: Vec<(String, String)> = reports
             .iter()
-            .filter(|r| r.claim.is_bearing)
-            .take(max_fleet_claims())
-            .map(|r| (r.claim.id.clone(), r.claim.text.clone()))
+            .zip(depths.iter())
+            .filter(|(_, d)| **d == VerificationDepth::Fleet)
+            .map(|(r, _)| (r.claim.id.clone(), r.claim.text.clone()))
             .collect();
         let refs = references.clone();
         let (bearing, em, inj): (Vec<(String, String, Vec<String>)>, _, _) =
