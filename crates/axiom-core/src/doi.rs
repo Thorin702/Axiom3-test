@@ -18,6 +18,9 @@ pub fn extract_dois(text: &str) -> Vec<String> {
     while i + 2 < c.len() {
         // Must start "10." at a boundary that isn't a digit OR a '.', so neither
         // "810.1234/x" nor a dotted-quad/CIDR like "192.168.10.1234/24" matches.
+        // (Deliberate, rare recall loss: a DOI glued to a preceding sentence period
+        // with no space, "work.10.1038/x", is skipped — authors put a space/newline
+        // there in practice, and the '.' guard is load-bearing for CIDR rejection.)
         let boundary = i == 0 || !(c[i - 1].is_ascii_digit() || c[i - 1] == '.');
         if boundary && c[i] == '1' && c[i + 1] == '0' && c[i + 2] == '.' {
             let dstart = i + 3;
@@ -29,20 +32,18 @@ pub fn extract_dois(text: &str) -> Vec<String> {
             if (4..=9).contains(&registrant_len) && c.get(j) == Some(&'/') {
                 // The suffix is ASCII-graphic, so it terminates at whitespace AND at any
                 // non-ASCII char — e.g. CJK punctuation/Han with no space (参见10.x/y。该)
-                // would otherwise glue prose onto the DOI and 404 a real work. It also
-                // stops at <>?# so an angle-bracketed DOI or a query/fragment-injection
-                // suffix can't leak into the (network) URL. Trailing ASCII punctuation
-                // is then trimmed.
+                // would otherwise glue prose onto the DOI and 404 a real work. It stops
+                // at ? and # (which are not DOI chars and ARE URL query/fragment
+                // injection vectors) but KEEPS < > — those are legitimate inside legacy
+                // SICI DOIs (10.1002/…<…>…) and are not injection vectors (the URL layer
+                // percent-encodes them). A trailing wrapper '>' is trimmed below.
                 let mut k = j + 1;
-                while k < c.len()
-                    && c[k].is_ascii_graphic()
-                    && !matches!(c[k], '<' | '>' | '?' | '#')
-                {
+                while k < c.len() && c[k].is_ascii_graphic() && !matches!(c[k], '?' | '#') {
                     k += 1;
                 }
                 let mut end = k;
                 while end > j + 1
-                    && matches!(c[end - 1], '.' | ',' | ';' | ')' | ']' | '}' | '"' | '\'')
+                    && matches!(c[end - 1], '.' | ',' | ';' | ')' | ']' | '}' | '"' | '\'' | '>')
                 {
                     end -= 1;
                 }
@@ -104,10 +105,18 @@ mod tests {
     fn rejects_dotted_quad_and_injection_chars() {
         // An IP/CIDR last octet is not a DOI.
         assert!(extract_dois("192.168.10.1234/24 subnet").is_empty());
-        // Query/fragment/angle-bracket terminate the suffix (no URL injection leaks).
+        // Query/fragment terminate the suffix (they're URL-injection vectors, not DOI chars).
         assert_eq!(extract_dois("10.1234/x?rows=1000"), vec!["10.1234/x"]);
         assert_eq!(extract_dois("10.1234/x#frag"), vec!["10.1234/x"]);
+        // An angle-bracket WRAPPER is trimmed…
         assert_eq!(extract_dois("<10.1234/abc>"), vec!["10.1234/abc"]);
+    }
+
+    #[test]
+    fn legacy_sici_doi_with_internal_angle_brackets_is_kept_whole() {
+        // SICI DOIs (legacy Wiley) contain < and > INTERNALLY — must NOT be truncated.
+        let d = "10.1002/1521-3773(20010316)40:6<981::AID-ANIE981>3.0.CO;2-7";
+        assert_eq!(extract_dois(&format!("as in {d} which is real")), vec![d]);
     }
 
     #[test]

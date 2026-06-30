@@ -157,6 +157,8 @@ mod tests {
     fn rejects_unsafe_dois_before_the_network() {
         assert!(is_path_safe_doi("10.1016/S0140-6736(97)11096-0"));
         assert!(is_path_safe_doi("10.1038/nature12373"));
+        // Legacy SICI DOIs (with internal < >) are path-safe — not an injection vector.
+        assert!(is_path_safe_doi("10.1002/1521-3773(20010316)40:6<981::AID-ANIE981>3.0.CO;2-7"));
         // Injection shapes: path traversal, query, fragment, escape.
         assert!(!is_path_safe_doi("10.1234/x/../../members/1"));
         assert!(!is_path_safe_doi("10.1234/x?rows=1000"));
