@@ -58,28 +58,46 @@ impl RetryPolicy {
 }
 
 /// Best-effort classification of a transient, retryable provider error. Retry only
-/// what a moment's wait can fix — rate limits (429), upstream 5xx, transient network
-/// faults. A TIMEOUT is NOT retried (the call is already bounded; retrying just doubles
-/// the wait), and a 4xx / content-policy / unknown-provider error fails fast.
+/// what a moment's wait can fix — rate limits (429), upstream gateway 5xx, transient
+/// network faults. A TIMEOUT is NOT retried (the call is already bounded; retrying just
+/// doubles the wait), and a 4xx / content-policy / unknown-provider error fails fast.
+///
+/// Matching is on the error STRING (rig surfaces provider errors as text), so the
+/// markers are deliberately SPECIFIC multi-word phrases rather than bare 3-digit codes,
+/// to avoid retrying a hard 4xx whose response body merely happens to mention "500" or
+/// "connection". Over-retrying is bounded anyway (it still ends fail-closed), but
+/// specificity keeps wasted calls down.
 pub fn is_retryable_error(e: &anyhow::Error) -> bool {
     let s = e.to_string().to_lowercase();
-    // Non-retryable fast-fail markers take precedence over generic ones.
-    if s.contains("timed out") || s.contains("timeout") {
+    // OUR own bounded client timeout fast-fails (retrying just doubles the 45s wait).
+    // Matched specifically ("timed out after") so a provider-side "504 gateway timeout"
+    // — a genuinely transient upstream fault — is NOT swept up by it.
+    if s.contains("timed out after") {
         return false;
     }
-    s.contains("429")
-        || s.contains("rate limit")
-        || s.contains("rate-limit")
-        || s.contains("too many requests")
-        || s.contains("temporarily")
-        || s.contains("overloaded")
-        || s.contains("503")
-        || s.contains("502")
-        || s.contains("500")
-        || s.contains("connection")
-        || s.contains("connect error")
-        || s.contains("broken pipe")
-        || s.contains("reset by peer")
+    // SPECIFIC transient markers. Bare "500" is omitted on purpose (it shows up in 4xx
+    // bodies — token counts, ids); HTTP 500 is matched via "internal server error".
+    const RETRYABLE: &[&str] = &[
+        "429",
+        "too many requests",
+        "rate limit",
+        "rate-limit",
+        "overloaded",
+        "service unavailable",
+        "internal server error",
+        "bad gateway",
+        "gateway timeout",
+        "temporarily unavailable",
+        "502",
+        "503",
+        "504",
+        "connection reset",
+        "connection refused",
+        "connection closed",
+        "reset by peer",
+        "broken pipe",
+    ];
+    RETRYABLE.iter().any(|m| s.contains(m))
 }
 
 /// Run a fallible async activity, retrying while the error is [`is_retryable_error`]
@@ -267,11 +285,17 @@ mod tests {
         assert!(is_retryable_error(&anyhow::anyhow!("HTTP 429 Too Many Requests")));
         assert!(is_retryable_error(&anyhow::anyhow!("upstream 503")));
         assert!(is_retryable_error(&anyhow::anyhow!("connection reset by peer")));
-        // A timeout is already bounded — do NOT retry it.
+        // OUR bounded client timeout is NOT retried…
         assert!(!is_retryable_error(&anyhow::anyhow!("verifier timed out after 45s")));
+        // …but a provider-side 504 gateway timeout IS (transient upstream).
+        assert!(is_retryable_error(&anyhow::anyhow!("504 gateway timeout")));
         // Client/content errors fail fast.
         assert!(!is_retryable_error(&anyhow::anyhow!("HTTP 401 unauthorized")));
         assert!(!is_retryable_error(&anyhow::anyhow!("unknown provider: foo")));
+        // A hard 4xx whose BODY merely mentions a code/word must NOT be retried
+        // (specificity: bare "500"/"connection" are not markers).
+        assert!(!is_retryable_error(&anyhow::anyhow!("HTTP 400: prompt exceeded 500 tokens")));
+        assert!(!is_retryable_error(&anyhow::anyhow!("HTTP 400: invalid connection parameter")));
     }
 
     #[tokio::test]

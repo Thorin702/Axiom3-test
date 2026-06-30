@@ -244,11 +244,13 @@ impl FleetBackend for MultiProviderRigBackend {
             let provider = crate::Provider::parse(&member.provider)
                 .ok_or_else(|| anyhow::anyhow!("unknown provider: {}", member.provider))?;
             let req = build_verify_request(&claim, &member.model, &evidence);
-            // Each attempt is bounded by a 45s timeout so a hung/slow provider can't
+            // Each ATTEMPT is bounded by a 45s timeout so a hung/slow provider can't
             // stall verification. A transient blip (429/5xx/network) is RETRIED with
             // backoff so it doesn't spuriously fail-close an honest verifier; a timeout
             // or 4xx fails fast. Exhausting retries is fail-closed like any error — a
-            // verifier that can't run can't corroborate.
+            // verifier that can't run can't corroborate. NOTE: with the default policy
+            // (2 retries) a flapping member's worst-case wall-clock is ~3×45s + backoff
+            // (~136s) and up to 3 provider calls — bounded, but no longer a single 45s.
             let reply = crate::supervisor::retry_async(
                 &crate::supervisor::RetryPolicy::default(),
                 crate::supervisor::is_retryable_error,
