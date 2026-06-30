@@ -18,7 +18,7 @@ import { MetricsView } from "./components/MetricsView";
 import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import {
-  Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft,
+  Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
   Command, Bell, type LucideIcon,
 } from "lucide-react";
@@ -77,12 +77,6 @@ const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGr
   { key: "provenance", zh: "溯源", en: "Provenance", icon: GitBranch, group: "trust" },
   { key: "metrics", zh: "概览", en: "Overview", icon: Gauge, group: "overview" },
 ];
-const NAV_GROUPS: { key: NavGroup; zh: string; en: string }[] = [
-  { key: "work", zh: "工作", en: "Work" },
-  { key: "trust", zh: "信任 · 证据", en: "Trust · Evidence" },
-  { key: "overview", zh: "概览", en: "Overview" },
-];
-
 function App() {
   const [lang, setLangState] = useState<Lang>(
     (localStorage.getItem("axiom3.lang") as Lang) || "zh"
@@ -92,7 +86,6 @@ function App() {
     localStorage.setItem("axiom3.lang", l);
   }
 
-  const [name, setName] = useState("");
   const [status, setStatus] = useState<ProjectStatus | null>(null);
   const [actor, setActor] = useState("researcher");
   const [op, setOp] = useState("note");
@@ -104,8 +97,17 @@ function App() {
     "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
   const [references, setReferences] = useState("");
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [view, setView] = useState<"board" | "detail">("board");
+  const [tasks, setTasks] = useState<Task[]>(() => {
+    // Task history persists like Claude's chat list. A task left "running" when the app
+    // closed can't still be running, so normalize it to cancelled on load.
+    try {
+      const raw: Task[] = JSON.parse(localStorage.getItem("axiom3.tasks") || "[]");
+      return raw.map((tk) => (tk.status === "running" ? { ...tk, status: "cancelled" } : tk));
+    } catch {
+      return [];
+    }
+  });
+  const [view, setView] = useState<"home" | "thread">("home");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [cmd, setCmd] = useState<string | null>(null);
   const [slash, setSlash] = useState("");
@@ -119,6 +121,15 @@ function App() {
   useEffect(() => {
     applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
   }, []);
+
+  // Persist the task history (cap to the most recent 50).
+  useEffect(() => {
+    try {
+      localStorage.setItem("axiom3.tasks", JSON.stringify(tasks.slice(0, 50)));
+    } catch {
+      /* quota — ignore */
+    }
+  }, [tasks]);
 
   // ⌘K / Ctrl-K opens the command palette anywhere.
   useEffect(() => {
@@ -156,15 +167,37 @@ function App() {
     }
   }
 
-  async function openProject() {
-    const s = await run(() => invoke<ProjectStatus>("open_project", { name }));
-    if (s) {
+  // Auto-open a default workspace so the user can just start a task (no "open a project"
+  // step, like Claude). A named project is still possible later (a Projects feature).
+  async function ensureProject(): Promise<ProjectStatus | null> {
+    if (status) return status;
+    try {
+      const s = await invoke<ProjectStatus>("open_project", { name: lang === "zh" ? "工作区" : "Workspace" });
       setStatus(s);
-      setTasks([]);
-      setView("board");
-      setActiveId(null);
       note(`${t(lang, "opened_project")} "${s.project_id}" · ${s.event_count} ${t(lang, "events")}`);
+      return s;
+    } catch (e) {
+      setError(String(e));
+      return null;
     }
+  }
+
+  // Start a fresh task: clear the composer and show the home greeting.
+  function newTask() {
+    setNav("tasks");
+    setView("home");
+    setActiveId(null);
+    setCmd(null);
+    setSlash("");
+    setDraft("");
+    setReferences("");
+  }
+
+  // Time-of-day greeting for the home screen.
+  function greeting(): string {
+    const h = new Date().getHours();
+    if (lang === "zh") return h < 5 ? "夜深了" : h < 11 ? "早上好" : h < 13 ? "中午好" : h < 18 ? "下午好" : "晚上好";
+    return h < 5 ? "Still up?" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
   }
 
   async function appendEvent() {
@@ -206,12 +239,16 @@ function App() {
   }
 
   async function runCheckDraft() {
+    if (!draft.trim()) return;
+    const proj = await ensureProject();
+    if (!proj) return;
     const id = `t${Date.now()}`;
     const trimmed = draft.trim();
     const title = (trimmed.slice(0, 42) || t(lang, "tt_check_draft")) + (trimmed.length > 42 ? "…" : "");
     setTasks((ts) => [{ id, type: "check_draft", title, status: "running", ts: Date.now() }, ...ts]);
     setActiveId(id);
-    setView("detail");
+    setNav("tasks");
+    setView("thread");
     setCmd(null);
     setSlash("");
     setProgress(null);
@@ -244,7 +281,7 @@ function App() {
 
   async function exportProvenance() {
     const path = await save({
-      defaultPath: `${name.trim() || "axiom3"}-provenance.json`,
+      defaultPath: "axiom3-provenance.json",
       filters: [{ name: "JSON", extensions: ["json"] }],
     });
     if (typeof path === "string") {
@@ -255,15 +292,6 @@ function App() {
         );
       }
     }
-  }
-
-  async function closeProject() {
-    await run(() => invoke("close_project"));
-    setStatus(null);
-    setTasks([]);
-    setView("board");
-    setActiveId(null);
-    note(t(lang, "closed_project"));
   }
 
   // A clean claim (no deterministic flag, no fleet verdict) is "unchecked" — shown
@@ -283,12 +311,107 @@ function App() {
   function onPalettePick(it: PaletteItem) {
     setPaletteOpen(false);
     if (it.kind === "nav") {
-      setNav(it.key as NavKey);
+      if (it.key === "tasks") newTask();
+      else setNav(it.key as NavKey);
     } else {
       setNav("tasks");
-      setView("board");
+      setActiveId(null);
+      setView("home");
       setCmd(it.key);
     }
+  }
+
+  // Bucket the task history by recency, like Claude's chat list.
+  function groupOf(ts: number): "today" | "yesterday" | "earlier" {
+    const now = new Date();
+    const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    if (ts >= startToday) return "today";
+    if (ts >= startToday - 86400000) return "yesterday";
+    return "earlier";
+  }
+  const RECENT_GROUPS: { key: "today" | "yesterday" | "earlier"; zh: string; en: string }[] = [
+    { key: "today", zh: "今天", en: "Today" },
+    { key: "yesterday", zh: "昨天", en: "Yesterday" },
+    { key: "earlier", zh: "更早", en: "Earlier" },
+  ];
+
+  // The slash composer — shared by the home screen and (future) follow-ups. Typing "/"
+  // surfaces task types; picking one swaps in that task's inputs (only /校对 runs today).
+  function composerBlock() {
+    return (
+      <div className="ax-composer">
+        {cmd === null ? (
+          <>
+            <textarea
+              className="ax-textarea"
+              value={slash}
+              onChange={(e) => setSlash(e.currentTarget.value)}
+              rows={3}
+              placeholder={t(lang, "composer_ph")}
+            />
+            {slash.trimStart().startsWith("/") && (
+              <div className="ax-slash-menu">
+                {COMMANDS.filter((c) => {
+                  const q = slash.trimStart().slice(1).toLowerCase();
+                  return q === "" || (lang === "zh" ? c.zh : c.en).toLowerCase().includes(q) || c.cat.includes(q);
+                }).map((c) => (
+                  <button
+                    key={c.key}
+                    className="ax-slash-item"
+                    disabled={!c.active}
+                    onClick={() => {
+                      setCmd(c.key);
+                      setSlash("");
+                    }}
+                  >
+                    <span className="ax-slash-cmd">/{lang === "zh" ? c.zh : c.en}</span>
+                    <span className="ax-slash-desc">
+                      {lang === "zh" ? c.dzh : c.den}
+                      {!c.active ? ` · ${t(lang, "coming_soon")}` : ""}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="ax-composer__chip">
+              /{(() => { const c = COMMANDS.find((x) => x.key === cmd); return c ? (lang === "zh" ? c.zh : c.en) : ""; })()}
+              <button className="ax-iconbtn" onClick={() => setCmd(null)} title={t(lang, "close")} aria-label={t(lang, "close")}>
+                <X size={13} aria-hidden />
+              </button>
+            </div>
+            {cmd === "check_draft" ? (
+              <>
+                <textarea className="ax-textarea" value={draft} onChange={(e) => setDraft(e.currentTarget.value)} rows={9} placeholder={t(lang, "check_placeholder")} />
+                <div className="ax-toolrow">
+                  <button className="ax-btn ax-btn--primary" onClick={runCheckDraft} disabled={busy || !draft.trim()}>
+                    {t(lang, "task_run")}
+                  </button>
+                  <button className="ax-iconbtn" onClick={() => importInto(setDraft)} disabled={busy} title={t(lang, "import_btn")} aria-label={t(lang, "import_btn")}>
+                    <Upload size={16} aria-hidden />
+                  </button>
+                  <span className="ax-hint">{draft.length.toLocaleString()} {t(lang, "chars")}</span>
+                </div>
+                <details style={{ marginTop: 12 }}>
+                  <summary className="ax-block-label" style={{ cursor: "pointer" }}>{t(lang, "references_title")}</summary>
+                  <textarea className="ax-textarea" style={{ marginTop: 6 }} value={references} onChange={(e) => setReferences(e.currentTarget.value)} rows={6} placeholder={t(lang, "references_placeholder")} />
+                  <div className="ax-toolrow">
+                    <button className="ax-iconbtn" onClick={() => importInto(setReferences)} disabled={busy} title={t(lang, "import_refs")} aria-label={t(lang, "import_refs")}>
+                      <Upload size={16} aria-hidden />
+                    </button>
+                    <span className="ax-hint">{references.length.toLocaleString()} {t(lang, "chars")}</span>
+                  </div>
+                </details>
+              </>
+            ) : (
+              <p className="ax-hint">{t(lang, "soon_note")}</p>
+            )}
+          </>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -300,70 +423,70 @@ function App() {
       )}
       <div className="ax-app">
       <aside className="ax-sidebar">
-        <div className="ax-brand">
-          Axiom3
-          <small>{t(lang, "app_subtitle_short")}</small>
-        </div>
+        <div className="ax-brand" style={{ fontSize: 19 }}>Axiom3</div>
 
-        <div>
-          <p className="ax-side-label">{t(lang, "project")}</p>
-          <input
-            className="ax-input"
-            value={name}
-            onChange={(e) => setName(e.currentTarget.value)}
-            placeholder={t(lang, "project_placeholder")}
-          />
-          <div className="ax-toolrow">
-            <button className="ax-btn" onClick={openProject} disabled={busy || !name.trim()}>
-              {t(lang, "open_create")}
-            </button>
-            {status && (
-              <button
-                className="ax-iconbtn"
-                onClick={closeProject}
-                disabled={busy}
-                title={t(lang, "close")}
-                aria-label={t(lang, "close")}
-              >
-                <X size={16} aria-hidden />
-              </button>
-            )}
-          </div>
-          {status && (
-            <div className="ax-proj">
-              <span className={`ax-lamp ${status.chain_ok ? "is-green" : "is-amber"}`} />
-              <span className="ax-proj__name">{status.project_id}</span>
-            </div>
+        <button className="ax-side-new" onClick={newTask}>
+          <Plus size={16} aria-hidden /> {lang === "zh" ? "新建任务" : "New task"}
+        </button>
+
+        <div className="ax-side-scroll">
+          {tasks.length === 0 && (
+            <p className="ax-hint" style={{ padding: "6px 9px" }}>
+              {lang === "zh" ? "还没有任务,从上面开始。" : "No tasks yet — start above."}
+            </p>
           )}
-        </div>
+          {RECENT_GROUPS.map((g) => {
+            const items = tasks.filter((tk) => groupOf(tk.ts) === g.key);
+            if (!items.length) return null;
+            return (
+              <div key={g.key}>
+                <p className="ax-nav__label">{lang === "zh" ? g.zh : g.en}</p>
+                {items.map((tk) => (
+                  <button
+                    key={tk.id}
+                    className={`ax-recent ${nav === "tasks" && activeId === tk.id ? "is-active" : ""}`}
+                    onClick={() => {
+                      setNav("tasks");
+                      setActiveId(tk.id);
+                      setView("thread");
+                    }}
+                  >
+                    <span className="ax-recent__title">
+                      <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
+                      <b>{tk.title}</b>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            );
+          })}
 
-        <nav className="ax-nav">
-          {NAV_GROUPS.map((g) => (
-            <div key={g.key}>
-              <p className="ax-nav__label">{lang === "zh" ? g.zh : g.en}</p>
-              {NAV.filter((n) => n.group === g.key).map((n) => (
-                <button
-                  key={n.key}
-                  className={`ax-nav__item ${nav === n.key ? "is-active" : ""}`}
-                  onClick={() => setNav(n.key)}
-                >
-                  <n.icon size={16} aria-hidden />
-                  {lang === "zh" ? n.zh : n.en}
-                  {n.key === "tasks" && tasks.length > 0 && <span className="ax-nav__badge">{tasks.length}</span>}
-                </button>
-              ))}
-            </div>
+          <p className="ax-nav__label">{lang === "zh" ? "工具" : "Tools"}</p>
+          {NAV.filter((n) => n.key !== "tasks").map((n) => (
+            <button
+              key={n.key}
+              className={`ax-nav__item ${nav === n.key ? "is-active" : ""}`}
+              onClick={() => setNav(n.key)}
+            >
+              <n.icon size={16} aria-hidden />
+              {lang === "zh" ? n.zh : n.en}
+            </button>
           ))}
-        </nav>
-
-        <div className="ax-side-spacer" />
+        </div>
 
         <div className="ax-side-foot">
+          {status && (
+            <span className="ax-proj" style={{ marginTop: 0, flex: 1, minWidth: 0 }}>
+              <span className={`ax-lamp ${status.chain_ok ? "is-green" : "is-amber"}`} />
+              <span className="ax-proj__name">{status.project_id}</span>
+            </span>
+          )}
           <button
             className="ax-iconbtn"
             onClick={() => setLang(lang === "zh" ? "en" : "zh")}
             title={lang === "zh" ? "English" : "中文"}
             aria-label={t(lang, "switch_language")}
+            style={{ marginLeft: status ? 0 : "auto" }}
           >
             <Languages size={16} aria-hidden />
             <span style={{ fontSize: 12 }}>{lang === "zh" ? "EN" : "中"}</span>
@@ -424,149 +547,60 @@ function App() {
               {nav === "metrics" && <MetricsView lang={lang} />}
               {nav === "notifications" && <NotificationsView lang={lang} />}
             </div>
-          ) : !status ? (
-            <div className="ax-empty">
-              <p className="ax-empty__title">{t(lang, "empty_title")}</p>
-              <p className="ax-empty__sub">{t(lang, "empty_sub")}</p>
+          ) : view === "home" ? (
+            <div className="ax-home">
+              <h1 className="ax-home__greeting">{greeting()}</h1>
+              <p className="ax-home__sub">
+                {lang === "zh" ? "今天检查点什么?在下面输入,用 / 选择任务类型。" : "What shall we look at today? Type below — and / to pick a task type."}
+              </p>
+              {composerBlock()}
+              <div className="ax-chips">
+                {["check_draft", "verify", "research", "write", "ppt", "code"].map((k) => {
+                  const c = COMMANDS.find((x) => x.key === k);
+                  if (!c) return null;
+                  return (
+                    <button key={k} className="ax-chip" onClick={() => { setCmd(c.key); setSlash(""); }}>
+                      /{lang === "zh" ? c.zh : c.en}
+                      {!c.active && <span className="ax-chip__d"> · {t(lang, "coming_soon")}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <details className="ax-dev" style={{ maxWidth: 700, margin: "26px auto 0" }}>
+                <summary>{t(lang, "dev_tools")}</summary>
+                <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
+                  <div className="ax-toolrow">
+                    <input className="ax-input" style={{ width: 120 }} value={actor} onChange={(e) => setActor(e.currentTarget.value)} placeholder={t(lang, "actor")} />
+                    <input className="ax-input" style={{ width: 120 }} value={op} onChange={(e) => setOp(e.currentTarget.value)} placeholder={t(lang, "op")} />
+                    <input className="ax-input" style={{ flex: 1, minWidth: 160 }} value={payload} onChange={(e) => setPayload(e.currentTarget.value)} placeholder={t(lang, "payload")} />
+                  </div>
+                  <div className="ax-toolrow">
+                    <button className="ax-btn" onClick={appendEvent} disabled={busy}>{t(lang, "append_event")}</button>
+                    <button className="ax-btn" onClick={verifyChain} disabled={busy}>{t(lang, "verify_chain")}</button>
+                    <button className="ax-btn" onClick={vectorSelfTest} disabled={busy}>{t(lang, "vector_self_test")}</button>
+                  </div>
+                  {status && <div className="ax-hint">{status.root}</div>}
+                  {log.length > 0 && (
+                    <ul className="ax-log">
+                      {log.map((l, i) => (
+                        <li key={i}>{l}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </details>
             </div>
           ) : (
-            <div className="ax-canvas">
-              {view === "board" && (
-                <>
-                  {tasks.length > 0 && (
-                    <div className="ax-results__list" style={{ marginBottom: 18 }}>
-                      {tasks.map((tk) => (
-                        <button
-                          key={tk.id}
-                          className="ax-task"
-                          onClick={() => {
-                            setActiveId(tk.id);
-                            setView("detail");
-                          }}
-                        >
-                          <span
-                            className={`ax-lamp ${
-                              tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"
-                            }`}
-                          />
-                          <span className="ax-task__title">{tk.title}</span>
-                          <span className="ax-task__meta">
-                            /{t(lang, "cmd_check")} · {t(lang, `st_${tk.status}`)}
-                            {tk.result ? ` · ${tk.result.total} ${t(lang, "claims")}` : ""}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="ax-composer">
-                    {cmd === null ? (
-                      <>
-                        <textarea
-                          className="ax-textarea"
-                          value={slash}
-                          onChange={(e) => setSlash(e.currentTarget.value)}
-                          rows={3}
-                          placeholder={t(lang, "composer_ph")}
-                        />
-                        {slash.trimStart().startsWith("/") && (
-                          <div className="ax-slash-menu">
-                            {COMMANDS.filter((c) => {
-                              const q = slash.trimStart().slice(1).toLowerCase();
-                              return q === "" || (lang === "zh" ? c.zh : c.en).toLowerCase().includes(q) || c.cat.includes(q);
-                            }).map((c) => (
-                              <button
-                                key={c.key}
-                                className="ax-slash-item"
-                                disabled={!c.active}
-                                onClick={() => {
-                                  setCmd(c.key);
-                                  setSlash("");
-                                }}
-                              >
-                                <span className="ax-slash-cmd">/{lang === "zh" ? c.zh : c.en}</span>
-                                <span className="ax-slash-desc">
-                                  {lang === "zh" ? c.dzh : c.den}
-                                  {!c.active ? ` · ${t(lang, "coming_soon")}` : ""}
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        <div className="ax-composer__chip">
-                          /{(() => { const c = COMMANDS.find((x) => x.key === cmd); return c ? (lang === "zh" ? c.zh : c.en) : ""; })()}
-                          <button className="ax-iconbtn" onClick={() => setCmd(null)} title={t(lang, "close")} aria-label={t(lang, "close")}>
-                            <X size={13} aria-hidden />
-                          </button>
-                        </div>
-                        {cmd === "check_draft" ? (
-                          <>
-                            <textarea className="ax-textarea" value={draft} onChange={(e) => setDraft(e.currentTarget.value)} rows={9} placeholder={t(lang, "check_placeholder")} />
-                            <div className="ax-toolrow">
-                              <button className="ax-btn ax-btn--primary" onClick={runCheckDraft} disabled={busy || !draft.trim()}>
-                                {t(lang, "task_run")}
-                              </button>
-                              <button className="ax-iconbtn" onClick={() => importInto(setDraft)} disabled={busy} title={t(lang, "import_btn")} aria-label={t(lang, "import_btn")}>
-                                <Upload size={16} aria-hidden />
-                              </button>
-                              <span className="ax-hint">{draft.length.toLocaleString()} {t(lang, "chars")}</span>
-                            </div>
-                            <details style={{ marginTop: 12 }}>
-                              <summary className="ax-block-label" style={{ cursor: "pointer" }}>{t(lang, "references_title")}</summary>
-                              <textarea className="ax-textarea" style={{ marginTop: 6 }} value={references} onChange={(e) => setReferences(e.currentTarget.value)} rows={6} placeholder={t(lang, "references_placeholder")} />
-                              <div className="ax-toolrow">
-                                <button className="ax-iconbtn" onClick={() => importInto(setReferences)} disabled={busy} title={t(lang, "import_refs")} aria-label={t(lang, "import_refs")}>
-                                  <Upload size={16} aria-hidden />
-                                </button>
-                                <span className="ax-hint">{references.length.toLocaleString()} {t(lang, "chars")}</span>
-                              </div>
-                            </details>
-                          </>
-                        ) : (
-                          <p className="ax-hint">{t(lang, "soon_note")}</p>
-                        )}
-                      </>
-                    )}
-                  </div>
-
-                  <details className="ax-dev">
-                    <summary>{t(lang, "dev_tools")}</summary>
-                    <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                      <div className="ax-toolrow">
-                        <input className="ax-input" style={{ width: 120 }} value={actor} onChange={(e) => setActor(e.currentTarget.value)} placeholder={t(lang, "actor")} />
-                        <input className="ax-input" style={{ width: 120 }} value={op} onChange={(e) => setOp(e.currentTarget.value)} placeholder={t(lang, "op")} />
-                        <input className="ax-input" style={{ flex: 1, minWidth: 160 }} value={payload} onChange={(e) => setPayload(e.currentTarget.value)} placeholder={t(lang, "payload")} />
-                      </div>
-                      <div className="ax-toolrow">
-                        <button className="ax-btn" onClick={appendEvent} disabled={busy}>{t(lang, "append_event")}</button>
-                        <button className="ax-btn" onClick={verifyChain} disabled={busy}>{t(lang, "verify_chain")}</button>
-                        <button className="ax-btn" onClick={vectorSelfTest} disabled={busy}>{t(lang, "vector_self_test")}</button>
-                      </div>
-                      {status && <div className="ax-hint">{status.root}</div>}
-                      {log.length > 0 && (
-                        <ul className="ax-log">
-                          {log.map((l, i) => (
-                            <li key={i}>{l}</li>
-                          ))}
-                        </ul>
-                      )}
-                    </div>
-                  </details>
-                </>
-              )}
-
-              {view === "detail" &&
-                (() => {
+            <div className="ax-thread">
+              {(() => {
                   const tk = tasks.find((x) => x.id === activeId);
                   if (!tk) return null;
                   return (
                     <>
                       <div className="ax-results__head">
                         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <button className="ax-iconbtn" onClick={() => setView("board")} title={t(lang, "back")} aria-label={t(lang, "back")}>
+                          <button className="ax-iconbtn" onClick={() => { setView("home"); setActiveId(null); }} title={t(lang, "back")} aria-label={t(lang, "back")}>
                             <ChevronLeft size={18} aria-hidden />
                           </button>
                           <span className="ax-block-label" style={{ margin: 0 }}>{tk.title}</span>
@@ -598,6 +632,14 @@ function App() {
                             <X size={14} aria-hidden />
                           </button>
                         </div>
+                      )}
+
+                      {!tk.result && tk.status !== "running" && (
+                        <p className="ax-hint" style={{ marginTop: 14 }}>
+                          {tk.status === "cancelled"
+                            ? lang === "zh" ? "任务已取消。" : "Task was cancelled."
+                            : lang === "zh" ? "任务未完成。" : "Task did not complete."}
+                        </p>
                       )}
 
                       {tk.result && (
