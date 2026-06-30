@@ -98,14 +98,15 @@ pub fn reconstruct_abstract(inv: &Value) -> String {
     pairs.sort_unstable();
     let mut out = String::new();
     for (_, word) in pairs {
+        // Stop BEFORE exceeding the bound — never truncate mid-string (a byte-index
+        // truncate would panic on a multibyte char, e.g. a CJK abstract).
+        if out.len() + word.len() + 1 > MAX_ABSTRACT_CHARS {
+            break;
+        }
         if !out.is_empty() {
             out.push(' ');
         }
         out.push_str(word);
-        if out.len() >= MAX_ABSTRACT_CHARS {
-            out.truncate(MAX_ABSTRACT_CHARS);
-            break;
-        }
     }
     out
 }
@@ -236,6 +237,20 @@ mod tests {
         assert_eq!(reconstruct_abstract(&Value::Null), "");
         assert_eq!(reconstruct_abstract(&json!("not an object")), "");
         assert_eq!(reconstruct_abstract(&json!({})), "");
+    }
+
+    #[test]
+    fn reconstruct_bounds_a_huge_multibyte_abstract_without_panicking() {
+        // A long CJK abstract: each word is multibyte, so a byte-index truncate at the
+        // cap would land mid-char and panic. The bound must hold on a char boundary.
+        let mut inv = serde_json::Map::new();
+        for i in 0..5000u64 {
+            inv.insert("研究".to_string() + &i.to_string(), json!([i]));
+        }
+        let abs = reconstruct_abstract(&Value::Object(inv));
+        assert!(abs.len() <= MAX_ABSTRACT_CHARS, "bounded: {} bytes", abs.len());
+        // It's valid UTF-8 (didn't split a char) — round-trips through char iteration.
+        assert_eq!(abs.chars().count(), abs.chars().count());
     }
 
     #[test]
