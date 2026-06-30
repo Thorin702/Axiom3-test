@@ -209,7 +209,10 @@ fn parse_one(c: &[char], start: usize) -> Option<(Nhst, usize)> {
     // scavenge an unrelated later p across a citation or a second test (the false
     // positives a 40-char free-scan produced).
     let mut k = i;
-    while matches!(c.get(k), Some(' ') | Some(',') | Some(';') | Some('(')) {
+    while c
+        .get(k)
+        .is_some_and(|ch| ch.is_whitespace() || matches!(ch, ',' | ';' | '('))
+    {
         k += 1;
     }
     if c.get(k) != Some(&'p') {
@@ -229,7 +232,7 @@ fn parse_one(c: &[char], start: usize) -> Option<(Nhst, usize)> {
 }
 
 fn skip_ws(c: &[char], mut i: usize) -> usize {
-    while i < c.len() && c[i] == ' ' {
+    while i < c.len() && c[i].is_whitespace() {
         i += 1;
     }
     i
@@ -386,6 +389,13 @@ mod tests {
         assert!(flags("t(28) = 2.05e3, p = .04").is_empty());
         // An implausibly large df (above the ceiling) is not a real test.
         assert!(flags("t(20000000) = 2.0, p = .04").is_empty());
+    }
+
+    #[test]
+    fn tabs_and_newlines_between_tokens_still_parse() {
+        // PDF-extracted text uses tabs/newlines as whitespace — a real test there must
+        // still be checked (under-detection, not a false positive, but cheap to close).
+        assert!(!flags("t(28)\t=\t2.05,\tp\t=\t.50").is_empty(), "tab-separated test is checked");
     }
 
     #[test]
