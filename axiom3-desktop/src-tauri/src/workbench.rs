@@ -24,7 +24,7 @@ use axiom_runtime::litsearch::{LitSearch, Work};
 use axiom_runtime::plan::{plan_verification, PlanBudget, VerificationDepth};
 use axiom_runtime::supervisor::{run_batch, Cancel};
 use axiom_runtime::Provider;
-use axiom_orchestrate::coding::sandbox::Sandbox;
+use axiom_orchestrate::coding::sandbox::{Sandbox, SandboxMode};
 use axiom_orchestrate::coding::{run_coding_agent, CodingBudget, ProviderModel};
 use axiom_orchestrate::events::{EventSink, RunEvent, RunEventBody, SeqEmitter};
 use axiom_orchestrate::model::Run;
@@ -1559,6 +1559,7 @@ pub async fn coding_run(
     goal: String,
     runid: String,
     workspace: String,
+    writable: Option<bool>,
     provider: Option<String>,
 ) -> Result<CodingRunResult, String> {
     if goal.trim().is_empty() {
@@ -1569,8 +1570,10 @@ pub async fn coding_run(
         return Err(format!("unknown provider: {provider}"));
     }
     let model_id = workflow_model_for(&provider);
-    // Fail-closed: validate + canonicalize the workspace before anything runs.
-    let sandbox = Sandbox::new(&workspace).map_err(|e| e.to_string())?;
+    // Fail-closed: validate + canonicalize the workspace before anything runs. Write +
+    // build/test are enabled ONLY when the user explicitly opted in (writable).
+    let mode = if writable.unwrap_or(false) { SandboxMode::ReadWrite } else { SandboxMode::ReadOnly };
+    let sandbox = Sandbox::with_mode(&workspace, mode).map_err(|e| e.to_string())?;
     let cancel = Cancel::new();
     let _guard = state
         .begin_run(&runid, cancel.clone())

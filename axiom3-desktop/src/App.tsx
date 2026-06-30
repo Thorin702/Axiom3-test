@@ -100,6 +100,7 @@ function App() {
   );
   const [references, setReferences] = useState("");
   const [codeWs, setCodeWs] = useState<string | null>(null);
+  const [codeWritable, setCodeWritable] = useState(false);
   const [tasks, setTasks] = useState<Task[]>(() => {
     // Task history persists like Claude's chat list. A task left "running" when the app
     // closed can't still be running, so normalize it to cancelled on load.
@@ -338,7 +339,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs, writable: codeWritable })
     );
     setTasks((ts) =>
       ts.map((x) =>
@@ -575,6 +576,13 @@ function App() {
                 <div className="ax-toolrow">
                   <button className="ax-btn ax-btn--primary" onClick={() => runCoding(draft)} disabled={busy || !draft.trim() || !codeWs}>
                     {t(lang, "task_run")}
+                  </button>
+                  <button
+                    className={`ax-toggle ${codeWritable ? "on" : ""}`}
+                    onClick={() => setCodeWritable(!codeWritable)}
+                    title={codeWritable ? (lang === "zh" ? "可写入文件并运行构建/测试" : "can write files + run build/test") : (lang === "zh" ? "只读分析" : "read-only")}
+                  >
+                    {codeWritable ? (lang === "zh" ? "写入 · 构建" : "write · build") : (lang === "zh" ? "只读" : "read-only")}
                   </button>
                 </div>
               </>
