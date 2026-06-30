@@ -304,3 +304,90 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-slash-item:disabled { opacity: 0.55; cursor: default; }
 .ax-slash-cmd { font-size: 14px; color: var(--ax-ink); white-space: nowrap; }
 .ax-slash-desc { font-size: 12px; color: var(--ax-ink-faint); }
+
+/* ── sidebar nav ───────────────────────────────────────────────────── */
+.ax-nav { display: flex; flex-direction: column; gap: 1px; margin-top: 4px; }
+.ax-nav__label { font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase;
+  color: var(--ax-ink-faint); margin: 12px 0 4px 8px; font-weight: 600; }
+.ax-nav__item { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  border: none; background: transparent; border-radius: 8px; padding: 7px 9px; cursor: pointer;
+  font-family: var(--ax-sans); font-size: 13.5px; color: var(--ax-ink-soft); position: relative; }
+.ax-nav__item:hover { background: var(--ax-surface-2); color: var(--ax-ink); }
+.ax-nav__item.is-active { background: var(--ax-accent-soft); color: var(--ax-accent); font-weight: 500; }
+.ax-nav__item.is-active::before { content: ""; position: absolute; left: -8px; top: 8px; bottom: 8px;
+  width: 2.5px; border-radius: 2px; background: var(--ax-accent); }
+.ax-nav__item svg { flex-shrink: 0; opacity: 0.85; }
+.ax-nav__badge { margin-left: auto; font-size: 10.5px; color: var(--ax-ink-faint);
+  background: var(--ax-surface-2); border-radius: 6px; padding: 1px 6px; }
+
+/* ── surfaces (generic shell for each module) ──────────────────────── */
+.ax-surface { display: flex; flex-direction: column; gap: 14px; }
+.ax-surface__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.ax-surface__title { font-family: var(--ax-serif); font-size: 19px; color: var(--ax-ink); margin: 0; }
+.ax-surface__sub { font-size: 12.5px; color: var(--ax-ink-soft); margin: 3px 0 0; max-width: 62ch; line-height: 1.5; }
+.ax-surface__actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+
+/* card grid */
+.ax-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.ax-card { border: 0.5px solid var(--ax-line); border-radius: var(--ax-radius);
+  background: var(--ax-surface); padding: 14px 15px; display: flex; flex-direction: column; gap: 8px; }
+.ax-card--pad { padding: 16px 17px; }
+.ax-card__head { display: flex; align-items: center; gap: 8px; }
+.ax-card__title { font-size: 13.5px; font-weight: 600; color: var(--ax-ink); margin: 0; }
+.ax-card__body { font-size: 12.5px; color: var(--ax-ink-soft); line-height: 1.55; }
+
+/* stat block */
+.ax-stat { display: flex; flex-direction: column; gap: 2px; }
+.ax-stat__num { font-family: var(--ax-serif); font-size: 26px; color: var(--ax-ink); line-height: 1; }
+.ax-stat__num small { font-size: 13px; color: var(--ax-ink-faint); font-family: var(--ax-sans); margin-left: 4px; }
+.ax-stat__label { font-size: 11.5px; color: var(--ax-ink-faint); letter-spacing: 0.02em; }
+
+/* list rows */
+.ax-row { display: flex; align-items: center; gap: 11px; padding: 11px 13px; border: 0.5px solid var(--ax-line);
+  border-radius: var(--ax-radius); background: var(--ax-surface); }
+.ax-row + .ax-row { margin-top: 7px; }
+.ax-row__main { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.ax-row__title { font-size: 13.5px; color: var(--ax-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ax-row__sub { font-size: 11.5px; color: var(--ax-ink-faint); }
+.ax-row__meta { font-size: 11.5px; color: var(--ax-ink-soft); flex-shrink: 0; }
+
+/* neutral pill — NEVER a truth badge; status lamps carry verdicts */
+.ax-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--ax-ink-soft);
+  background: var(--ax-surface-2); border: 0.5px solid var(--ax-line-soft); border-radius: 20px; padding: 2px 9px; }
+.ax-badge .ax-lamp { width: 7px; height: 7px; }
+
+/* dropzone */
+.ax-drop { border: 1.5px dashed var(--ax-line); border-radius: 12px; padding: 30px 20px; text-align: center;
+  color: var(--ax-ink-soft); background: var(--ax-surface-2); display: flex; flex-direction: column;
+  align-items: center; gap: 8px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+.ax-drop:hover { border-color: var(--ax-accent); background: var(--ax-accent-soft); }
+.ax-drop__hint { font-size: 12px; color: var(--ax-ink-faint); }
+
+/* timeline (provenance / audit) */
+.ax-tl { display: flex; flex-direction: column; padding-left: 6px; }
+.ax-tl__node { position: relative; padding: 0 0 16px 22px; border-left: 1.5px solid var(--ax-line); }
+.ax-tl__node:last-child { border-left-color: transparent; }
+.ax-tl__node::before { content: ""; position: absolute; left: -5.5px; top: 2px; width: 9px; height: 9px;
+  border-radius: 50%; background: var(--ax-surface); border: 1.5px solid var(--ax-accent); }
+.ax-tl__op { font-size: 13px; color: var(--ax-ink); }
+.ax-tl__meta { font-size: 11.5px; color: var(--ax-ink-faint); margin-top: 2px; font-family: var(--ax-sans); }
+.ax-tl__hash { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; color: var(--ax-ink-faint); }
+
+/* command palette (⌘K) */
+.ax-pal-overlay { position: fixed; inset: 0; background: rgba(20,24,25,0.34); z-index: 40;
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 14vh; }
+.ax-pal { width: min(560px, 92vw); background: var(--ax-surface); border: 0.5px solid var(--ax-line);
+  border-radius: 14px; box-shadow: 0 18px 60px rgba(15,18,19,0.32); overflow: hidden; }
+.ax-pal__input { width: 100%; border: none; border-bottom: 0.5px solid var(--ax-line); background: transparent;
+  padding: 15px 17px; font-size: 15px; font-family: var(--ax-sans); color: var(--ax-ink); outline: none; }
+.ax-pal__list { max-height: 50vh; overflow-y: auto; padding: 6px; }
+.ax-pal__item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: none;
+  background: transparent; border-radius: 8px; padding: 9px 11px; cursor: pointer; font-family: var(--ax-sans);
+  font-size: 13.5px; color: var(--ax-ink); }
+.ax-pal__item:hover, .ax-pal__item.is-active { background: var(--ax-surface-2); }
+.ax-pal__item .ax-row__sub { margin-left: auto; }
+.ax-kbd { font-family: ui-monospace, Menlo, monospace; font-size: 10.5px; color: var(--ax-ink-faint);
+  border: 0.5px solid var(--ax-line); border-radius: 5px; padding: 1px 5px; background: var(--ax-surface-2); }
+
+/* topbar action cluster */
+.ax-topbar__actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }

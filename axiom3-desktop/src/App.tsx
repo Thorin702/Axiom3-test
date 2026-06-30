@@ -8,7 +8,20 @@ import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task } from "
 import { ClaimDossier } from "./components/ClaimDossier";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
-import { Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft } from "lucide-react";
+import { ReadingView } from "./components/ReadingView";
+import { SearchView } from "./components/SearchView";
+import { FleetMonitor } from "./components/FleetMonitor";
+import { ShieldView } from "./components/ShieldView";
+import { IntegrityView } from "./components/IntegrityView";
+import { ProvenanceView } from "./components/ProvenanceView";
+import { MetricsView } from "./components/MetricsView";
+import { NotificationsView } from "./components/NotificationsView";
+import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
+import {
+  Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft,
+  Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
+  Command, Bell, type LucideIcon,
+} from "lucide-react";
 
 
 // The platform's task capabilities — typed after "/" in the composer (like Claude).
@@ -47,6 +60,29 @@ const COMMANDS: SlashCmd[] = [
   { key: "workflow", cat: "编排", zh: "工作流", en: "workflow", dzh: "自定义动态多智能体工作流(任意任务)", den: "custom dynamic multi-agent workflow (any task)", active: false },
 ];
 
+// Sidebar navigation — the platform's surfaces, grouped 工作 / 信任·证据 / 概览. Each routes
+// to a self-contained surface component. Notifications is reached from the topbar bell.
+type NavKey =
+  | "tasks" | "reading" | "search" | "fleet"
+  | "shield" | "integrity" | "provenance"
+  | "metrics" | "notifications";
+type NavGroup = "work" | "trust" | "overview";
+const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGroup }[] = [
+  { key: "tasks", zh: "任务", en: "Tasks", icon: Sparkles, group: "work" },
+  { key: "reading", zh: "阅读", en: "Reading", icon: BookOpen, group: "work" },
+  { key: "search", zh: "检索", en: "Search", icon: Search, group: "work" },
+  { key: "fleet", zh: "舰队", en: "Fleet", icon: Boxes, group: "work" },
+  { key: "shield", zh: "护盾", en: "Shield", icon: ShieldCheck, group: "trust" },
+  { key: "integrity", zh: "完整性", en: "Integrity", icon: FileCheck, group: "trust" },
+  { key: "provenance", zh: "溯源", en: "Provenance", icon: GitBranch, group: "trust" },
+  { key: "metrics", zh: "概览", en: "Overview", icon: Gauge, group: "overview" },
+];
+const NAV_GROUPS: { key: NavGroup; zh: string; en: string }[] = [
+  { key: "work", zh: "工作", en: "Work" },
+  { key: "trust", zh: "信任 · 证据", en: "Trust · Evidence" },
+  { key: "overview", zh: "概览", en: "Overview" },
+];
+
 function App() {
   const [lang, setLangState] = useState<Lang>(
     (localStorage.getItem("axiom3.lang") as Lang) || "zh"
@@ -77,9 +113,23 @@ function App() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [onboarded, setOnboarded] = useState(localStorage.getItem("axiom3.onboarded") === "1");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [nav, setNav] = useState<NavKey>("tasks");
+  const [paletteOpen, setPaletteOpen] = useState(false);
 
   useEffect(() => {
     applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
+  }, []);
+
+  // ⌘K / Ctrl-K opens the command palette anywhere.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -219,10 +269,35 @@ function App() {
   // A clean claim (no deterministic flag, no fleet verdict) is "unchecked" — shown
   // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
 
+  const paletteItems: PaletteItem[] = [
+    ...NAV.map((n) => ({ key: n.key, label: lang === "zh" ? n.zh : n.en, kind: "nav" as const })),
+    ...COMMANDS.map((c) => ({
+      key: c.key,
+      label: `/${lang === "zh" ? c.zh : c.en}`,
+      sub: lang === "zh" ? c.dzh : c.den,
+      kind: "cmd" as const,
+      disabled: !c.active,
+    })),
+  ];
+
+  function onPalettePick(it: PaletteItem) {
+    setPaletteOpen(false);
+    if (it.kind === "nav") {
+      setNav(it.key as NavKey);
+    } else {
+      setNav("tasks");
+      setView("board");
+      setCmd(it.key);
+    }
+  }
+
   return (
     <>
       {!onboarded && <OnboardingWizard lang={lang} onDone={() => setOnboarded(true)} />}
       {settingsOpen && <SettingsModal lang={lang} onLang={setLang} onClose={() => setSettingsOpen(false)} />}
+      {paletteOpen && (
+        <CommandPalette lang={lang} items={paletteItems} onPick={onPalettePick} onClose={() => setPaletteOpen(false)} />
+      )}
       <div className="ax-app">
       <aside className="ax-sidebar">
         <div className="ax-brand">
@@ -262,6 +337,25 @@ function App() {
           )}
         </div>
 
+        <nav className="ax-nav">
+          {NAV_GROUPS.map((g) => (
+            <div key={g.key}>
+              <p className="ax-nav__label">{lang === "zh" ? g.zh : g.en}</p>
+              {NAV.filter((n) => n.group === g.key).map((n) => (
+                <button
+                  key={n.key}
+                  className={`ax-nav__item ${nav === n.key ? "is-active" : ""}`}
+                  onClick={() => setNav(n.key)}
+                >
+                  <n.icon size={16} aria-hidden />
+                  {lang === "zh" ? n.zh : n.en}
+                  {n.key === "tasks" && tasks.length > 0 && <span className="ax-nav__badge">{tasks.length}</span>}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+
         <div className="ax-side-spacer" />
 
         <div className="ax-side-foot">
@@ -295,12 +389,42 @@ function App() {
               <span className="ax-hint">{t(lang, "app_title")}</span>
             )}
           </div>
+          <div className="ax-topbar__actions">
+            <button
+              className="ax-iconbtn"
+              onClick={() => setPaletteOpen(true)}
+              title={lang === "zh" ? "命令面板" : "Command palette"}
+              aria-label={lang === "zh" ? "命令面板" : "Command palette"}
+            >
+              <Command size={15} aria-hidden />
+              <span className="ax-kbd">⌘K</span>
+            </button>
+            <button
+              className={`ax-iconbtn ${nav === "notifications" ? "is-active" : ""}`}
+              onClick={() => setNav("notifications")}
+              title={lang === "zh" ? "通知" : "Notifications"}
+              aria-label={lang === "zh" ? "通知" : "Notifications"}
+            >
+              <Bell size={16} aria-hidden />
+            </button>
+          </div>
         </header>
 
         <div className="ax-content">
           {error && <p className="ax-error">⚠ {error}</p>}
 
-          {!status ? (
+          {nav !== "tasks" ? (
+            <div className="ax-canvas">
+              {nav === "reading" && <ReadingView lang={lang} />}
+              {nav === "search" && <SearchView lang={lang} />}
+              {nav === "fleet" && <FleetMonitor lang={lang} />}
+              {nav === "shield" && <ShieldView lang={lang} />}
+              {nav === "integrity" && <IntegrityView lang={lang} />}
+              {nav === "provenance" && <ProvenanceView lang={lang} />}
+              {nav === "metrics" && <MetricsView lang={lang} />}
+              {nav === "notifications" && <NotificationsView lang={lang} />}
+            </div>
+          ) : !status ? (
             <div className="ax-empty">
               <p className="ax-empty__title">{t(lang, "empty_title")}</p>
               <p className="ax-empty__sub">{t(lang, "empty_sub")}</p>
