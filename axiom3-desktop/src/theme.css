@@ -430,6 +430,13 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 /* topbar action cluster */
 .ax-topbar__actions { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 
+/* persistent bottom status bar */
+.ax-statusbar { display: flex; align-items: center; gap: 16px; padding: 0 16px; height: 26px; flex-shrink: 0;
+  border-top: 0.5px solid var(--ax-line); background: var(--ax-surface-2); font-size: 11.5px; color: var(--ax-ink-soft); }
+.ax-sb__item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.ax-sb__item .ax-lamp { width: 7px; height: 7px; }
+.ax-sb__right { margin-left: auto; }
+
 /* ── right activity rail (live multi-agent runs) ───────────────────── */
 .ax-rail { display: flex; flex-direction: column; border-left: 0.5px solid var(--ax-line);
   background: var(--ax-surface-2); overflow: hidden; }

@@ -21,6 +21,7 @@ import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { ActivityRail } from "./components/ActivityRail";
 import { Splash } from "./components/Splash";
+import { StatusBar } from "./components/StatusBar";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
@@ -951,6 +952,7 @@ function App() {
             </div>
           )}
         </div>
+        <StatusBar lang={lang} status={status} />
       </main>
       {railOpen && (
         <ActivityRail
