@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   X, Trash2, Palette, KeyRound, ListChecks, Scale, Boxes, Shield, Lock,
   Database, FileCheck, UserRound, RefreshCw, Keyboard, Accessibility, Wrench, Info,
@@ -84,6 +85,31 @@ export function Settings({ lang, onLang, onClose }: { lang: Lang; onLang: (l: La
   async function removeKey(family: string) {
     await invoke("delete_provider_key", { provider: family }).catch(() => {});
     refreshProvs();
+  }
+  // These two actions are backed by shipping commands (export_provenance / clear_cache).
+  const [busyAction, setBusyAction] = useState("");
+  const [actionNote, setActionNote] = useState("");
+  async function exportAudit() {
+    const path = await save({ defaultPath: "axiom3-audit.json", filters: [{ name: "JSON", extensions: ["json"] }] });
+    if (typeof path !== "string") return;
+    setBusyAction("export");
+    try {
+      const r = await invoke<{ bytes: number }>("export_provenance", { path });
+      setActionNote(zh ? `已导出 ${r.bytes.toLocaleString()} 字节` : `Exported ${r.bytes.toLocaleString()} bytes`);
+    } catch (e) {
+      setActionNote(String(e));
+    }
+    setBusyAction("");
+  }
+  async function clearCache() {
+    setBusyAction("clear");
+    try {
+      await invoke("clear_cache");
+      setActionNote(zh ? "会话缓存已清理" : "Session cache cleared");
+    } catch (e) {
+      setActionNote(String(e));
+    }
+    setBusyAction("");
   }
   function resetOnboarding() {
     localStorage.removeItem("axiom3.onboarded");
@@ -266,8 +292,11 @@ export function Settings({ lang, onLang, onClose }: { lang: Lang; onLang: (l: La
                 {row(zh ? "数据位置" : "Data location", zh ? "本机应用目录" : "Local app dir")}
                 <div className="ax-set-row">
                   <span>{zh ? "清理缓存" : "Clear cache"}</span>
-                  <button className="ax-btn" disabled>{zh ? "清理" : "Clear"}</button>
+                  <button className="ax-btn" onClick={clearCache} disabled={busyAction === "clear"}>
+                    {busyAction === "clear" ? (zh ? "清理中…" : "Clearing…") : zh ? "清理" : "Clear"}
+                  </button>
                 </div>
+                {actionNote && <p className="ax-hint" style={{ marginTop: 6 }}>{actionNote}</p>}
               </div>
             )}
 
@@ -277,12 +306,15 @@ export function Settings({ lang, onLang, onClose }: { lang: Lang; onLang: (l: La
                 <p className="ax-set-group__label">{zh ? "完整性与审计" : "Integrity & audit"}</p>
                 {shellNote}
                 {row(zh ? "哈希链审计" : "Hash-chain audit", zh ? "始终开启" : "Always on")}
-                {row(zh ? "事件签名" : "Event signing", zh ? "开" : "On")}
+                {row(zh ? "防篡改机制" : "Tamper-evidence", zh ? "哈希链 (blake3)" : "Hash chain (blake3)")}
                 <div className="ax-set-row">
                   <span>{zh ? "导出审计记录" : "Export audit log"}</span>
-                  <button className="ax-btn" disabled>{zh ? "导出" : "Export"}</button>
+                  <button className="ax-btn" onClick={exportAudit} disabled={busyAction === "export"}>
+                    {busyAction === "export" ? (zh ? "导出中…" : "Exporting…") : zh ? "导出" : "Export"}
+                  </button>
                 </div>
-                <p className="ax-hint" style={{ marginTop: 6 }}>{zh ? "完整性证明的是记录未被篡改,而非内容为真。" : "Integrity proves the record wasn't altered — not that the content is true."}</p>
+                {actionNote && <p className="ax-hint" style={{ marginTop: 6 }}>{actionNote}</p>}
+                <p className="ax-hint" style={{ marginTop: 6 }}>{zh ? "完整性证明的是记录未被篡改(哈希链),不含加密签名,也不判断内容为真。" : "Integrity proves the record wasn't altered (hash chain) — no cryptographic signatures, and it does not judge whether the content is true."}</p>
               </div>
             )}
 

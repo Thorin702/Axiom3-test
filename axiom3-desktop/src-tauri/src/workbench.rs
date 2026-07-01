@@ -1194,6 +1194,14 @@ pub async fn export_provenance(
     .map_err(|e| e.to_string())?
 }
 
+/// Clear this session's in-memory verdict + DOI caches (idempotency caches only — the
+/// durable hash-linked event log is untouched). Lets the user force a fresh cross-vendor
+/// re-check without reopening the project.
+#[tauri::command]
+pub fn clear_cache(state: tauri::State<'_, AppState>) {
+    state.cache_clear();
+}
+
 /// How many works to fetch per claim, how many user-reference passages and retrieved
 /// passages to keep, and the cap on the COMBINED set fed to the fleet.
 const LIT_SEARCH_RESULTS: usize = 5;
@@ -1692,11 +1700,19 @@ pub async fn coding_run(
     let budget = CodingBudget::default();
     let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &pause, &budget, |step| {
         let think: String = step.reasoning.chars().take(600).collect();
-        let note = if think.is_empty() {
+        let mut note = if think.is_empty() {
             format!("{} {}", step.tool, step.detail)
         } else {
             format!("{think}\n→ {} {}", step.tool, step.detail)
         };
+        // Surface the OBSERVATION (command exit + test/build stdout, or "wrote <path> (<n>
+        // bytes)") — previously dropped, so the user saw "run cargo test" but never pass/fail
+        // and had zero visibility into writes in read-write mode.
+        let obs: String = step.observation.chars().take(1200).collect();
+        if !obs.trim().is_empty() {
+            note.push_str("\n");
+            note.push_str(obs.trim_end());
+        }
         em.emit(RunEventBody::AgentProgress {
             agent_id: "coder".into(),
             step: step.n,

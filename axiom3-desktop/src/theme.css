@@ -102,6 +102,21 @@
 .ax-iconbtn:disabled { opacity: 0.45; cursor: default; }
 .ax-iconbtn.is-active { color: var(--ax-ink); background: var(--ax-surface-2); border-color: transparent; }
 
+/* Inline "open external link" button (clickable DOIs / citations). */
+.ax-linkbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px 5px;
+  border: 0.5px solid transparent;
+  border-radius: var(--ax-radius);
+  background: transparent;
+  color: var(--ax-ink-soft);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ax-linkbtn:hover { color: var(--ax-accent); background: var(--ax-surface-2); }
+
 /* ── results panel */
 .ax-results__head {
   display: flex;

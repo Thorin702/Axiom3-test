@@ -136,7 +136,7 @@ function App() {
   const [draft, setDraft] = useState(
     () => localStorage.getItem("axiom3.draft") ?? "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
-  const [references, setReferences] = useState("");
+  const [references, setReferences] = useState(() => localStorage.getItem("axiom3.references") ?? "");
   const [codeWs, setCodeWs] = useState<string | null>(null);
   const [codeWritable, setCodeWritable] = useState(false);
   const [sources, setSources] = useState<Source[]>(() => {
@@ -146,8 +146,11 @@ function App() {
       return [];
     }
   });
-  const [taskModel, setTaskModel] = useState(""); // "" = auto
-  const [wfAgents, setWfAgents] = useState(0); // 0 = auto
+  const [taskModel, setTaskModel] = useState(() => localStorage.getItem("axiom3.taskModel") ?? ""); // "" = auto
+  const [wfAgents, setWfAgents] = useState(() => {
+    const n = parseInt(localStorage.getItem("axiom3.wfAgents") || "", 10);
+    return Number.isFinite(n) && n >= 0 ? n : 0; // 0 = auto
+  });
   const [tasks, setTasks] = useState<Task[]>(() => {
     // Task history persists like Claude's chat list. A task left "running" when the app
     // closed can't still be running, so normalize it to cancelled on load.
@@ -222,6 +225,20 @@ function App() {
       /* quota — ignore */
     }
   }, [draft]);
+
+  // Persist the reference corpus + workflow prefs so a reload / new task doesn't silently
+  // drop the evidence base or reset the agent-count & model choices.
+  useEffect(() => {
+    try {
+      localStorage.setItem("axiom3.references", references);
+    } catch {
+      /* quota — ignore */
+    }
+  }, [references]);
+  useEffect(() => {
+    localStorage.setItem("axiom3.taskModel", taskModel);
+    localStorage.setItem("axiom3.wfAgents", String(wfAgents));
+  }, [taskModel, wfAgents]);
 
   // Persist the source library (most recent first, ≤12). A full document's text can be
   // megabytes, so capping to 12 ENTRIES doesn't bound the payload — bound it by BYTES: if
@@ -407,7 +424,8 @@ function App() {
     setCmd(null);
     setSlash("");
     setDraft("");
-    setReferences("");
+    // Keep `references`: it's the user's evidence corpus, not per-task scratch. Clearing it
+    // silently ungrounded follow-up checks (grounded verdicts flip when the base vanishes).
   }
 
   // Time-of-day greeting for the home screen.
@@ -556,14 +574,22 @@ function App() {
     setSlash("");
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
-    const r = await run<{ status: string; synthesis: string | null }>(() =>
-      invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined })
-    );
+    const r = await run<{
+      status: string;
+      synthesis: string | null;
+      steps?: { spec: { role: string }; status: string; output?: string }[];
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined }));
     setTasks((ts) =>
       ts.map((x) =>
         x.id === runid
           ? r
-            ? { ...x, status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed", synthesis: r.synthesis ?? undefined }
+            ? {
+                ...x,
+                status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed",
+                synthesis: r.synthesis ?? undefined,
+                // Keep each sub-agent's full output so the run stays inspectable after reload.
+                steps: r.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "" })),
+              }
             : { ...x, status: "failed", error: "failed" }
           : x
       )
@@ -1085,7 +1111,7 @@ function App() {
               {nav === "shield" && <ShieldView lang={lang} tasks={tasks} />}
               {nav === "integrity" && <IntegrityView lang={lang} />}
               {nav === "provenance" && <ProvenanceView lang={lang} />}
-              {nav === "metrics" && <MetricsView lang={lang} />}
+              {nav === "metrics" && <MetricsView lang={lang} tasks={tasks} />}
               {nav === "notifications" && (
                 <NotificationsView
                   lang={lang}
@@ -1198,6 +1224,27 @@ function App() {
                           <p className="ax-block-label">{lang === "zh" ? "汇总结果" : "Synthesized result"}</p>
                           <div className="ax-synth__body">{tk.synthesis}</div>
                         </div>
+                      )}
+
+                      {tk.steps && tk.steps.length > 0 && (
+                        <details className="ax-agents" style={{ marginTop: 12 }}>
+                          <summary className="ax-block-label" style={{ cursor: "pointer" }}>
+                            {lang === "zh" ? `各智能体输出 · ${tk.steps.length}` : `Per-agent output · ${tk.steps.length}`}
+                          </summary>
+                          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 10 }}>
+                            {tk.steps.map((st, i) => (
+                              <div className="ax-card ax-card--pad" key={i}>
+                                <div className="ax-row" style={{ border: "none", padding: 0, marginBottom: 6 }}>
+                                  <span className={`ax-lamp ${st.status === "ok" ? "is-green" : st.status === "failed" ? "is-red" : "is-neutral"}`} />
+                                  <div className="ax-row__title">{st.role}</div>
+                                </div>
+                                <div className="ax-synth__body" style={{ fontSize: 13 }}>
+                                  {st.output || (lang === "zh" ? "(无输出)" : "(no output)")}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
                       )}
 
                       {!tk.result && !tk.synthesis && tk.status !== "running" && (

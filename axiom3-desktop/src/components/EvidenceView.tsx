@@ -3,9 +3,11 @@
 // concludes. Green marks a passage that was retrieved as evidence, not that it is true.
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Search, BookOpen, Quote, FileText, Link2 } from "lucide-react";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { Search, BookOpen, Quote, FileText, Link2, ExternalLink } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
+import { citationUrl } from "./ClaimDossier";
 
 const S = {
   zh: {
@@ -110,19 +112,28 @@ export function EvidenceView({ lang, tasks }: { lang: Lang; tasks: Task[] }) {
             <div className="ax-hint">{s.none}</div>
           ) : (
             <div className="ax-results__list">
-              {rows.slice(0, 60).map((e, i) => (
-                <div className="ax-row" key={i}>
-                  <span className={`ax-lamp ${e.src === "retrieved" ? "is-green" : "is-neutral"}`} />
-                  <div className="ax-row__main">
-                    <div className="ax-row__title" style={{ whiteSpace: "normal" }}>{e.text}</div>
-                    <div className="ax-row__sub">
-                      <FileText size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />
-                      {e.cite ?? s.kinds[e.src]} · {s.from} {e.claim.slice(0, 40)}{e.claim.length > 40 ? "…" : ""}
+              {rows.slice(0, 60).map((e, i) => {
+                const url = e.cite ? citationUrl(e.cite) : null;
+                return (
+                  <div className="ax-row" key={i}>
+                    <span className={`ax-lamp ${e.src === "retrieved" ? "is-green" : "is-neutral"}`} />
+                    <div className="ax-row__main">
+                      <div className="ax-row__title" style={{ whiteSpace: "normal" }}>{e.text}</div>
+                      <div className="ax-row__sub">
+                        <FileText size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />
+                        {e.cite ?? s.kinds[e.src]} · {s.from} {e.claim.slice(0, 40)}{e.claim.length > 40 ? "…" : ""}
+                      </div>
                     </div>
+                    {url ? (
+                      <button className="ax-linkbtn" onClick={() => openUrl(url)} title={url}>
+                        <ExternalLink size={13} aria-hidden />
+                      </button>
+                    ) : (
+                      <span className="ax-badge">{s.kinds[e.src]}</span>
+                    )}
                   </div>
-                  <span className="ax-badge">{s.kinds[e.src]}</span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -132,13 +143,19 @@ export function EvidenceView({ lang, tasks }: { lang: Lang; tasks: Task[] }) {
           ) : (
             <div className="ax-results__list">
               {dois.map((d) => (
-                <div className="ax-row" key={d}>
+                <button
+                  className="ax-row"
+                  key={d}
+                  style={{ width: "100%", textAlign: "left", cursor: "pointer" }}
+                  onClick={() => openUrl(`https://doi.org/${d}`)}
+                  title={`https://doi.org/${d}`}
+                >
                   <Link2 size={15} aria-hidden />
                   <div className="ax-row__main">
                     <div className="ax-row__title" style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12 }}>{d}</div>
                   </div>
-                  <span className="ax-badge">DOI</span>
-                </div>
+                  <span className="ax-badge"><ExternalLink size={11} style={{ verticalAlign: "-1px", marginRight: 3 }} />DOI</span>
+                </button>
               ))}
             </div>
           )}

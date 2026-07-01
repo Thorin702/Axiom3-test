@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { BarChart3, Activity, FileText, ShieldCheck, KeyRound } from "lucide-react";
 import type { Lang } from "../i18n";
-import type { EventInfo, ProjectStatus } from "../lib/types";
+import type { EventInfo, ProjectStatus, Task } from "../lib/types";
 
 const S = {
   zh: {
@@ -53,7 +53,7 @@ function rel(ts: number, lang: Lang): string {
   return lang === "zh" ? `${Math.floor(h / 24)} 天前` : `${Math.floor(h / 24)} d ago`;
 }
 
-export function MetricsView({ lang }: { lang: Lang }) {
+export function MetricsView({ lang, tasks }: { lang: Lang; tasks: Task[] }) {
   const s = S[lang];
   const [status, setStatus] = useState<ProjectStatus | null>(null);
   const [events, setEvents] = useState<EventInfo[]>([]);
@@ -67,7 +67,9 @@ export function MetricsView({ lang }: { lang: Lang }) {
       .catch(() => {});
   }, []);
 
-  const checksRun = events.filter((e) => e.op === "draft.checked").length; // (from the limited window)
+  // Count completed checks from the full task history, not the truncated 8-event window
+  // (which capped the headline number at 8 and often read 0–2 after other events).
+  const checksRun = tasks.filter((t) => t.type === "check_draft" && t.result).length;
   const eventCount = status ? status.event_count : 0;
 
   const stats = [

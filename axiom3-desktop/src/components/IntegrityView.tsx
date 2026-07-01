@@ -2,10 +2,14 @@
 // (project_status + verify_chain). Proves the RECORD wasn't altered, not that content is true.
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { FileCheck, Fingerprint, Lock, ShieldCheck, History } from "lucide-react";
+import { Fingerprint, Lock, ShieldCheck, History } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { ProjectStatus } from "../lib/types";
 
+// NOTE: these checks state ONLY what `verify_chain` actually proves — hash linkage, a dense
+// gap-free sequence (the real anti-reorder guarantee), and entry-hash recompute. The store
+// has no cryptographic signatures and does not verify wall-clock timestamps, so we do not
+// claim either (that would violate the product's honesty red line).
 const S = {
   zh: {
     title: "完整性报告",
@@ -18,17 +22,16 @@ const S = {
     chainBroken: "哈希链异常 — 检测到不一致",
     headLabel: "链头哈希",
     eventsLabel: "事件",
-    sigLabel: "签名",
+    verifiedLabel: "校验结果",
     lastLabel: "上次校验",
     never: "尚未手动校验",
     justNow: "刚刚",
-    checks: "校验项",
+    checks: "校验项 · 均由「重新校验」实际核验",
     c1: "哈希链连续", c1s: "每个事件都链接上一个事件的哈希",
-    c2: "事件签名有效", c2s: "每条记录由工作台密钥签名",
-    c3: "导出可独立复核", c3s: "导出的日志可在工作台之外重新验证",
-    c4: "时间戳单调递增", c4s: "事件时间不回退,顺序不可重排",
+    c2: "序列稠密且未重排", c2s: "事件是无间隔的 1…N 连续序号,没有被删除或重新排序",
+    c3: "内容指纹可复算", c3s: "每个事件的内容都能哈希回其存储的指纹",
     ok: "通过", bad: "异常",
-    hint: "完整性 = 这条轨迹没有被改动过;它从不断言其中记录的主张是否正确。内容的真假由校验流程单独评估。",
+    hint: "完整性 = 这条轨迹没有被改动过(哈希链 + 稠密序号 + 指纹复算)。它不含加密签名,也不校验时钟时间戳,因此不作此类断言;内容的真假由校验流程单独评估。",
   },
   en: {
     title: "Integrity report",
@@ -41,17 +44,16 @@ const S = {
     chainBroken: "Chain broken — inconsistency detected",
     headLabel: "Chain head",
     eventsLabel: "Events",
-    sigLabel: "Signatures",
+    verifiedLabel: "Verification",
     lastLabel: "Last verified",
     never: "not manually verified yet",
     justNow: "just now",
-    checks: "Checks",
+    checks: "Checks · each is actually performed by Re-verify",
     c1: "Hash chain is continuous", c1s: "Each event links to the previous event's hash",
-    c2: "Event signatures valid", c2s: "Every record is signed by the workspace key",
-    c3: "Export is independently re-checkable", c3s: "The exported log can be re-verified outside the workspace",
-    c4: "Timestamps strictly increasing", c4s: "Event times never go backwards; order can't be reordered",
+    c2: "Sequence is dense & unreordered", c2s: "Events are a gap-free 1…N run — none deleted or reordered",
+    c3: "Content fingerprints recompute", c3s: "Each event's content hashes back to its stored fingerprint",
     ok: "OK", bad: "FAIL",
-    hint: "Integrity = this trail was not altered; it never asserts whether the claims recorded in it are correct. The truth of the content is judged separately by the verification pipeline.",
+    hint: "Integrity = this trail was not altered (hash chain + dense sequence + fingerprint recompute). It carries no cryptographic signatures and does not verify wall-clock timestamps, so it claims neither; the truth of the content is judged separately by the verification pipeline.",
   },
 };
 
@@ -80,11 +82,11 @@ export function IntegrityView({ lang }: { lang: Lang }) {
 
   const ok = status ? status.chain_ok : false;
   const events = status ? status.event_count : 0;
+  // Exactly the three properties SqliteStore::verify_chain checks (and returns as one bool).
   const checks = [
     { icon: Lock, title: s.c1, sub: s.c1s },
-    { icon: Fingerprint, title: s.c2, sub: s.c2s },
-    { icon: FileCheck, title: s.c3, sub: s.c3s },
-    { icon: History, title: s.c4, sub: s.c4s },
+    { icon: History, title: s.c2, sub: s.c2s },
+    { icon: Fingerprint, title: s.c3, sub: s.c3s },
   ];
 
   return (
@@ -128,8 +130,10 @@ export function IntegrityView({ lang }: { lang: Lang }) {
               <div className="ax-stat__label">{s.eventsLabel}</div>
             </div>
             <div className="ax-card ax-stat">
-              <div className="ax-stat__num">{events}</div>
-              <div className="ax-stat__label">{s.sigLabel}</div>
+              <div className="ax-stat__num" style={{ fontSize: 15, color: ok ? "var(--ax-accent)" : "var(--ax-lamp-red)" }}>
+                {ok ? s.ok : s.bad}
+              </div>
+              <div className="ax-stat__label">{s.verifiedLabel}</div>
             </div>
             <div className="ax-card ax-stat">
               <div className="ax-stat__num" style={{ fontSize: 15 }}>{lastAt ? s.justNow : "—"}</div>

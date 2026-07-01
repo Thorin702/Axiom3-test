@@ -101,6 +101,9 @@ export type RunView = {
 // are declared so the workbench is task-oriented from the start.
 export type TaskType = "check_draft" | "workflow" | "ppt" | "code" | "research";
 export type TaskStatus = "running" | "done" | "failed" | "cancelled";
+// One sub-agent's rolled-up result from a workflow run (persisted so the per-agent output
+// is readable after reload, not just as an ephemeral 120-char rail summary).
+export type AgentStepView = { role: string; status: string; output: string };
 export type Task = {
   id: string;
   type: TaskType;
@@ -109,5 +112,6 @@ export type Task = {
   ts: number;
   result?: DraftCheck;
   synthesis?: string; // workflow runs: the folded multi-agent output
+  steps?: AgentStepView[]; // workflow runs: each sub-agent's output
   error?: string;
 };

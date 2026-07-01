@@ -96,6 +96,7 @@ pub fn run() {
             workbench::import_document,
             workbench::vector_self_test,
             workbench::export_provenance,
+            workbench::clear_cache,
             workbench::system_check,
             workbench::provider_status,
             workbench::set_provider_key,
