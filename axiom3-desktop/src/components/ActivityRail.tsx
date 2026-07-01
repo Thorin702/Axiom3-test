@@ -120,7 +120,12 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
             const dur = fmtDur((r.finishedMs ?? Date.now()) - r.startedMs);
             const statusLabel = r.status === "running" ? s.running : r.status === "done" ? s.ok : r.status === "failed" ? s.failed : s.cancelled;
             const tokens = r.tokensIn + r.tokensOut;
-            const nAgents = r.agents.filter((a) => a.phase === "executing").length || r.agents.length;
+            const execAgents = r.agents.filter((a) => a.phase === "executing");
+            const planned = Math.max(execAgents.length, r.agentsTotal || 0);
+            const nAgents = planned || r.agents.length;
+            const qDone = execAgents.filter((a) => a.status === "ok" || a.status === "err").length;
+            const qRunning = execAgents.filter((a) => a.status === "running").length;
+            const qQueued = Math.max(0, planned - execAgents.length);
             const idx = Math.max(0, r.phases.indexOf(r.phase));
             const finished = r.status !== "running";
             return (
@@ -153,8 +158,14 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                 <div className="ax-runcard__meta">
                   <span className="ax-badge">/{r.taskKind === "workflow" ? (lang === "zh" ? "工作流" : "workflow") : r.taskKind}</span>
                   <span>{statusLabel}</span>
-                  <span>· {dur}</span>
                   <span>· {nAgents} {s.agents}</span>
+                  <span>· {dur}</span>
+                  {!finished && planned > 0 && (qQueued > 0 || qRunning > 0) && (
+                    <span className="ax-q">
+                      {qDone}/{planned} · {qRunning}{lang === "zh" ? "运行" : " run"}
+                      {qQueued > 0 ? ` · ${qQueued}${lang === "zh" ? "排队" : " queued"}` : ""}
+                    </span>
+                  )}
                   {tokens > 0 && <span>· {tokens.toLocaleString()} {s.tok}</span>}
                 </div>
 
@@ -178,17 +189,28 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                               (open[pk] ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />)}
                           </button>
                           <div className="ax-ph__sq">
-                            {pAgents.length > 0 ? (
-                              pAgents.map((a) => (
-                                <span
-                                  key={a.id}
-                                  className={`ax-sq ${a.status === "ok" ? "is-done" : a.status === "running" ? "is-now" : a.status === "err" ? "is-fail" : "is-idle"}`}
-                                  title={a.role}
-                                />
-                              ))
-                            ) : (
-                              <span className={`ax-sq ${isPast ? "is-done" : isNow ? "is-now" : "is-idle"}`} />
-                            )}
+                            {(() => {
+                              // the executing phase shows the whole queue: started agents by
+                              // status + queued placeholders up to the planned count.
+                              const queuePad = p === "executing" ? Math.max(0, planned - pAgents.length) : 0;
+                              if (pAgents.length > 0 || queuePad > 0) {
+                                return (
+                                  <>
+                                    {pAgents.map((a) => (
+                                      <span
+                                        key={a.id}
+                                        className={`ax-sq ${a.status === "ok" ? "is-done" : a.status === "running" ? "is-now" : a.status === "err" ? "is-fail" : "is-idle"}`}
+                                        title={a.role}
+                                      />
+                                    ))}
+                                    {Array.from({ length: queuePad }).map((_, k) => (
+                                      <span key={`q${k}`} className="ax-sq is-idle" title={lang === "zh" ? "排队中" : "queued"} />
+                                    ))}
+                                  </>
+                                );
+                              }
+                              return <span className={`ax-sq ${isPast ? "is-done" : isNow ? "is-now" : "is-idle"}`} />;
+                            })()}
                           </div>
                           {open[pk] && (
                             <div className="ax-tr">

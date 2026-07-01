@@ -87,8 +87,9 @@ const MODELS: { id: string; label: string }[] = [
   { id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
   { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
 ];
-// Target agent count for /工作流 (0 = let the model decide by goal complexity).
-const AGENT_CHOICES = [0, 2, 4, 6, 8];
+// Target agent count for /工作流 (0 = auto). >8 triggers deep two-level orchestration
+// (top × sub), so tens of agents queue through the pool.
+const AGENT_CHOICES = [0, 2, 4, 8, 12, 16];
 
 function App() {
   const [lang, setLangState] = useState<Lang>(

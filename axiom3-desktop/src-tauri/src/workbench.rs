@@ -30,7 +30,7 @@ use axiom_orchestrate::events::{EventSink, RunEvent, RunEventBody, SeqEmitter};
 use axiom_orchestrate::model::Run;
 use axiom_orchestrate::step::ProviderStep;
 use axiom_orchestrate::supervisor::LlmDecomposer;
-use axiom_orchestrate::{orchestrate, OrchestrateOptions, Pause};
+use axiom_orchestrate::{orchestrate, orchestrate_deep, OrchestrateOptions, Pause};
 use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
 use axiom_vector::LanceStore;
@@ -1545,8 +1545,16 @@ pub async fn run_workflow(
         model: model_id.clone(),
         concurrency,
     };
-    let decomposer = LlmDecomposer { provider: provider.clone(), model: model_id.clone(), target };
-    let run = orchestrate(&goal, &opts, &decomposer, &ProviderStep, sink, &cancel).await;
+    let total = target.unwrap_or(0);
+    let run = if total > 8 {
+        // deep two-level fan-out: top × sub ≈ total → tens of agents queue through the pool
+        let top = ((total as f64).sqrt().ceil() as usize).clamp(2, 8);
+        let sub = ((total + top - 1) / top).clamp(2, 8);
+        orchestrate_deep(&goal, &opts, top, sub, sink, &cancel).await
+    } else {
+        let decomposer = LlmDecomposer { provider: provider.clone(), model: model_id.clone(), target };
+        orchestrate(&goal, &opts, &decomposer, &ProviderStep, sink, &cancel).await
+    };
     Ok(run)
 }
 

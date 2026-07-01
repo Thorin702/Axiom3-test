@@ -20,10 +20,10 @@ pub mod synthesize;
 pub use control::Pause;
 
 use events::{now_ms, EventSink, RunEventBody, SeqEmitter};
-use model::{Kind, Plan, Run, RunStatus, StepState, StepStatus};
+use model::{Kind, Plan, Run, RunStatus, StepSpec, StepState, StepStatus};
 use std::sync::Arc;
-use step::{AgentStep, StepInput};
-use supervisor::Decomposer;
+use step::{AgentStep, ProviderStep, StepInput};
+use supervisor::{Decomposer, LlmDecomposer};
 
 use axiom_runtime::supervisor::{run_batch, Cancel};
 
@@ -199,6 +199,147 @@ pub async fn orchestrate(
         agents_err: err,
         error: None,
     });
+    run
+}
+
+/// Two-level orchestration for a LARGE agent queue: the goal decomposes into `top`
+/// sub-tasks, and EACH sub-task fans out into ~`sub` sub-agents — so `top × sub` agents
+/// run through the bounded pool (a real, visible queue). Sub-agent outputs roll up per
+/// sub-task, then a final verify + synthesize. This is the "assemble many agents" path.
+pub async fn orchestrate_deep(
+    goal: &str,
+    opts: &OrchestrateOptions,
+    top: usize,
+    sub: usize,
+    sink: Arc<dyn EventSink>,
+    cancel: &Cancel,
+) -> Run {
+    let em = Arc::new(SeqEmitter::new(sink, opts.run_id.clone()));
+    let mut run = Run {
+        id: opts.run_id.clone(),
+        kind: Kind::Workflow,
+        goal: goal.to_string(),
+        status: RunStatus::Planning,
+        steps: Vec::new(),
+        synthesis: None,
+        created_ms: now_ms(),
+    };
+    em.emit(RunEventBody::RunStarted { task_kind: "workflow".into(), title: title_of(goal), cancellable: true });
+
+    let top_dec = LlmDecomposer { provider: opts.provider.clone(), model: opts.model.clone(), target: Some(top) };
+    let top_plan = match top_dec.plan(goal, &opts.run_id, cancel).await {
+        Ok(p) => p,
+        Err(e) => return fail(run, &em, e.to_string()),
+    };
+    let est_total = top_plan.steps.len().max(1) * sub;
+    em.emit(RunEventBody::PlanReady {
+        phases: vec!["planning".into(), "executing".into(), "verifying".into(), "synthesizing".into(), "done".into()],
+        planned_agents: est_total,
+        notes: vec![format!("deep · {} 组 × ~{} = {} agents", top_plan.steps.len(), sub, est_total)],
+    });
+    if cancel.is_cancelled() {
+        run.status = RunStatus::Cancelled;
+        em.emit(RunEventBody::RunFinished { status: "cancelled".into(), agents_total: est_total, agents_ok: 0, agents_err: 0, error: None });
+        return run;
+    }
+    run.status = RunStatus::Running;
+    em.emit(RunEventBody::PhaseChanged { phase: "executing".into(), index: 1, total: 5 });
+
+    let provider = opts.provider.clone();
+    let model = opts.model.clone();
+    let em_task = em.clone();
+    let em_prog = em.clone();
+    // each top-level sub-task runs its OWN nested fan-out of sub-agents
+    let top_results = run_batch(
+        top_plan.steps.clone(),
+        3usize.min(top.max(1)),
+        cancel,
+        move |subtask| {
+            let em = em_task.clone();
+            let provider = provider.clone();
+            let model = model.clone();
+            async move {
+                let sub_dec = LlmDecomposer { provider: provider.clone(), model: model.clone(), target: Some(sub) };
+                let subplan = sub_dec.plan(&subtask.goal, &subtask.id, cancel).await.unwrap_or(Plan { steps: Vec::new() });
+                let mut states: Vec<StepState> = subplan.steps.iter().cloned().map(StepState::new).collect();
+                let em_sub = em.clone();
+                let subrole = subtask.role.clone();
+                let sub_results = run_batch(
+                    subplan.steps.clone(),
+                    3,
+                    cancel,
+                    move |spec| {
+                        let em = em_sub.clone();
+                        let role = format!("{subrole} · {}", spec.role);
+                        async move {
+                            em.emit(RunEventBody::AgentSpawned {
+                                agent_id: spec.id.clone(),
+                                role,
+                                model: spec.model.clone(),
+                                vendor: spec.provider.clone(),
+                                phase: "executing".into(),
+                            });
+                            let id = spec.id.clone();
+                            let input = StepInput { spec, dep_outputs: Vec::new() };
+                            let r = ProviderStep.run(input, cancel).await;
+                            let (outcome, err, summary) = match &r {
+                                Ok(o) => ("ok", None, Some(truncate(&o.output, 120))),
+                                Err(e) => ("err", Some(e.to_string()), None),
+                            };
+                            em.emit(RunEventBody::AgentFinished { agent_id: id.clone(), outcome: outcome.into(), tokens_in: 0, tokens_out: 0, error: err, summary });
+                            (id, r)
+                        }
+                    },
+                    |_, _| {},
+                )
+                .await;
+                for (id, r) in sub_results {
+                    if let Some(st) = states.iter_mut().find(|s| s.spec.id == id) {
+                        match r {
+                            Ok(o) => { st.status = StepStatus::Ok; st.output = Some(o.output); }
+                            Err(e) => { st.status = StepStatus::Failed; st.error = Some(e.to_string()); }
+                        }
+                    }
+                }
+                let sub_synth = synthesize::synthesize(&subtask.goal, &states, "", &provider, &model, cancel).await;
+                (subtask.id.clone(), subtask.role.clone(), sub_synth)
+            }
+        },
+        move |done, total| {
+            em_prog.emit(RunEventBody::RunProgress { agents_done: done, agents_total: total, agents_running: 0, agents_queued: total.saturating_sub(done) });
+        },
+    )
+    .await;
+
+    run.steps = top_results
+        .iter()
+        .map(|(id, role, synth)| {
+            let mut st = StepState::new(StepSpec { id: id.clone(), role: role.clone(), goal: String::new(), provider: opts.provider.clone(), model: opts.model.clone(), deps: Vec::new(), max_tokens: None });
+            st.status = StepStatus::Ok;
+            st.output = Some(synth.clone());
+            st
+        })
+        .collect();
+
+    let cancelled = cancel.is_cancelled();
+    em.emit(RunEventBody::PhaseChanged { phase: "verifying".into(), index: 2, total: 5 });
+    run.status = RunStatus::Verifying;
+    let critique = if cancelled {
+        String::new()
+    } else {
+        let vid = format!("{}-verify", opts.run_id);
+        em.emit(RunEventBody::AgentSpawned { agent_id: vid.clone(), role: "reviewer".into(), model: opts.model.clone(), vendor: opts.provider.clone(), phase: "verifying".into() });
+        let c = synthesize::critique(goal, &run.steps, &opts.provider, &opts.model, cancel).await;
+        em.emit(RunEventBody::AgentFinished { agent_id: vid, outcome: "ok".into(), tokens_in: 0, tokens_out: 0, error: None, summary: Some(if c.trim().is_empty() { "no critique".into() } else { truncate(&c, 120) }) });
+        c
+    };
+    em.emit(RunEventBody::PhaseChanged { phase: "synthesizing".into(), index: 3, total: 5 });
+    run.status = RunStatus::Synthesizing;
+    run.synthesis = Some(synthesize::synthesize(goal, &run.steps, &critique, &opts.provider, &opts.model, cancel).await);
+    run.status = if cancelled { RunStatus::Cancelled } else { RunStatus::Done };
+    em.emit(RunEventBody::PhaseChanged { phase: "done".into(), index: 4, total: 5 });
+    let ok = run.steps.iter().filter(|s| s.status == StepStatus::Ok).count();
+    em.emit(RunEventBody::RunFinished { status: if cancelled { "cancelled".into() } else { "done".into() }, agents_total: run.steps.len(), agents_ok: ok, agents_err: 0, error: None });
     run
 }
 
