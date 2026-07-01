@@ -9,6 +9,8 @@ import { ClaimDossier } from "./components/ClaimDossier";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { ReadingView } from "./components/ReadingView";
+import { ProjectsView } from "./components/ProjectsView";
+import { EvidenceView } from "./components/EvidenceView";
 import { SearchView } from "./components/SearchView";
 import { FleetMonitor } from "./components/FleetMonitor";
 import { ShieldView } from "./components/ShieldView";
@@ -22,7 +24,7 @@ import { Splash } from "./components/Splash";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
-  Command, Bell, PanelRight, type LucideIcon,
+  Command, Bell, PanelRight, FolderOpen, Quote, type LucideIcon,
 } from "lucide-react";
 
 
@@ -65,18 +67,20 @@ const COMMANDS: SlashCmd[] = [
 // Sidebar navigation — the platform's surfaces, grouped 工作 / 信任·证据 / 概览. Each routes
 // to a self-contained surface component. Notifications is reached from the topbar bell.
 type NavKey =
-  | "tasks" | "reading" | "search" | "fleet"
-  | "shield" | "integrity" | "provenance"
+  | "tasks" | "projects" | "reading" | "search" | "fleet"
+  | "shield" | "integrity" | "provenance" | "evidence"
   | "metrics" | "notifications";
 type NavGroup = "work" | "trust" | "overview";
 const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGroup }[] = [
   { key: "tasks", zh: "任务", en: "Tasks", icon: Sparkles, group: "work" },
+  { key: "projects", zh: "项目", en: "Projects", icon: FolderOpen, group: "work" },
   { key: "reading", zh: "阅读", en: "Reading", icon: BookOpen, group: "work" },
   { key: "search", zh: "检索", en: "Search", icon: Search, group: "work" },
   { key: "fleet", zh: "舰队", en: "Fleet", icon: Boxes, group: "work" },
   { key: "shield", zh: "护盾", en: "Shield", icon: ShieldCheck, group: "trust" },
   { key: "integrity", zh: "完整性", en: "Integrity", icon: FileCheck, group: "trust" },
   { key: "provenance", zh: "溯源", en: "Provenance", icon: GitBranch, group: "trust" },
+  { key: "evidence", zh: "证据", en: "Evidence", icon: Quote, group: "trust" },
   { key: "metrics", zh: "概览", en: "Overview", icon: Gauge, group: "overview" },
 ];
 // Model choices offered in the task control bar (the connected provider is DeepSeek).
@@ -796,8 +800,10 @@ function App() {
 
           {nav !== "tasks" ? (
             <div className="ax-canvas">
+              {nav === "projects" && <ProjectsView lang={lang} />}
               {nav === "reading" && <ReadingView lang={lang} />}
               {nav === "search" && <SearchView lang={lang} />}
+              {nav === "evidence" && <EvidenceView lang={lang} />}
               {nav === "fleet" && <FleetMonitor lang={lang} />}
               {nav === "shield" && <ShieldView lang={lang} />}
               {nav === "integrity" && <IntegrityView lang={lang} />}
