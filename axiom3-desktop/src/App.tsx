@@ -1,10 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source } from "./lib/types";
+import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source, RunEvent } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
@@ -121,6 +121,10 @@ function App() {
     setLangState(l);
     localStorage.setItem("axiom3.lang", l);
   }
+  // Mirror `lang` into a ref so the []-dep drag-drop/menu listeners (registered once) read
+  // the CURRENT language instead of the value captured at first render.
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
   const [status, setStatus] = useState<ProjectStatus | null>(null);
   const [actor, setActor] = useState("researcher");
@@ -190,17 +194,23 @@ function App() {
   const [railOpen, setRailOpen] = useState(localStorage.getItem("axiom3.rail") === "1");
   const [booting, setBooting] = useState(true);
   const [dropping, setDropping] = useState(false);
+  const [fleetAgg, setFleetAgg] = useState({ runs: 0, spawned: 0, finished: 0 });
 
   useEffect(() => {
     applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
   }, []);
 
-  // Persist the task history (cap to the most recent 50).
+  // Persist the task history (most recent first, ≤50). A task's result carries all its
+  // evidence text, so a big check can exceed the localStorage quota; on failure, keep as
+  // many RECENT tasks as fit rather than silently dropping the entire history.
   useEffect(() => {
-    try {
-      localStorage.setItem("axiom3.tasks", JSON.stringify(tasks.slice(0, 50)));
-    } catch {
-      /* quota — ignore */
+    for (let n = Math.min(tasks.length, 50); n >= 0; n--) {
+      try {
+        localStorage.setItem("axiom3.tasks", JSON.stringify(tasks.slice(0, n)));
+        break;
+      } catch {
+        /* over quota — keep fewer and retry */
+      }
     }
   }, [tasks]);
 
@@ -213,14 +223,47 @@ function App() {
     }
   }, [draft]);
 
-  // Persist the source library (cap to the most recent 12 to bound localStorage).
+  // Persist the source library (most recent first, ≤12). A full document's text can be
+  // megabytes, so capping to 12 ENTRIES doesn't bound the payload — bound it by BYTES: if
+  // the write exceeds quota, drop the TEXT of the OLDEST sources (keeping their metadata)
+  // and retry, so the library is never silently lost wholesale. Recent sources keep their
+  // text (still openable); older ones degrade to name/size only.
   useEffect(() => {
+    const capped = sources.slice(0, 12);
+    for (let keepText = capped.length; keepText >= 0; keepText--) {
+      const payload = capped.map((s, i) => (i < keepText ? s : { ...s, text: "" }));
+      try {
+        localStorage.setItem("axiom3.sources", JSON.stringify(payload));
+        return;
+      } catch {
+        /* too big — drop one more full text (oldest first) and retry */
+      }
+    }
     try {
-      localStorage.setItem("axiom3.sources", JSON.stringify(sources.slice(0, 12)));
+      localStorage.setItem("axiom3.sources", "[]");
     } catch {
-      /* quota — ignore */
+      /* give up — nothing more we can do */
     }
   }, [sources]);
+
+  // Garbage-collect the reviewed map: drop claim ids that belong to no retained task, so it
+  // can't grow without bound as tasks are deleted or age out of the persisted history.
+  useEffect(() => {
+    const live = new Set<string>();
+    for (const tk of tasks) for (const e of tk.result?.entries ?? []) live.add(e.claim_id);
+    setReviewed((r) => {
+      const keys = Object.keys(r);
+      if (keys.every((k) => live.has(k))) return r; // nothing stale → no re-render
+      const pruned: Record<string, boolean> = {};
+      for (const k of keys) if (live.has(k)) pruned[k] = r[k];
+      try {
+        localStorage.setItem("axiom3.reviewed", JSON.stringify(pruned));
+      } catch {
+        /* quota */
+      }
+      return pruned;
+    });
+  }, [tasks]);
 
   // Clear any error banner whenever the user navigates (a run sets its error after the
   // view change, so a fresh failure still shows; only stale errors get wiped).
@@ -285,6 +328,27 @@ function App() {
       un.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Fleet aggregate lives at App level (always mounted) so it accrues across navigation —
+  // the Fleet view is a pure display of it. A view-local counter would reset on every
+  // unmount and miss events emitted while the user was on another surface.
+  useEffect(() => {
+    const un = listen<RunEvent>("run_event", (e) => {
+      const ev = e.payload;
+      setFleetAgg((a) =>
+        ev.kind === "run_started"
+          ? { ...a, runs: a.runs + 1 }
+          : ev.kind === "agent_spawned"
+          ? { ...a, spawned: a.spawned + 1 }
+          : ev.kind === "agent_finished"
+          ? { ...a, finished: a.finished + 1 }
+          : a
+      );
+    });
+    return () => {
+      un.then((f) => f());
+    };
   }, []);
 
   useEffect(() => {
@@ -402,7 +466,8 @@ function App() {
       setView("home");
       setCmd("check_draft");
       setDraft(text);
-      note(`${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`);
+      const lg = langRef.current; // fresh language, not the drop-listener's captured one
+      note(`${t(lg, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lg, "chars")}`);
     }
   }
 
@@ -481,7 +546,7 @@ function App() {
     if (!g) return;
     const proj = await ensureProject();
     if (!proj) return;
-    const runid = `run-${Date.now()}`;
+    const runid = `run-${crypto.randomUUID()}`;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
     setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now() }, ...ts]);
     setActiveId(runid);
@@ -513,7 +578,7 @@ function App() {
   async function runCoding(goal: string) {
     const g = goal.trim();
     if (!g || !codeWs) return;
-    const runid = `run-${Date.now()}`;
+    const runid = `run-${crypto.randomUUID()}`;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
     setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now() }, ...ts]);
     setActiveId(runid);
@@ -1016,7 +1081,7 @@ function App() {
                 />
               )}
               {nav === "evidence" && <EvidenceView lang={lang} tasks={tasks} />}
-              {nav === "fleet" && <FleetMonitor lang={lang} />}
+              {nav === "fleet" && <FleetMonitor lang={lang} agg={fleetAgg} />}
               {nav === "shield" && <ShieldView lang={lang} tasks={tasks} />}
               {nav === "integrity" && <IntegrityView lang={lang} />}
               {nav === "provenance" && <ProvenanceView lang={lang} />}

@@ -58,7 +58,10 @@ function applyEvent(runs: RunView[], ev: RunEvent): RunView[] {
           : a
       );
       break;
-    case "run_progress": r.agentsDone = ev.agents_done; r.agentsTotal = ev.agents_total; break;
+    // Never let a progress total SHRINK the planned estimate (the deep path announces
+    // top×sub up front; a group-granularity total must not clobber it — belt-and-suspenders
+    // alongside the backend fix).
+    case "run_progress": r.agentsDone = ev.agents_done; r.agentsTotal = Math.max(r.agentsTotal, ev.agents_total); break;
     case "run_finished":
       r.status = ev.status === "done" ? "done" : ev.status === "cancelled" ? "cancelled" : "failed";
       r.finishedMs = ev.ts; r.error = ev.error ?? undefined; break;

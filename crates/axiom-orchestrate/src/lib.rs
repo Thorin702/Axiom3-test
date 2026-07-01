@@ -21,7 +21,9 @@ pub use control::Pause;
 
 use events::{now_ms, EventSink, RunEventBody, SeqEmitter};
 use model::{Kind, Plan, Run, RunStatus, StepSpec, StepState, StepStatus};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use step::{AgentStep, ProviderStep, StepInput};
 use supervisor::{Decomposer, LlmDecomposer};
 
@@ -156,6 +158,22 @@ pub async fn orchestrate(
             st.status = if cancelled { StepStatus::Cancelled } else { StepStatus::Skipped };
         }
     }
+    // A step that panicked emitted AgentSpawned but never AgentFinished (run_batch's
+    // catch_unwind dropped the closure), leaving the UI's lamp stuck on "running". When the
+    // run was NOT cancelled, a Skipped step is exactly a panicked one — emit its terminal
+    // event so every spawn is balanced.
+    if !cancelled {
+        for st in run.steps.iter().filter(|s| s.status == StepStatus::Skipped) {
+            em.emit(RunEventBody::AgentFinished {
+                agent_id: st.spec.id.clone(),
+                outcome: "err".into(),
+                tokens_in: 0,
+                tokens_out: 0,
+                error: Some("panicked (isolated)".into()),
+                summary: None,
+            });
+        }
+    }
     let ok = run.steps.iter().filter(|s| s.status == StepStatus::Ok).count();
     let err = run.steps.iter().filter(|s| s.status == StepStatus::Failed).count();
 
@@ -206,6 +224,7 @@ pub async fn orchestrate(
 /// sub-tasks, and EACH sub-task fans out into ~`sub` sub-agents — so `top × sub` agents
 /// run through the bounded pool (a real, visible queue). Sub-agent outputs roll up per
 /// sub-task, then a final verify + synthesize. This is the "assemble many agents" path.
+/// Production wiring: LLM decomposition at both levels + the real provider executor.
 pub async fn orchestrate_deep(
     goal: &str,
     opts: &OrchestrateOptions,
@@ -214,6 +233,40 @@ pub async fn orchestrate_deep(
     sink: Arc<dyn EventSink>,
     cancel: &Cancel,
 ) -> Run {
+    let top_dec = LlmDecomposer { provider: opts.provider.clone(), model: opts.model.clone(), target: Some(top) };
+    let sub_dec = Arc::new(LlmDecomposer { provider: opts.provider.clone(), model: opts.model.clone(), target: Some(sub) });
+    deep_core(goal, opts, top, sub, &top_dec, sub_dec, Arc::new(ProviderStep), sink, cancel).await
+}
+
+/// Live per-agent tally for the deep path, shared across the nested fan-out closures.
+#[derive(Default)]
+struct DeepTally {
+    spawned: AtomicUsize,
+    ok: AtomicUsize,
+    err: AtomicUsize,
+}
+
+/// Generic two-level scheduler behind `orchestrate_deep`, parameterized over the decomposer
+/// (both levels) and the agent executor so the whole deep control flow — nested fan-out,
+/// per-group roll-up, real agent accounting, cancel, progress — is testable offline with
+/// mocks. `sub_dec`/`step_exec` are `Arc` so they can be cloned into each nested closure.
+#[allow(clippy::too_many_arguments)]
+async fn deep_core<D1, D2, S>(
+    goal: &str,
+    opts: &OrchestrateOptions,
+    top: usize,
+    sub: usize,
+    top_dec: &D1,
+    sub_dec: Arc<D2>,
+    step_exec: Arc<S>,
+    sink: Arc<dyn EventSink>,
+    cancel: &Cancel,
+) -> Run
+where
+    D1: Decomposer,
+    D2: Decomposer + 'static,
+    S: AgentStep + 'static,
+{
     let em = Arc::new(SeqEmitter::new(sink, opts.run_id.clone()));
     let mut run = Run {
         id: opts.run_id.clone(),
@@ -226,7 +279,6 @@ pub async fn orchestrate_deep(
     };
     em.emit(RunEventBody::RunStarted { task_kind: "workflow".into(), title: title_of(goal), cancellable: true });
 
-    let top_dec = LlmDecomposer { provider: opts.provider.clone(), model: opts.model.clone(), target: Some(top) };
     let top_plan = match top_dec.plan(goal, &opts.run_id, cancel).await {
         Ok(p) => p,
         Err(e) => return fail(run, &em, e.to_string()),
@@ -245,48 +297,82 @@ pub async fn orchestrate_deep(
     run.status = RunStatus::Running;
     em.emit(RunEventBody::PhaseChanged { phase: "executing".into(), index: 1, total: 5 });
 
+    // Honor opts.concurrency across the two levels: split the budget so outer × inner ≈
+    // concurrency (previously both were hardcoded to 3, ignoring the requested parallelism).
+    let cc = opts.concurrency.max(1);
+    let outer_cap = ((cc as f64).sqrt().ceil() as usize).clamp(1, top.max(1));
+    let inner_cap = cc.div_ceil(outer_cap).max(1);
+
     let provider = opts.provider.clone();
     let model = opts.model.clone();
+    let tally = Arc::new(DeepTally::default());
+    let live: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
     let em_task = em.clone();
-    let em_prog = em.clone();
+    let tally_task = tally.clone();
+    let live_task = live.clone();
     // each top-level sub-task runs its OWN nested fan-out of sub-agents
     let top_results = run_batch(
         top_plan.steps.clone(),
-        3usize.min(top.max(1)),
+        outer_cap,
         cancel,
         move |subtask| {
             let em = em_task.clone();
             let provider = provider.clone();
             let model = model.clone();
+            let sub_dec = sub_dec.clone();
+            let step_exec = step_exec.clone();
+            let tally = tally_task.clone();
+            let live = live_task.clone();
             async move {
-                let sub_dec = LlmDecomposer { provider: provider.clone(), model: model.clone(), target: Some(sub) };
                 let subplan = sub_dec.plan(&subtask.goal, &subtask.id, cancel).await.unwrap_or(Plan { steps: Vec::new() });
                 let mut states: Vec<StepState> = subplan.steps.iter().cloned().map(StepState::new).collect();
                 let em_sub = em.clone();
                 let subrole = subtask.role.clone();
                 let sub_results = run_batch(
                     subplan.steps.clone(),
-                    3,
+                    inner_cap,
                     cancel,
                     move |spec| {
                         let em = em_sub.clone();
+                        let step_exec = step_exec.clone();
+                        let tally = tally.clone();
+                        let live = live.clone();
                         let role = format!("{subrole} · {}", spec.role);
                         async move {
+                            let id = spec.id.clone();
+                            tally.spawned.fetch_add(1, Ordering::Relaxed);
+                            live.lock().unwrap().insert(id.clone());
                             em.emit(RunEventBody::AgentSpawned {
-                                agent_id: spec.id.clone(),
+                                agent_id: id.clone(),
                                 role,
                                 model: spec.model.clone(),
                                 vendor: spec.provider.clone(),
                                 phase: "executing".into(),
                             });
-                            let id = spec.id.clone();
                             let input = StepInput { spec, dep_outputs: Vec::new() };
-                            let r = ProviderStep.run(input, cancel).await;
+                            let r = step_exec.run(input, cancel).await;
                             let (outcome, err, summary) = match &r {
-                                Ok(o) => ("ok", None, Some(truncate(&o.output, 120))),
-                                Err(e) => ("err", Some(e.to_string()), None),
+                                Ok(o) => {
+                                    tally.ok.fetch_add(1, Ordering::Relaxed);
+                                    ("ok", None, Some(truncate(&o.output, 120)))
+                                }
+                                Err(e) => {
+                                    tally.err.fetch_add(1, Ordering::Relaxed);
+                                    ("err", Some(e.to_string()), None)
+                                }
                             };
+                            live.lock().unwrap().remove(&id);
                             em.emit(RunEventBody::AgentFinished { agent_id: id.clone(), outcome: outcome.into(), tokens_in: 0, tokens_out: 0, error: err, summary });
+                            // real per-agent progress (agents_total stays the announced est)
+                            let done = tally.ok.load(Ordering::Relaxed) + tally.err.load(Ordering::Relaxed);
+                            let spawned = tally.spawned.load(Ordering::Relaxed);
+                            let total = est_total.max(spawned);
+                            em.emit(RunEventBody::RunProgress {
+                                agents_done: done,
+                                agents_total: total,
+                                agents_running: spawned.saturating_sub(done),
+                                agents_queued: total.saturating_sub(spawned),
+                            });
                             (id, r)
                         }
                     },
@@ -301,21 +387,39 @@ pub async fn orchestrate_deep(
                         }
                     }
                 }
+                // a group with sub-agents but zero successes is a FAILED group (was always Ok)
+                let group_ok = states.iter().filter(|s| s.status == StepStatus::Ok).count();
+                let group_failed = !states.is_empty() && group_ok == 0;
                 let sub_synth = synthesize::synthesize(&subtask.goal, &states, "", &provider, &model, cancel).await;
-                (subtask.id.clone(), subtask.role.clone(), sub_synth)
+                (subtask.id.clone(), subtask.role.clone(), sub_synth, group_failed)
             }
         },
-        move |done, total| {
-            em_prog.emit(RunEventBody::RunProgress { agents_done: done, agents_total: total, agents_running: 0, agents_queued: total.saturating_sub(done) });
-        },
+        // Outer progress is per-GROUP, not per-agent; a no-op here avoids clobbering the
+        // announced agent total. Accurate progress is emitted from the inner finishes above.
+        |_, _| {},
     )
     .await;
 
+    // Any sub-agent still "live" here panicked (catch_unwind dropped its finish): balance
+    // the event stream and count it as an error so no lamp stays stuck on "running".
+    let leftover: Vec<String> = { live.lock().unwrap().drain().collect() };
+    for id in leftover {
+        tally.err.fetch_add(1, Ordering::Relaxed);
+        em.emit(RunEventBody::AgentFinished {
+            agent_id: id,
+            outcome: "err".into(),
+            tokens_in: 0,
+            tokens_out: 0,
+            error: Some("panicked (isolated)".into()),
+            summary: None,
+        });
+    }
+
     run.steps = top_results
         .iter()
-        .map(|(id, role, synth)| {
+        .map(|(id, role, synth, group_failed)| {
             let mut st = StepState::new(StepSpec { id: id.clone(), role: role.clone(), goal: String::new(), provider: opts.provider.clone(), model: opts.model.clone(), deps: Vec::new(), max_tokens: None });
-            st.status = StepStatus::Ok;
+            st.status = if *group_failed { StepStatus::Failed } else { StepStatus::Ok };
             st.output = Some(synth.clone());
             st
         })
@@ -338,8 +442,10 @@ pub async fn orchestrate_deep(
     run.synthesis = Some(synthesize::synthesize(goal, &run.steps, &critique, &opts.provider, &opts.model, cancel).await);
     run.status = if cancelled { RunStatus::Cancelled } else { RunStatus::Done };
     em.emit(RunEventBody::PhaseChanged { phase: "done".into(), index: 4, total: 5 });
-    let ok = run.steps.iter().filter(|s| s.status == StepStatus::Ok).count();
-    em.emit(RunEventBody::RunFinished { status: if cancelled { "cancelled".into() } else { "done".into() }, agents_total: run.steps.len(), agents_ok: ok, agents_err: 0, error: None });
+    // Real sub-agent accounting (was: agents_ok = group count, agents_err hardcoded 0).
+    let ok = tally.ok.load(Ordering::Relaxed);
+    let err = tally.err.load(Ordering::Relaxed);
+    em.emit(RunEventBody::RunFinished { status: if cancelled { "cancelled".into() } else { "done".into() }, agents_total: ok + err, agents_ok: ok, agents_err: err, error: None });
     run
 }
 
@@ -423,11 +529,21 @@ mod tests {
         assert_eq!(panicked.status, StepStatus::Skipped, "panicked step has no result → skipped");
         assert_eq!(run.steps.iter().filter(|s| s.status == StepStatus::Ok).count(), 2);
         assert!(run.synthesis.is_some());
-        // it was spawned (before the panic) but never finished
         let evs = sink.events();
-        // 3 step spawns + 1 reviewer = 4; finishes = 2 ok steps + reviewer = 3 (panicked one never finishes)
+        // 3 step spawns + 1 reviewer = 4; the panicked step now gets a SYNTHETIC terminal
+        // event (2 ok steps + 1 panicked + reviewer = 4) so no spawn is left unbalanced.
         assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentSpawned { .. })).count(), 4);
-        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentFinished { .. })).count(), 3);
+        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentFinished { .. })).count(), 4);
+        // every spawned agent has a matching finish (no stuck "running" lamp)
+        let spawned: HashSet<_> = evs.iter().filter_map(|e| match &e.body {
+            B::AgentSpawned { agent_id, .. } => Some(agent_id.clone()),
+            _ => None,
+        }).collect();
+        let finished: HashSet<_> = evs.iter().filter_map(|e| match &e.body {
+            B::AgentFinished { agent_id, .. } => Some(agent_id.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(spawned, finished, "every AgentSpawned must have an AgentFinished");
     }
 
     #[tokio::test]
@@ -447,5 +563,69 @@ mod tests {
         let run = orchestrate("g", &opts(), &dec(&[("a", "do a"), ("b", "do b")]), &MockStep, sink.clone(), &cancel).await;
         assert_eq!(run.status, RunStatus::Cancelled);
         assert_eq!(sink.events().iter().filter(|e| matches!(e.body, B::AgentFinished { .. })).count(), 0);
+    }
+
+    // ── deep (two-level) orchestration, now testable offline via deep_core ──
+
+    fn run_finished(evs: &[events::RunEvent]) -> (usize, usize, usize) {
+        evs.iter()
+            .rev()
+            .find_map(|e| match &e.body {
+                B::RunFinished { agents_total, agents_ok, agents_err, .. } => {
+                    Some((*agents_total, *agents_ok, *agents_err))
+                }
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn deep_counts_real_subagents_not_groups() {
+        let sink = Arc::new(VecSink::default());
+        let top = dec(&[("g1", "group one"), ("g2", "group two")]); // 2 groups
+        let sub = Arc::new(dec(&[("a", "sa"), ("b", "sb"), ("c", "sc")])); // 3 sub-agents / group
+        let run = deep_core("goal", &opts(), 2, 3, &top, sub, Arc::new(MockStep), sink.clone(), &Cancel::new()).await;
+        assert_eq!(run.status, RunStatus::Done);
+        assert_eq!(run.steps.len(), 2, "2 groups → 2 rolled-up steps");
+        assert!(run.steps.iter().all(|s| s.status == StepStatus::Ok));
+        // gap-free ordering holds through the nested fan-out
+        let evs = sink.events();
+        for (i, e) in evs.iter().enumerate() {
+            assert_eq!(e.seq, i as u64, "seq must stay gap-free under nested concurrency");
+        }
+        // RunFinished reports the 6 REAL sub-agents (2×3), not the 2 groups
+        assert_eq!(run_finished(&evs), (6, 6, 0));
+        assert_eq!(evs.iter().filter(|e| matches!(e.body, B::AgentSpawned { .. })).count(), 7); // 6 + reviewer
+    }
+
+    #[tokio::test]
+    async fn deep_marks_all_failed_group_as_failed_and_counts_errors() {
+        let sink = Arc::new(VecSink::default());
+        let top = dec(&[("g1", "group one")]);
+        let sub = Arc::new(dec(&[("a", "FAIL"), ("b", "FAIL")])); // every sub-agent errors
+        let run = deep_core("g", &opts(), 1, 2, &top, sub, Arc::new(MockStep), sink.clone(), &Cancel::new()).await;
+        assert_eq!(run.steps.len(), 1);
+        assert_eq!(run.steps[0].status, StepStatus::Failed, "a group with zero successes is Failed, not Ok");
+        // agents_err is real (was hardcoded 0)
+        assert_eq!(run_finished(&sink.events()), (2, 0, 2));
+    }
+
+    #[tokio::test]
+    async fn deep_balances_events_on_subagent_panic() {
+        let sink = Arc::new(VecSink::default());
+        let top = dec(&[("g1", "group one")]);
+        let sub = Arc::new(dec(&[("a", "ok one"), ("b", "PANIC")]));
+        let run = deep_core("g", &opts(), 1, 2, &top, sub, Arc::new(MockStep), sink.clone(), &Cancel::new()).await;
+        assert_eq!(run.status, RunStatus::Done);
+        let evs = sink.events();
+        let spawned: HashSet<_> = evs.iter().filter_map(|e| match &e.body {
+            B::AgentSpawned { agent_id, .. } => Some(agent_id.clone()),
+            _ => None,
+        }).collect();
+        let finished: HashSet<_> = evs.iter().filter_map(|e| match &e.body {
+            B::AgentFinished { agent_id, .. } => Some(agent_id.clone()),
+            _ => None,
+        }).collect();
+        assert_eq!(spawned, finished, "a panicked sub-agent still emits a terminal event");
     }
 }

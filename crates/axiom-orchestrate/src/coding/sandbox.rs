@@ -1,8 +1,14 @@
-//! Fail-closed workspace sandbox for the coding agent. Every path is canonicalized
-//! (which RESOLVES symlinks) and asserted to be a descendant of the root, so `..` and
-//! symlink-out escapes fail closed. Commands run WITHOUT a shell (argv vector, no string
-//! interpolation) against a READ-ONLY allowlist, with a hard timeout + child kill on
-//! drop, and all output is byte-capped.
+//! Fail-closed workspace sandbox for the coding agent. Every path — including path-like
+//! command arguments — is canonicalized (which RESOLVES symlinks) and asserted to be a
+//! descendant of the root, with DENY re-checked on the resolved path so a symlink can't
+//! hide its target. Commands run WITHOUT a shell (argv vector, no string interpolation)
+//! against a READ-ONLY allowlist, with a hard timeout + child kill on drop, and all output
+//! is byte-capped.
+//!
+//! SCOPE: the read-only path is a real jail. The read-WRITE path additionally runs BUILD
+//! tools (cargo/npm/node/python/make/…) which execute arbitrary project code; `scrub_env`
+//! strips credentials and forces offline defaults, but ReadWrite is NOT a hardened security
+//! boundary and must only be used on trusted workspaces.
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -54,6 +60,20 @@ impl Sandbox {
         self.mode
     }
 
+    /// True if the CANONICAL path traverses a DENY-named component *inside the root*. The
+    /// raw-string DENY check is defeated by a symlink whose name hides its target (e.g.
+    /// `g -> .git`, so `g/config` reads `.git/config`); re-checking the resolved path closes
+    /// that. Only components below the root are inspected, so a root that itself lives under
+    /// e.g. `.aws/` is not self-denied.
+    fn deny_hit(&self, canon: &Path) -> bool {
+        match canon.strip_prefix(&self.root) {
+            Ok(rel) => rel.components().any(|c| {
+                matches!(c, std::path::Component::Normal(os) if DENY.iter().any(|d| os == *d))
+            }),
+            Err(_) => true, // outside the root → treat as denied
+        }
+    }
+
     /// Resolve a (relative or absolute) path to a real path strictly inside the root, or
     /// reject. `canonicalize` follows symlinks, so a symlink inside the root pointing out
     /// resolves to an outside path and fails the prefix check.
@@ -70,6 +90,9 @@ impl Sandbox {
         let canon = std::fs::canonicalize(&joined).map_err(|_| format!("no such path: {p}"))?;
         if !canon.starts_with(&self.root) {
             return Err(format!("path escapes the workspace: {p}"));
+        }
+        if self.deny_hit(&canon) {
+            return Err(format!("access denied: {p}"));
         }
         Ok(canon)
     }
@@ -132,7 +155,13 @@ impl Sandbox {
             return Err(format!("path escapes the workspace: {p}"));
         }
         let fname = joined.file_name().ok_or_else(|| format!("no file name: {p}"))?;
-        Ok(cparent.join(fname))
+        let target = cparent.join(fname);
+        // Re-check DENY on the resolved parent: a symlinked dir component (e.g. `g -> .git`)
+        // canonicalizes back inside the root but must still not let a write land in `.git`.
+        if self.deny_hit(&target) {
+            return Err(format!("write denied: {p}"));
+        }
+        Ok(target)
     }
 
     /// Create or overwrite a file (read-write mode only). Atomic temp-write + rename so a
@@ -155,19 +184,58 @@ impl Sandbox {
         Ok(())
     }
 
+    /// Reject command arguments that point outside the workspace or at DENY paths, so the
+    /// allowlisted read tools (`cat`/`grep`/`find`/…) can't be turned into a filesystem
+    /// exfiltrator (`cat /etc/passwd`, `cat .env`, `find / -name id_rsa`). Flags (leading
+    /// `-`) pass through; every path-like arg must be relative, `..`-free, name no DENY
+    /// component, and — if it already exists — canonicalize strictly inside the root
+    /// (catches the `g -> .git` symlink trick applied via a command).
+    fn args_within_root(&self, argv: &[String]) -> Result<(), String> {
+        for a in argv.iter().skip(1) {
+            if a.is_empty() || a.starts_with('-') {
+                continue;
+            }
+            let raw = Path::new(a);
+            if raw.is_absolute() {
+                return Err(format!("absolute path not allowed in command: {a}"));
+            }
+            for c in raw.components() {
+                match c {
+                    std::path::Component::ParentDir => {
+                        return Err(format!("'..' not allowed in command: {a}"))
+                    }
+                    std::path::Component::Normal(os) if DENY.iter().any(|d| os == *d) => {
+                        return Err(format!("access denied in command: {a}"))
+                    }
+                    _ => {}
+                }
+            }
+            if let Ok(canon) = std::fs::canonicalize(self.root.join(raw)) {
+                if !canon.starts_with(&self.root) || self.deny_hit(&canon) {
+                    return Err(format!("path escapes the workspace: {a}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Run an allowlisted, shell-free command in the workspace root with a hard timeout.
-    /// The allowlist widens to build/test tools in read-write mode.
+    /// The allowlist widens to build/test tools in read-write mode. NOTE: BUILD tools
+    /// execute arbitrary project code — `scrub_env` strips credentials and forces offline
+    /// defaults, but this is a mitigation, not a security boundary (see `scrub_env`).
     pub async fn run_command(&self, argv: &[String], timeout: Duration) -> Result<CmdResult, String> {
         let prog = argv.first().ok_or("empty command")?;
         if !cmd_allowed(prog, argv, self.mode) {
             return Err(format!("command not allowed: {}", argv.join(" ")));
         }
+        self.args_within_root(argv)?;
         use tokio::process::Command;
         let mut cmd = Command::new(prog);
         cmd.args(&argv[1..])
             .current_dir(&self.root)
             .kill_on_drop(true)
             .stdin(std::process::Stdio::null());
+        scrub_env(&mut cmd);
         let out = match tokio::time::timeout(timeout, cmd.output()).await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => return Err(format!("spawn failed: {e}")),
@@ -185,23 +253,82 @@ impl Sandbox {
 
 /// Command allowlist. Inspect/search + read-only `git` are always allowed; build/test
 /// runners (which execute project code) are allowed ONLY in read-write mode. No shell
-/// ever; `git push`/`rm`/`curl`/network fetchers are always refused.
+/// ever; `git push`/`rm`/`curl`/network fetchers are always refused. Path arguments are
+/// separately jailed by `Sandbox::args_within_root`, and BUILD tools run under `scrub_env`.
 fn cmd_allowed(prog: &str, argv: &[String], mode: SandboxMode) -> bool {
     const READ: &[&str] = &["ls", "cat", "rg", "grep", "find", "wc", "head", "tail", "tree"];
     const BUILD: &[&str] = &[
         "cargo", "rustc", "npm", "pnpm", "yarn", "bun", "node", "deno", "tsc",
         "python", "python3", "pytest", "go", "make", "jest", "mocha", "vitest",
     ];
-    const GIT_RO: &[&str] = &["status", "log", "diff", "show", "ls-files", "branch", "rev-parse", "describe", "blame"];
     let base = Path::new(prog).file_name().and_then(|s| s.to_str()).unwrap_or(prog);
     if base == "git" {
-        // git is always read-only (no push/remote-mutating subcommands), even in RW mode.
-        return argv.get(1).map(|s| GIT_RO.contains(&s.as_str())).unwrap_or(false);
+        return git_allowed(argv);
     }
     if READ.contains(&base) {
         return true;
     }
     mode == SandboxMode::ReadWrite && BUILD.contains(&base)
+}
+
+/// Read-only git, minus the history-exfiltration vectors. `show`/`blame` are dropped
+/// entirely (they dump arbitrary historical blobs/patches); `-p`/`--patch` is refused (a
+/// `git log -p` prints committed-then-removed secrets); and any `<ref>:<path>` blob spec is
+/// refused (`git show HEAD:.env` reads past the DENY jail). What remains — status, log
+/// (metadata), diff (working tree), ls-files, branch, rev-parse, describe — reveals nothing
+/// the agent can't already read from the live tree.
+fn git_allowed(argv: &[String]) -> bool {
+    const GIT_RO: &[&str] =
+        &["status", "log", "diff", "ls-files", "branch", "rev-parse", "describe"];
+    let sub = match argv.get(1) {
+        Some(s) => s.as_str(),
+        None => return false,
+    };
+    if !GIT_RO.contains(&sub) {
+        return false;
+    }
+    for a in argv.iter().skip(2) {
+        if a.contains(':') {
+            return false; // <ref>:<path> blob extraction
+        }
+        if matches!(a.as_str(), "-p" | "-u" | "--patch" | "--patch-with-raw" | "--full-diff") {
+            return false; // patch dump — leaks removed secrets from history
+        }
+    }
+    true
+}
+
+/// Strip credential-bearing env vars and force offline defaults before running a command —
+/// especially the BUILD tools, which execute arbitrary project code (build.rs, proc-macros,
+/// npm lifecycle scripts, `node -e`/`python -c`). This REDUCES credential exfiltration and
+/// network supply-chain reach; it is NOT a substitute for OS-level sandboxing. BUILD mode is
+/// not a hardened security boundary and should only be used on trusted workspaces.
+fn scrub_env(cmd: &mut tokio::process::Command) {
+    for (k, _) in std::env::vars() {
+        let up = k.to_ascii_uppercase();
+        if up.contains("KEY")
+            || up.contains("TOKEN")
+            || up.contains("SECRET")
+            || up.contains("PASSWORD")
+            || up.contains("PASSWD")
+            || up.starts_with("AWS_")
+            || up.contains("DASHSCOPE")
+            || up.contains("DEEPSEEK")
+            || up.contains("ANTHROPIC")
+            || up.contains("OPENAI")
+            || up.starts_with("GH_")
+            || up.starts_with("GITHUB_")
+            || up == "SSH_AUTH_SOCK"
+        {
+            cmd.env_remove(&k);
+        }
+    }
+    cmd.env("CARGO_NET_OFFLINE", "true");
+    cmd.env("npm_config_offline", "true");
+    cmd.env("npm_config_audit", "false");
+    cmd.env("npm_config_fund", "false");
+    cmd.env("PIP_NO_INPUT", "1");
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
 }
 
 /// Keep the first `max` bytes (on a char boundary); note truncation.
@@ -296,6 +423,63 @@ mod tests {
         assert!(cmd_allowed("cargo", &["cargo".into(), "test".into()], ReadWrite));
         assert!(cmd_allowed("pytest", &["pytest".into()], ReadWrite));
         assert!(!cmd_allowed("pytest", &["pytest".into()], ReadOnly));
+    }
+
+    #[test]
+    fn git_blocks_history_exfiltration() {
+        use SandboxMode::*;
+        // safe read-only subcommands
+        assert!(cmd_allowed("git", &["git".into(), "status".into()], ReadOnly));
+        assert!(cmd_allowed("git", &["git".into(), "log".into()], ReadOnly));
+        assert!(cmd_allowed("git", &["git".into(), "diff".into()], ReadOnly));
+        // patch dumps leak committed-then-removed secrets
+        assert!(!cmd_allowed("git", &["git".into(), "log".into(), "-p".into()], ReadWrite));
+        assert!(!cmd_allowed("git", &["git".into(), "log".into(), "--patch".into()], ReadWrite));
+        // arbitrary blob reads past the DENY jail
+        assert!(!cmd_allowed("git", &["git".into(), "show".into(), "HEAD:.env".into()], ReadWrite));
+        assert!(!cmd_allowed("git", &["git".into(), "show".into()], ReadWrite));
+        assert!(!cmd_allowed("git", &["git".into(), "blame".into(), "x".into()], ReadWrite));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_deny_dir_inside_root_is_blocked() {
+        let root = tmp("symdeny");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git").join("config"), "token=secret").unwrap();
+        // a symlink whose NAME hides its target: g -> .git (both inside root)
+        std::os::unix::fs::symlink(root.join(".git"), root.join("g")).unwrap();
+        let sb = Sandbox::with_mode(&root, SandboxMode::ReadWrite).unwrap();
+        // read via the symlink must be denied (canonical path hits .git)
+        assert!(sb.read_file("g/config").is_err());
+        assert!(sb.list_dir("g").is_err());
+        // write via the symlink must not land in .git
+        assert!(sb.write_file("g/config", "pwn").is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join(".git").join("config")).unwrap(),
+            "token=secret"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn run_command_args_are_jailed() {
+        let root = tmp("argjail");
+        std::fs::write(root.join(".env"), "SECRET=1").unwrap();
+        std::fs::write(root.join("ok.txt"), "fine").unwrap();
+        let sb = Sandbox::new(&root).unwrap();
+        let d = Duration::from_secs(5);
+        // absolute path out of root
+        assert!(sb.run_command(&["cat".into(), "/etc/passwd".into()], d).await.is_err());
+        // DENY file inside root, reached by a read command
+        assert!(sb.run_command(&["cat".into(), ".env".into()], d).await.is_err());
+        // parent escape
+        assert!(sb.run_command(&["cat".into(), "../x".into()], d).await.is_err());
+        // filesystem-wide search
+        assert!(sb.run_command(&["find".into(), "/".into(), "-name".into(), "id_rsa".into()], d).await.is_err());
+        // a legitimate in-root read still works
+        assert!(sb.run_command(&["cat".into(), "ok.txt".into()], d).await.is_ok());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

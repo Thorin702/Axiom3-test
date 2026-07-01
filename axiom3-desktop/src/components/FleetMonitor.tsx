@@ -3,10 +3,8 @@
 // Per-agent detail lives in the Activity rail; this is the fleet overview.
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
 import { Boxes, Network, Activity, Users } from "lucide-react";
 import type { Lang } from "../i18n";
-import type { RunEvent } from "../lib/types";
 
 const S = {
   zh: {
@@ -35,33 +33,16 @@ const S = {
 
 const FAMILIES = ["deepseek", "qwen", "anthropic", "openai", "gemini"];
 
-export function FleetMonitor({ lang }: { lang: Lang }) {
+// The live aggregate is owned by App (always mounted) so it accrues across navigation and
+// stays internally consistent; this view just renders it.
+export function FleetMonitor({ lang, agg }: { lang: Lang; agg: { runs: number; spawned: number; finished: number } }) {
   const s = S[lang];
   const [connected, setConnected] = useState<Record<string, boolean>>({});
-  const [agg, setAgg] = useState({ runs: 0, spawned: 0, finished: 0 });
 
   useEffect(() => {
     invoke<{ family: string; connected: boolean }[]>("provider_status")
       .then((ps) => setConnected(Object.fromEntries(ps.map((p) => [p.family, p.connected]))))
       .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const un = listen<RunEvent>("run_event", (e) => {
-      const ev = e.payload;
-      setAgg((a) =>
-        ev.kind === "run_started"
-          ? { ...a, runs: a.runs + 1 }
-          : ev.kind === "agent_spawned"
-          ? { ...a, spawned: a.spawned + 1 }
-          : ev.kind === "agent_finished"
-          ? { ...a, finished: a.finished + 1 }
-          : a
-      );
-    });
-    return () => {
-      un.then((f) => f());
-    };
   }, []);
 
   const nConnected = Object.values(connected).filter(Boolean).length;

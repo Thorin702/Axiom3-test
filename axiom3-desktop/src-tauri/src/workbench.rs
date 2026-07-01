@@ -685,6 +685,10 @@ pub struct AppState {
     /// In-flight orchestration runs, keyed by run id → (cancel, pause) handles. Unlike
     /// the single `cancel` check slot, MANY runs can be live at once.
     runs: Mutex<HashMap<String, (Cancel, Pause)>>,
+    /// Serializes provider-key env mutation (`set_var`/`remove_var`) against run/check
+    /// REGISTRATION, closing the TOCTOU window between the `is_busy()` check and the write.
+    /// Lock-order invariant: always acquire this BEFORE `runs`/`cancel` (never the reverse).
+    key_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -735,6 +739,9 @@ impl AppState {
     /// exit path (success / error / panic) — no leaked stale handle.
     fn begin_check(&self, c: Cancel) -> Option<CheckGuard<'_>> {
         use std::sync::atomic::Ordering;
+        // Register under key_lock so a concurrent set_provider_key either sees this check
+        // (via is_busy) and refuses, or completes its set_var fully before we start.
+        let _kl = self.key_lock.lock().unwrap_or_else(|p| p.into_inner());
         let mut slot = self.cancel.lock().unwrap_or_else(|p| p.into_inner());
         if slot.is_some() {
             return None;
@@ -767,12 +774,29 @@ impl AppState {
     /// Reserve a run id in the registry. `None` if that id is already live. The guard
     /// removes ONLY its own entry on drop (every exit path), so runs can't leak.
     fn begin_run(&self, run_id: &str, c: Cancel, p: Pause) -> Option<RunGuard<'_>> {
+        // See begin_check: register under key_lock (acquired before `runs`) so key mutation
+        // and run registration can't interleave around the env-read TOCTOU window.
+        let _kl = self.key_lock.lock().unwrap_or_else(|g| g.into_inner());
         let mut runs = self.runs.lock().unwrap_or_else(|p| p.into_inner());
         if runs.contains_key(run_id) {
             return None;
         }
         runs.insert(run_id.to_string(), (c, p));
         Some(RunGuard { state: self, run_id: run_id.to_string() })
+    }
+
+    /// Run `f` (the keychain + env mutation) with key mutation serialized against run/check
+    /// registration. Refuses if work is in flight, holding `key_lock` across BOTH the
+    /// `is_busy()` decision and `f`, so no run can register mid-write and read a torn env.
+    fn mutate_keys_locked<F>(&self, f: F) -> Result<(), String>
+    where
+        F: FnOnce() -> Result<(), String>,
+    {
+        let _kl = self.key_lock.lock().unwrap_or_else(|p| p.into_inner());
+        if self.is_busy() {
+            return Err("work is running — change keys after it finishes".into());
+        }
+        f()
     }
     fn clear_run(&self, run_id: &str) {
         self.runs.lock().unwrap_or_else(|p| p.into_inner()).remove(run_id);
@@ -1071,34 +1095,32 @@ pub fn provider_status() -> Vec<ProviderState> {
 /// into the Rig backend instead of via env — is a follow-up.)
 #[tauri::command]
 pub fn set_provider_key(state: tauri::State<'_, AppState>, provider: String, key: String) -> Result<(), String> {
-    if state.is_busy() {
-        return Err("work is running — change keys after it finishes".into());
-    }
     let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
-    let key = key.trim();
+    let key = key.trim().to_string();
     if key.is_empty() {
         return Err("empty key".into());
     }
-    KeyringSecretStore::new(KEYCHAIN_SERVICE)
-        .set(&provider_key_name(p.family()), key)
-        .map_err(|e| e.to_string())?;
-    std::env::set_var(p.env_var(), key);
-    Ok(())
+    state.mutate_keys_locked(|| {
+        KeyringSecretStore::new(KEYCHAIN_SERVICE)
+            .set(&provider_key_name(p.family()), &key)
+            .map_err(|e| e.to_string())?;
+        std::env::set_var(p.env_var(), &key);
+        Ok(())
+    })
 }
 
 /// Forget a provider's stored key (keychain + this session's env). Refused mid-check
 /// for the same data-race reason as [`set_provider_key`].
 #[tauri::command]
 pub fn delete_provider_key(state: tauri::State<'_, AppState>, provider: String) -> Result<(), String> {
-    if state.is_busy() {
-        return Err("work is running — change keys after it finishes".into());
-    }
     let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
-    KeyringSecretStore::new(KEYCHAIN_SERVICE)
-        .delete(&provider_key_name(p.family()))
-        .map_err(|e| e.to_string())?;
-    std::env::remove_var(p.env_var());
-    Ok(())
+    state.mutate_keys_locked(|| {
+        KeyringSecretStore::new(KEYCHAIN_SERVICE)
+            .delete(&provider_key_name(p.family()))
+            .map_err(|e| e.to_string())?;
+        std::env::remove_var(p.env_var());
+        Ok(())
+    })
 }
 
 /// At startup, hydrate the process env from any keychain-stored provider keys so the
@@ -1557,7 +1579,9 @@ pub async fn run_workflow(
         ));
     }
     let model_id = model.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| workflow_model_for(&provider));
-    let target = agents.filter(|n| *n > 0); // user's target agent count (None = model decides)
+    // Cap the target at the command boundary: the UI offers ≤16, but this is a directly
+    // invokable command, so clamp absurd counts (which would otherwise overflow `sub` below).
+    let target = agents.filter(|n| *n > 0).map(|n| n.min(64)); // user's target (None = model decides)
     let concurrency = target.map(|n| n.min(8)).unwrap_or(4);
     let cancel = Cancel::new();
     // Reserve the run slot (rejects a duplicate run id) for the whole run lifetime.
@@ -1575,7 +1599,7 @@ pub async fn run_workflow(
     let run = if total > 8 {
         // deep two-level fan-out: top × sub ≈ total → tens of agents queue through the pool
         let top = ((total as f64).sqrt().ceil() as usize).clamp(2, 8);
-        let sub = ((total + top - 1) / top).clamp(2, 8);
+        let sub = total.div_ceil(top).clamp(2, 8); // overflow-free ceil-div
         orchestrate_deep(&goal, &opts, top, sub, sink, &cancel).await
     } else {
         let decomposer = LlmDecomposer { provider: provider.clone(), model: model_id.clone(), target };
