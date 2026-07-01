@@ -125,7 +125,10 @@
   border: 0.5px solid var(--ax-line);
   border-radius: 12px;
   padding: 14px 18px;
+  transition: opacity 0.15s ease;
 }
+.ax-dossier.is-reviewed { opacity: 0.5; }
+.ax-dossier.is-reviewed:hover { opacity: 0.85; }
 .ax-dossier__head {
   display: flex;
   align-items: flex-start;

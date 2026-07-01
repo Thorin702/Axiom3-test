@@ -16,9 +16,9 @@ export function Splash({ lang, onDone }: { lang: Lang; onDone: () => void }) {
   const stages = STAGES[lang];
 
   useEffect(() => {
-    const iv = setInterval(() => setStage((s) => Math.min(s + 1, stages.length - 1)), 190);
-    const t1 = setTimeout(() => setLeaving(true), 1000);
-    const t2 = setTimeout(onDone, 1400);
+    const iv = setInterval(() => setStage((s) => Math.min(s + 1, stages.length - 1)), 280);
+    const t1 = setTimeout(() => setLeaving(true), 1500);
+    const t2 = setTimeout(onDone, 1900);
     return () => {
       clearInterval(iv);
       clearTimeout(t1);

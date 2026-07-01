@@ -26,7 +26,7 @@ import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
-  Command, Bell, PanelRight, FolderOpen, Quote, RotateCcw, type LucideIcon,
+  Command, Bell, PanelRight, FolderOpen, Quote, RotateCcw, WrapText, Check, type LucideIcon,
 } from "lucide-react";
 
 // Set during the tasks initializer (first render): how many persisted tasks were left
@@ -101,6 +101,18 @@ const MODELS: { id: string; label: string }[] = [
 // (top × sub), so tens of agents queue through the pool.
 const AGENT_CHOICES = [0, 2, 4, 8, 12, 16];
 
+// Tidy pasted/imported text (#113): de-hyphenate line-broken words and rejoin hard
+// single line breaks (PDF copy artifacts), while keeping paragraph breaks. CJK joins
+// without a space; Latin joins with one.
+function tidyDraft(s: string): string {
+  let out = s.replace(/([A-Za-zÀ-ɏ])-\n([A-Za-z])/g, "$1$2");
+  out = out.replace(/([^\n])\n(?!\n)([^\n])/g, (_m, a: string, b: string) => {
+    const cjk = /[一-鿿　-〿＀-￯]/;
+    return cjk.test(a) && cjk.test(b) ? a + b : `${a} ${b}`;
+  });
+  return out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 function App() {
   const [lang, setLangState] = useState<Lang>(
     (localStorage.getItem("axiom3.lang") as Lang) || "zh"
@@ -118,7 +130,7 @@ function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState(
-    "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
+    () => localStorage.getItem("axiom3.draft") ?? "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
   const [references, setReferences] = useState("");
   const [codeWs, setCodeWs] = useState<string | null>(null);
@@ -139,10 +151,30 @@ function App() {
   const [interrupted, setInterrupted] = useState(bootInterrupted);
   const [view, setView] = useState<"home" | "thread">("home");
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [taskFilter, setTaskFilter] = useState<"all" | "check_draft" | "workflow" | "code">("all");
   const [cmd, setCmd] = useState<string | null>(null);
   const [slash, setSlash] = useState("");
   const [slashIdx, setSlashIdx] = useState(0);
   const [notableOnly, setNotableOnly] = useState(true);
+  const [reviewed, setReviewed] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("axiom3.reviewed") || "{}");
+    } catch {
+      return {};
+    }
+  });
+  const [hideReviewed, setHideReviewed] = useState(false);
+  function toggleReviewed(id: string) {
+    setReviewed((r) => {
+      const n = { ...r, [id]: !r[id] };
+      try {
+        localStorage.setItem("axiom3.reviewed", JSON.stringify(n));
+      } catch {
+        /* quota */
+      }
+      return n;
+    });
+  }
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [onboarded, setOnboarded] = useState(localStorage.getItem("axiom3.onboarded") === "1");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -164,6 +196,15 @@ function App() {
       /* quota — ignore */
     }
   }, [tasks]);
+
+  // Auto-save the draft so a paste/edit survives reloads and crashes (#109).
+  useEffect(() => {
+    try {
+      localStorage.setItem("axiom3.draft", draft);
+    } catch {
+      /* quota — ignore */
+    }
+  }, [draft]);
 
   // Clear any error banner whenever the user navigates (a run sets its error after the
   // view change, so a fresh failure still shows; only stale errors get wiped).
@@ -622,6 +663,9 @@ function App() {
                   <button className="ax-iconbtn" onClick={() => importInto(setDraft)} disabled={busy} title={t(lang, "import_btn")} aria-label={t(lang, "import_btn")}>
                     <Upload size={16} aria-hidden />
                   </button>
+                  <button className="ax-iconbtn" onClick={() => setDraft(tidyDraft(draft))} disabled={busy || !draft.trim()} title={lang === "zh" ? "整理:去连字符、重接被打断的换行" : "Tidy: de-hyphenate + rejoin broken line breaks"} aria-label="tidy">
+                    <WrapText size={16} aria-hidden />
+                  </button>
                   <span className="ax-hint">{draft.length.toLocaleString()} {t(lang, "chars")}</span>
                 </div>
                 <details style={{ marginTop: 12 }}>
@@ -731,6 +775,20 @@ function App() {
           <Plus size={16} aria-hidden /> {lang === "zh" ? "新建任务" : "New task"}
         </button>
 
+        {tasks.length > 4 && (
+          <select
+            className="ax-select"
+            style={{ width: "100%", fontSize: 12 }}
+            value={taskFilter}
+            onChange={(e) => setTaskFilter(e.currentTarget.value as typeof taskFilter)}
+          >
+            <option value="all">{lang === "zh" ? "全部任务" : "All tasks"}</option>
+            <option value="check_draft">{lang === "zh" ? "校对" : "Check"}</option>
+            <option value="workflow">{lang === "zh" ? "工作流" : "Workflow"}</option>
+            <option value="code">{lang === "zh" ? "编程" : "Code"}</option>
+          </select>
+        )}
+
         <div className="ax-side-scroll">
           {tasks.length === 0 ? (
             <p className="ax-hint" style={{ padding: "6px 9px" }}>
@@ -738,7 +796,7 @@ function App() {
             </p>
           ) : (
             RECENT_GROUPS.map((g) => {
-              const items = tasks.filter((tk) => groupOf(tk.ts) === g.key);
+              const items = tasks.filter((tk) => (taskFilter === "all" || tk.type === taskFilter) && groupOf(tk.ts) === g.key);
               if (!items.length) return null;
               return (
                 <div key={g.key}>
@@ -968,6 +1026,9 @@ function App() {
                             <button className="ax-iconbtn" onClick={() => setNotableOnly(!notableOnly)} title={notableOnly ? t(lang, "show_all") : t(lang, "only_notable")} aria-label={notableOnly ? t(lang, "show_all") : t(lang, "only_notable")}>
                               <ListFilter size={16} aria-hidden />
                             </button>
+                            <button className={`ax-iconbtn ${hideReviewed ? "is-active" : ""}`} onClick={() => setHideReviewed(!hideReviewed)} title={lang === "zh" ? (hideReviewed ? "显示已复核" : "隐藏已复核") : hideReviewed ? "show reviewed" : "hide reviewed"} aria-label="toggle reviewed">
+                              <Check size={16} aria-hidden />
+                            </button>
                           </div>
                         )}
                       </div>
@@ -1017,6 +1078,10 @@ function App() {
                           <span className="ax-results__meta">
                             {tk.result.total} {t(lang, "claims")} · {tk.result.flagged} {t(lang, "flagged")} ·{" "}
                             {tk.result.fleet_verified} {t(lang, "cross_vendor_n")}
+                            {(() => {
+                              const rc = tk.result.entries.filter((e) => reviewed[e.claim_id]).length;
+                              return rc > 0 ? ` · ${rc} ${lang === "zh" ? "已复核" : "reviewed"}` : "";
+                            })()}
                           </span>
                           <p className="ax-philosophy">{t(lang, "results_philosophy")}</p>
                           <div className="ax-results__list" style={{ marginTop: 10 }}>
@@ -1030,8 +1095,15 @@ function App() {
                                   e.reason?.includes("fleet_cap_exceeded") ||
                                   e.reason?.includes("cross_vendor_unavailable")
                               )
+                              .filter((e) => !hideReviewed || !reviewed[e.claim_id])
                               .map((e) => (
-                                <ClaimDossier key={e.claim_id} entry={e} lang={lang} />
+                                <ClaimDossier
+                                  key={e.claim_id}
+                                  entry={e}
+                                  lang={lang}
+                                  reviewed={!!reviewed[e.claim_id]}
+                                  onReview={() => toggleReviewed(e.claim_id)}
+                                />
                               ))}
                           </div>
                         </>

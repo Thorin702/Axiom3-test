@@ -1,4 +1,4 @@
-import { AlertTriangle, ShieldAlert, Bot } from "lucide-react";
+import { AlertTriangle, ShieldAlert, Bot, Check } from "lucide-react";
 import { Lang, t, codeLabel, findingDesc, vendorSignalLabel, reasonLabel } from "../i18n";
 import type { ClaimEntry } from "../lib/types";
 import { attentionOf, lampClass, attentionKey } from "../lib/attention";
@@ -11,7 +11,17 @@ function parseEvidence(p: string): { src: "retrieved" | "user"; cite?: string; t
   return { src: "user", text: p };
 }
 
-export function ClaimDossier({ entry, lang }: { entry: ClaimEntry; lang: Lang }) {
+export function ClaimDossier({
+  entry,
+  lang,
+  reviewed,
+  onReview,
+}: {
+  entry: ClaimEntry;
+  lang: Lang;
+  reviewed?: boolean;
+  onReview?: () => void;
+}) {
   const att = attentionOf(entry);
   // Reason codes that AREN'T already shown as deterministic checks (those live in the
   // checks section) — i.e. the verification/evidence-level reasons (grounded_single_source,
@@ -23,12 +33,24 @@ export function ClaimDossier({ entry, lang }: { entry: ClaimEntry; lang: Lang })
     .join(",");
 
   return (
-    <div className="ax-dossier">
+    <div className={`ax-dossier ${reviewed ? "is-reviewed" : ""}`}>
       <div className="ax-dossier__head">
         <p className="ax-claim">{entry.text}</p>
-        <span className="ax-att">
-          <span className={`ax-lamp ${lampClass[att]}`} />
-          {t(lang, attentionKey[att])}
+        <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <span className="ax-att">
+            <span className={`ax-lamp ${lampClass[att]}`} />
+            {t(lang, attentionKey[att])}
+          </span>
+          {onReview && (
+            <button
+              className={`ax-iconbtn ${reviewed ? "is-active" : ""}`}
+              onClick={onReview}
+              title={reviewed ? (lang === "zh" ? "已复核 — 点击取消" : "reviewed — click to undo") : lang === "zh" ? "标记已复核" : "mark reviewed"}
+              aria-label="mark reviewed"
+            >
+              <Check size={15} aria-hidden />
+            </button>
+          )}
         </span>
       </div>
 
