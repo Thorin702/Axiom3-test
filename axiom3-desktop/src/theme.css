@@ -117,6 +117,25 @@
 }
 .ax-linkbtn:hover { color: var(--ax-accent); background: var(--ax-surface-2); }
 
+/* Unread-notification count on the bell. */
+.ax-bell { position: relative; }
+.ax-bell__dot {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border-radius: 8px;
+  background: var(--ax-lamp-amber);
+  color: #1a1200;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+  box-sizing: border-box;
+}
+
 /* ── results panel */
 .ax-results__head {
   display: flex;

@@ -198,6 +198,10 @@ function App() {
   const [booting, setBooting] = useState(true);
   const [dropping, setDropping] = useState(false);
   const [fleetAgg, setFleetAgg] = useState({ runs: 0, spawned: 0, finished: 0 });
+  const [lastSeenNotif, setLastSeenNotif] = useState(() => {
+    const v = localStorage.getItem("axiom3.notifSeen");
+    return v ? parseInt(v, 10) || 0 : Date.now(); // first run: don't flag pre-existing tasks
+  });
 
   useEffect(() => {
     applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
@@ -287,6 +291,16 @@ function App() {
   useEffect(() => {
     setError("");
   }, [nav, view, activeId]);
+
+  // Opening Notifications marks everything currently there as seen (clears the unread badge).
+  useEffect(() => {
+    if (nav === "notifications") {
+      const now = Date.now();
+      setLastSeenNotif(now);
+      localStorage.setItem("axiom3.notifSeen", String(now));
+    }
+  }, [nav]);
+  const unreadNotif = tasks.filter((tk) => tk.ts > lastSeenNotif).length;
 
   // ⌘K / Ctrl-K opens the command palette anywhere.
   useEffect(() => {
@@ -478,21 +492,42 @@ function App() {
   async function importDropped(path: string) {
     const text = await run(() => invoke<string>("import_document", { path }));
     if (text !== undefined) {
-      recordSource(path.split(/[/\\]/).pop() || "document", text);
-      setNav("tasks");
-      setActiveId(null);
-      setView("home");
-      setCmd("check_draft");
-      setDraft(text);
+      const name = path.split(/[/\\]/).pop() || "document";
+      recordSource(name, text); // always keep it in the library
       const lg = langRef.current; // fresh language, not the drop-listener's captured one
-      note(`${t(lg, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lg, "chars")}`);
+      note(`${t(lg, "imported")}: ${name} · ${text.length.toLocaleString()} ${t(lg, "chars")}`);
+      // Only load it into the editor (replacing the draft) if that won't lose unsaved prose.
+      if (confirmReplaceDraft()) {
+        setNav("tasks");
+        setActiveId(null);
+        setView("home");
+        setCmd("check_draft");
+        setDraft(text);
+      }
     }
   }
 
   // ── source library (阅读/摄入) ──
+  // Guard the draft against a silent overwrite when loading a source: only ask if there's
+  // unsaved prose that would be lost.
+  function confirmReplaceDraft(): boolean {
+    if (!draft.trim()) return true;
+    return window.confirm(
+      lang === "zh"
+        ? "这会替换编辑器中的当前草稿,继续?"
+        : "This will replace the current draft in the editor. Continue?"
+    );
+  }
   function recordSource(name: string, text: string) {
     const src: Source = { id: `s${Date.now()}`, name, chars: text.length, ts: Date.now(), text };
-    setSources((ss) => [src, ...ss.filter((x) => x.name !== name)].slice(0, 12));
+    // Signal when the 12-entry cap silently drops the oldest source.
+    setSources((ss) => {
+      const next = [src, ...ss.filter((x) => x.name !== name)];
+      if (next.length > 12) {
+        note(lang === "zh" ? "来源库已满(12),已移除最早的一条。" : "Source library full (12) — dropped the oldest.");
+      }
+      return next.slice(0, 12);
+    });
   }
   async function importSource() {
     const path = await open({
@@ -509,6 +544,7 @@ function App() {
     }
   }
   function openSource(src: Source) {
+    if (!confirmReplaceDraft()) return;
     setNav("tasks");
     setActiveId(null);
     setView("home");
@@ -699,15 +735,19 @@ function App() {
       })
     : [];
 
-  // Plain prose typed in the composer == "check this text" (the one live task). Returns
-  // true if it consumed the submit (so the textarea doesn't also insert a newline).
+  // Plain prose typed in the composer runs the action that MATCHES the open thread: a
+  // follow-up in a workflow thread starts another workflow, in a coding thread another
+  // coding step; on the home screen (or a check thread) it's a draft check. Previously it
+  // always ran a draft check, silently doing the wrong operation inside a workflow/coding
+  // thread. Returns true if it consumed the submit (so the textarea skips the newline).
   function submitFreeText(): boolean {
     const text = slash.trim();
-    if (text && !text.startsWith("/")) {
-      runCheckDraft(text);
-      return true;
-    }
-    return false;
+    if (!text || text.startsWith("/")) return false;
+    const at = tasks.find((x) => x.id === activeId);
+    if (at?.type === "workflow") runWorkflow(text);
+    else if (at?.type === "code" && codeWs) runCoding(text);
+    else runCheckDraft(text);
+    return true;
   }
 
   // The slash composer — shared by the home screen and thread follow-ups. Typing "/"
@@ -1064,12 +1104,17 @@ function App() {
               <span className="ax-kbd">⌘K</span>
             </button>
             <button
-              className={`ax-iconbtn ${nav === "notifications" ? "is-active" : ""}`}
+              className={`ax-iconbtn ax-bell ${nav === "notifications" ? "is-active" : ""}`}
               onClick={() => setNav("notifications")}
               title={lang === "zh" ? "通知" : "Notifications"}
-              aria-label={lang === "zh" ? "通知" : "Notifications"}
+              aria-label={
+                unreadNotif > 0
+                  ? `${lang === "zh" ? "通知" : "Notifications"} · ${unreadNotif} ${lang === "zh" ? "条未读" : "unread"}`
+                  : lang === "zh" ? "通知" : "Notifications"
+              }
             >
               <Bell size={16} aria-hidden />
+              {unreadNotif > 0 && <span className="ax-bell__dot">{unreadNotif > 9 ? "9+" : unreadNotif}</span>}
             </button>
             <button
               className={`ax-iconbtn ${railOpen ? "is-active" : ""}`}
