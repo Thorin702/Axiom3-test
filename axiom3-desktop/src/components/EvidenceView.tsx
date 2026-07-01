@@ -1,86 +1,74 @@
-import { useEffect, useState } from "react";
+// 证据与文献 — the REAL evidence surfaced by the checks you've run: retrieved passages
+// and the DOIs/citations found in them. This tool only checks and surfaces — it never
+// concludes. Green marks a passage that was retrieved as evidence, not that it is true.
+import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Search, BookOpen, Quote, Link2, FileText, RefreshCw } from "lucide-react";
+import { Search, BookOpen, Quote, FileText, Link2 } from "lucide-react";
 import type { Lang } from "../i18n";
+import type { Task } from "../lib/types";
 
 const S = {
   zh: {
     title: "证据与文献",
-    sub: "检索到的证据片段与引用记录汇集于此,仅供你自行判断——本工具只核验与呈现,不下结论。",
-    refresh: "刷新",
+    sub: "你运行过的校对所召回的证据片段与其中的引用汇集于此,仅供自行判断 —— 本工具只核验与呈现,不下结论。",
     filterPh: "筛选证据、来源或 DOI…",
     retrieved: "检索到的证据",
-    checks: "引用核验",
-    checksNote: "以下为引用解析记录,非真伪判断——绿灯仅表示元数据解析成功。",
-    relevance: "相关度",
-    kinds: { journal: "期刊", preprint: "预印本", web: "网页" },
-    parseOk: "解析成功",
-    parsePending: "待核",
-    parseIdle: "未核验",
-    noProject: "未打开项目",
-    noProjectSub: "打开一个项目后,检索到的证据与引用记录将显示在此。以下为示例内容。",
-    chainOk: "证据链已核验",
-    chainIdle: "证据链未核验",
-    evidenceCount: "条证据",
+    checks: "发现的引用 / DOI",
+    checksNote: "这些是在证据中出现的 DOI,仅为定位,不代表对内容真伪的判断。",
+    kinds: { retrieved: "检索", user: "用户提供" },
+    empty: "还没有证据",
+    emptySub: "运行一次带文献检索的 /校对 后,召回的证据会显示在这里。",
+    from: "来自",
+    none: "没有匹配的证据。",
+    noDoi: "尚未在证据中发现 DOI。",
   },
   en: {
     title: "Evidence & Literature",
-    sub: "Retrieved snippets and citation records gather here for your own judgement — this tool only checks and surfaces, it never concludes.",
-    refresh: "Refresh",
+    sub: "Retrieved passages and their citations from the checks you've run gather here for your own judgement — this tool only checks and surfaces, it never concludes.",
     filterPh: "Filter evidence, source or DOI…",
     retrieved: "Retrieved evidence",
-    checks: "Citation checks",
-    checksNote: "These are citation-resolution records, not truth judgements — green means metadata resolved, nothing more.",
-    relevance: "relevance",
-    kinds: { journal: "journal", preprint: "preprint", web: "web" },
-    parseOk: "resolved",
-    parsePending: "pending",
-    parseIdle: "unchecked",
-    noProject: "No project open",
-    noProjectSub: "Open a project and retrieved evidence and citation records will appear here. Illustrative content shown below.",
-    chainOk: "evidence chain checked",
-    chainIdle: "evidence chain unchecked",
-    evidenceCount: "evidence items",
+    checks: "Citations / DOIs found",
+    checksNote: "These are DOIs that appear in the evidence — for locating sources only, not a judgement of the content.",
+    kinds: { retrieved: "retrieved", user: "user-provided" },
+    empty: "No evidence yet",
+    emptySub: "Run a /check with literature retrieval on, and the recalled evidence shows up here.",
+    from: "from",
+    none: "No matching evidence.",
+    noDoi: "No DOIs found in the evidence yet.",
   },
 };
 
-type Kind = "journal" | "preprint" | "web";
-type Snippet = { title: { zh: string; en: string }; source: string; rel: number; kind: Kind };
-type Check = { doi: string; state: "ok" | "pending" | "idle" };
+type Ev = { src: "retrieved" | "user"; cite?: string; text: string; claim: string };
 
-const SNIPPETS: Snippet[] = [
-  { title: { zh: "在 12 周随访中未观察到组间差异的显著变化。", en: "No significant change in between-group difference at 12-week follow-up." }, source: "Smith 2021 · p.4 · DOI:10.1038/s41586-021-03819", rel: 0.91, kind: "journal" },
-  { title: { zh: "样本量(n=48)在附录方法部分有报告。", en: "Sample size (n=48) is reported in the supplementary methods." }, source: "Chen & Ito 2022 · §Methods · arXiv:2203.01234", rel: 0.84, kind: "preprint" },
-  { title: { zh: "作者声明数据集在受限访问下可获取。", en: "Authors state the dataset is available under restricted access." }, source: "Data availability statement · project page", rel: 0.72, kind: "web" },
-  { title: { zh: "效应量报告为 Cohen's d = 0.31(95% CI)。", en: "Effect size reported as Cohen's d = 0.31 (95% CI)." }, source: "Okafor 2020 · Table 2 · DOI:10.1016/j.cell.2020.05" , rel: 0.88, kind: "journal" },
-  { title: { zh: "预印本第 2 版修订了统计方法一节。", en: "Preprint v2 revised the statistical-methods section." }, source: "Novak 2023 · v2 · bioRxiv:2023.04.556", rel: 0.66, kind: "preprint" },
-];
+function parseEv(raw: string, claim: string): Ev {
+  const m = raw.match(/^\[retrieved · ([^\]]+)\]\s*([\s\S]*)$/);
+  if (m) return { src: "retrieved", cite: m[1], text: m[2], claim };
+  return { src: "user", text: raw, claim };
+}
 
-const CHECKS: Check[] = [
-  { doi: "10.1038/s41586-021-03819", state: "ok" },
-  { doi: "10.1016/j.cell.2020.05.011", state: "pending" },
-  { doi: "10.1101/2023.04.556 (bioRxiv)", state: "idle" },
-];
-
-const kindTone: Record<Kind, string> = { journal: "is-green", preprint: "is-violet", web: "is-neutral" };
-
-export function EvidenceView({ lang }: { lang: Lang }) {
+export function EvidenceView({ lang, tasks }: { lang: Lang; tasks: Task[] }) {
   const s = S[lang];
   const [query, setQuery] = useState("");
-  const [hasProject, setHasProject] = useState(false);
-  const [chainOk, setChainOk] = useState(false);
-  const [eventCount, setEventCount] = useState<number | null>(null);
+  const [chain, setChain] = useState<{ ok: boolean; events: number } | null>(null);
 
   useEffect(() => {
     invoke<{ event_count: number; chain_ok: boolean }>("project_status")
-      .then((p) => { setHasProject(true); setEventCount(p.event_count); setChainOk(p.chain_ok); })
-      .catch(() => { setHasProject(false); });
+      .then((p) => setChain({ ok: p.chain_ok, events: p.event_count }))
+      .catch(() => setChain(null));
   }, []);
 
-  const q = query.trim().toLowerCase();
-  const rows = SNIPPETS.filter((r) =>
-    !q || r.title[lang].toLowerCase().includes(q) || r.source.toLowerCase().includes(q)
+  const all: Ev[] = useMemo(
+    () =>
+      tasks.flatMap((t) => (t.result?.entries ?? []).flatMap((e) => e.evidence.map((raw) => parseEv(raw, e.text)))),
+    [tasks]
   );
+  const q = query.trim().toLowerCase();
+  const rows = all.filter((e) => !q || e.text.toLowerCase().includes(q) || (e.cite ?? "").toLowerCase().includes(q) || e.claim.toLowerCase().includes(q));
+  const dois = useMemo(() => {
+    const set = new Set<string>();
+    for (const e of all) (e.cite ?? "").match(/10\.\d{4,}\/[^\s\]]+/g)?.forEach((d) => set.add(d));
+    return [...set];
+  }, [all]);
 
   return (
     <div className="ax-surface">
@@ -89,85 +77,74 @@ export function EvidenceView({ lang }: { lang: Lang }) {
           <h2 className="ax-surface__title">{s.title}</h2>
           <p className="ax-surface__sub">{s.sub}</p>
         </div>
-        <div className="ax-surface__actions">
-          {hasProject && (
+        {chain && (
+          <div className="ax-surface__actions">
             <span className="ax-badge">
-              <span className={`ax-lamp ${chainOk ? "is-green" : "is-neutral"}`} />
-              {eventCount ?? 0} {s.evidenceCount} · {chainOk ? s.chainOk : s.chainIdle}
+              <span className={`ax-lamp ${chain.ok ? "is-green" : "is-amber"}`} />
+              {chain.events} {lang === "zh" ? "事件" : "events"}
             </span>
-          )}
-          <button className="ax-btn" type="button"><RefreshCw size={14} /> {s.refresh}</button>
-        </div>
+          </div>
+        )}
       </div>
 
-      {!hasProject && (
-        <div className="ax-empty" style={{ marginBottom: 16 }}>
-          <div className="ax-empty__title">{s.noProject}</div>
-          <div className="ax-empty__sub">{s.noProjectSub}</div>
+      {all.length === 0 ? (
+        <div className="ax-empty" style={{ minHeight: 0, padding: "28px 16px" }}>
+          <div className="ax-empty__title">{s.empty}</div>
+          <div className="ax-empty__sub">{s.emptySub}</div>
         </div>
-      )}
+      ) : (
+        <>
+          <div className="ax-input" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Search size={15} />
+            <input
+              className="ax-input"
+              style={{ border: "none", padding: 0, background: "transparent", flex: 1 }}
+              placeholder={s.filterPh}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
 
-      <div className="ax-toolrow">
-        <div className="ax-input" style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-          <Search size={15} />
-          <input
-            className="ax-input"
-            style={{ border: "none", padding: 0, background: "transparent", flex: 1 }}
-            placeholder={s.filterPh}
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-        </div>
-      </div>
-
-      <div className="ax-sec-label"><BookOpen size={14} /> {s.retrieved}</div>
-      <div className="ax-card ax-card--pad">
-        <div className="ax-card__body">
-          {rows.map((r, i) => (
-            <div className="ax-row" key={i}>
-              <div className="ax-row__main">
-                <div className="ax-row__title">{r.title[lang]}</div>
-                <div className="ax-row__sub"><FileText size={12} /> {r.source}</div>
-              </div>
-              <div className="ax-row__meta">
-                <span>{s.relevance} {r.rel.toFixed(2)}</span>
-                <span className="ax-badge">
-                  <span className={`ax-lamp ${kindTone[r.kind]}`} /> {s.kinds[r.kind]}
-                </span>
-              </div>
-            </div>
-          ))}
-          {rows.length === 0 && (
-            <div className="ax-hint">{lang === "zh" ? "没有匹配的证据。" : "No matching evidence."}</div>
-          )}
-        </div>
-      </div>
-
-      <div className="ax-sec-label"><Quote size={14} /> {s.checks}</div>
-      <div className="ax-card ax-card--pad">
-        <div className="ax-card__body">
-          {CHECKS.map((c, i) => (
-            <div className="ax-row" key={i}>
-              <div className="ax-row__main">
-                <div className="ax-row__title">
-                  <span
-                    className={`ax-lamp ${c.state === "ok" ? "is-green" : c.state === "pending" ? "is-amber" : "is-neutral"}`}
-                    style={{ marginRight: 8 }}
-                  />
-                  DOI:{c.doi}
+          <div className="ax-sec-label" style={{ marginTop: 12 }}><BookOpen size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} /> {s.retrieved} · {rows.length}</div>
+          {rows.length === 0 ? (
+            <div className="ax-hint">{s.none}</div>
+          ) : (
+            <div className="ax-results__list">
+              {rows.slice(0, 60).map((e, i) => (
+                <div className="ax-row" key={i}>
+                  <span className={`ax-lamp ${e.src === "retrieved" ? "is-green" : "is-neutral"}`} />
+                  <div className="ax-row__main">
+                    <div className="ax-row__title" style={{ whiteSpace: "normal" }}>{e.text}</div>
+                    <div className="ax-row__sub">
+                      <FileText size={12} style={{ verticalAlign: "-2px", marginRight: 4 }} />
+                      {e.cite ?? s.kinds[e.src]} · {s.from} {e.claim.slice(0, 40)}{e.claim.length > 40 ? "…" : ""}
+                    </div>
+                  </div>
+                  <span className="ax-badge">{s.kinds[e.src]}</span>
                 </div>
-                <div className="ax-row__sub">
-                  {c.state === "ok" ? s.parseOk : c.state === "pending" ? s.parsePending : s.parseIdle}
-                </div>
-              </div>
-              <div className="ax-row__meta">
-                {c.state === "ok" ? <Link2 size={15} /> : <Quote size={15} />}
-              </div>
+              ))}
             </div>
-          ))}
+          )}
+
+          <div className="ax-sec-label" style={{ marginTop: 16 }}><Quote size={14} style={{ verticalAlign: "-2px", marginRight: 6 }} /> {s.checks} · {dois.length}</div>
+          {dois.length === 0 ? (
+            <div className="ax-hint">{s.noDoi}</div>
+          ) : (
+            <div className="ax-results__list">
+              {dois.map((d) => (
+                <div className="ax-row" key={d}>
+                  <Link2 size={15} aria-hidden />
+                  <div className="ax-row__main">
+                    <div className="ax-row__title" style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: 12 }}>{d}</div>
+                  </div>
+                  <span className="ax-badge">DOI</span>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="ax-hint" style={{ marginTop: 8 }}>{s.checksNote}</div>
-        </div>
-      </div>
+        </>
+      )}
     </div>
   );
 }

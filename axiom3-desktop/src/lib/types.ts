@@ -43,6 +43,9 @@ export type DraftCheck = {
   entries: ClaimEntry[];
 };
 
+// An imported document kept in the local source library (阅读/摄入).
+export type Source = { id: string; name: string; chars: number; ts: number; text: string };
+
 export type ExportSummary = {
   path: string;
   bytes: number;

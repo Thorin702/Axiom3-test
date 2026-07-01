@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task } from "./lib/types";
+import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
@@ -135,6 +135,13 @@ function App() {
   const [references, setReferences] = useState("");
   const [codeWs, setCodeWs] = useState<string | null>(null);
   const [codeWritable, setCodeWritable] = useState(false);
+  const [sources, setSources] = useState<Source[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("axiom3.sources") || "[]");
+    } catch {
+      return [];
+    }
+  });
   const [taskModel, setTaskModel] = useState(""); // "" = auto
   const [wfAgents, setWfAgents] = useState(0); // 0 = auto
   const [tasks, setTasks] = useState<Task[]>(() => {
@@ -205,6 +212,15 @@ function App() {
       /* quota — ignore */
     }
   }, [draft]);
+
+  // Persist the source library (cap to the most recent 12 to bound localStorage).
+  useEffect(() => {
+    try {
+      localStorage.setItem("axiom3.sources", JSON.stringify(sources.slice(0, 12)));
+    } catch {
+      /* quota — ignore */
+    }
+  }, [sources]);
 
   // Clear any error banner whenever the user navigates (a run sets its error after the
   // view change, so a fresh failure still shows; only stale errors get wiped).
@@ -368,6 +384,7 @@ function App() {
       const text = await run(() => invoke<string>("import_document", { path }));
       if (text !== undefined) {
         setter(text);
+        recordSource(path.split(/[/\\]/).pop() || "document", text);
         note(
           `${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`
         );
@@ -375,10 +392,11 @@ function App() {
     }
   }
 
-  // Import a file dropped onto the window: extract text, open the /校对 composer with it.
+  // Import a file dropped onto the window: extract text, record it, open /校对 with it.
   async function importDropped(path: string) {
     const text = await run(() => invoke<string>("import_document", { path }));
     if (text !== undefined) {
+      recordSource(path.split(/[/\\]/).pop() || "document", text);
       setNav("tasks");
       setActiveId(null);
       setView("home");
@@ -386,6 +404,36 @@ function App() {
       setDraft(text);
       note(`${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`);
     }
+  }
+
+  // ── source library (阅读/摄入) ──
+  function recordSource(name: string, text: string) {
+    const src: Source = { id: `s${Date.now()}`, name, chars: text.length, ts: Date.now(), text };
+    setSources((ss) => [src, ...ss.filter((x) => x.name !== name)].slice(0, 12));
+  }
+  async function importSource() {
+    const path = await open({
+      multiple: false,
+      filters: [{ name: "Documents", extensions: ["pdf", "docx", "txt", "md", "markdown"] }],
+    });
+    if (typeof path === "string") {
+      const text = await run(() => invoke<string>("import_document", { path }));
+      if (text !== undefined) {
+        const name = path.split(/[/\\]/).pop() || "document";
+        recordSource(name, text);
+        note(`${t(lang, "imported")}: ${name} · ${text.length.toLocaleString()} ${t(lang, "chars")}`);
+      }
+    }
+  }
+  function openSource(src: Source) {
+    setNav("tasks");
+    setActiveId(null);
+    setView("home");
+    setCmd("check_draft");
+    setDraft(src.text);
+  }
+  function removeSource(id: string) {
+    setSources((ss) => ss.filter((x) => x.id !== id));
   }
 
   async function runCheckDraft(draftText?: string) {
@@ -953,7 +1001,9 @@ function App() {
           {nav !== "tasks" ? (
             <div className="ax-canvas">
               {nav === "projects" && <ProjectsView lang={lang} />}
-              {nav === "reading" && <ReadingView lang={lang} />}
+              {nav === "reading" && (
+                <ReadingView lang={lang} sources={sources} onImport={importSource} onOpen={openSource} onRemove={removeSource} />
+              )}
               {nav === "search" && (
                 <SearchView
                   lang={lang}
@@ -965,7 +1015,7 @@ function App() {
                   }}
                 />
               )}
-              {nav === "evidence" && <EvidenceView lang={lang} />}
+              {nav === "evidence" && <EvidenceView lang={lang} tasks={tasks} />}
               {nav === "fleet" && <FleetMonitor lang={lang} />}
               {nav === "shield" && <ShieldView lang={lang} />}
               {nav === "integrity" && <IntegrityView lang={lang} />}

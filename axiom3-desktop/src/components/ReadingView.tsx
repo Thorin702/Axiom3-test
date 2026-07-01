@@ -1,47 +1,63 @@
-// 阅读 / 摄入 surface — import documents into the workspace and browse the source
-// library. Presentational shell for now (the ingest pipeline wires in at step 2); it is
-// the reference other surface components copy: self-contained bilingual `S`, `{ lang }`
-// props, theme classes only, its own empty state. No backend calls yet.
-import { BookOpen, Upload, FileText, Table2, Sigma, Image as ImageIcon } from "lucide-react";
+// 阅读 · 摄入 — the source library. Import documents (PDF/DOCX/TXT/MD → text via the
+// backend), keep them here, and open one into the /校对 composer. Ingest only parses +
+// keeps the source; it draws no conclusions.
+import { BookOpen, Upload, FileText, Trash2, ArrowUpRight } from "lucide-react";
 import type { Lang } from "../i18n";
+import type { Source } from "../lib/types";
 
 const S = {
   zh: {
     title: "阅读 · 摄入",
-    sub: "把论文、标书、草稿、数据表导入工作区。摄入只做解析与切分,不下结论 —— 文本、图片、表格、公式都会被分块并留存来源。",
-    drop: "拖入文件,或点击选择",
-    dropHint: "PDF · DOCX · TXT · Markdown · 图片 / 表格 / 公式将分模态解析",
+    sub: "把论文、标书、草稿、数据表导入工作区。摄入只做解析与留存来源,不下结论。导入后可一键送入校对。",
+    drop: "点击导入,或把文件拖到窗口任意处",
+    dropHint: "PDF · DOCX · TXT · Markdown",
     import: "导入文件",
     library: "来源库",
     empty: "还没有导入任何来源",
-    emptySub: "导入后,每个片段都会带上来源与位置,供校对与检索引用。",
-    modalities: "模态覆盖",
-    mText: "文本", mImage: "图片", mTable: "表格", mFormula: "公式",
-    parsed: "已解析", pending: "排队中",
+    emptySub: "导入的文档会保留在这里,随时打开送入校对或检索。",
+    chars: "字",
+    open: "送入校对",
+    remove: "移除",
   },
   en: {
     title: "Reading · Ingest",
-    sub: "Bring papers, proposals, drafts and data tables into the workspace. Ingest only parses and segments — it draws no conclusions. Text, images, tables and formulas are chunked with their source kept.",
-    drop: "Drop files here, or click to choose",
-    dropHint: "PDF · DOCX · TXT · Markdown · images / tables / formulas parsed per modality",
+    sub: "Bring papers, proposals, drafts and data tables into the workspace. Ingest only parses and keeps the source — it draws no conclusions. Open one straight into a check.",
+    drop: "Click to import, or drop a file anywhere on the window",
+    dropHint: "PDF · DOCX · TXT · Markdown",
     import: "Import file",
     library: "Source library",
     empty: "No sources imported yet",
-    emptySub: "Once imported, every fragment carries its source and location for checking and retrieval.",
-    modalities: "Modality coverage",
-    mText: "Text", mImage: "Images", mTable: "Tables", mFormula: "Formulas",
-    parsed: "parsed", pending: "queued",
+    emptySub: "Imported documents stay here — open one into a check or search anytime.",
+    chars: "chars",
+    open: "Send to check",
+    remove: "Remove",
   },
 };
 
-export function ReadingView({ lang }: { lang: Lang }) {
+function rel(ts: number, lang: Lang): string {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return lang === "zh" ? "刚刚" : "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return lang === "zh" ? `${m} 分钟前` : `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return lang === "zh" ? `${h} 小时前` : `${h} hr ago`;
+  return lang === "zh" ? `${Math.floor(h / 24)} 天前` : `${Math.floor(h / 24)} d ago`;
+}
+
+export function ReadingView({
+  lang,
+  sources,
+  onImport,
+  onOpen,
+  onRemove,
+}: {
+  lang: Lang;
+  sources: Source[];
+  onImport: () => void;
+  onOpen: (src: Source) => void;
+  onRemove: (id: string) => void;
+}) {
   const s = S[lang];
-  const mods = [
-    { icon: FileText, label: s.mText },
-    { icon: ImageIcon, label: s.mImage },
-    { icon: Table2, label: s.mTable },
-    { icon: Sigma, label: s.mFormula },
-  ];
   return (
     <div className="ax-surface">
       <div className="ax-surface__head">
@@ -50,41 +66,46 @@ export function ReadingView({ lang }: { lang: Lang }) {
           <p className="ax-surface__sub">{s.sub}</p>
         </div>
         <div className="ax-surface__actions">
-          <button className="ax-btn" disabled>
+          <button className="ax-btn ax-btn--primary" onClick={onImport}>
             <Upload size={15} aria-hidden /> {s.import}
           </button>
         </div>
       </div>
 
-      <div className="ax-drop">
+      <div className="ax-drop" onClick={onImport} role="button">
         <BookOpen size={22} aria-hidden />
         <span>{s.drop}</span>
         <span className="ax-drop__hint">{s.dropHint}</span>
       </div>
 
       <div>
-        <p className="ax-sec-label">{s.modalities}</p>
-        <div className="ax-grid">
-          {mods.map((m) => (
-            <div className="ax-card" key={m.label}>
-              <div className="ax-card__head">
-                <m.icon size={15} aria-hidden />
-                <p className="ax-card__title">{m.label}</p>
+        <p className="ax-sec-label">{s.library} · {sources.length}</p>
+        {sources.length === 0 ? (
+          <div className="ax-empty" style={{ minHeight: 0, padding: "28px 16px" }}>
+            <p className="ax-empty__title">{s.empty}</p>
+            <p className="ax-empty__sub">{s.emptySub}</p>
+          </div>
+        ) : (
+          <div className="ax-results__list">
+            {sources.map((src) => (
+              <div className="ax-row" key={src.id}>
+                <FileText size={16} aria-hidden />
+                <div className="ax-row__main">
+                  <div className="ax-row__title">{src.name}</div>
+                  <div className="ax-row__sub">
+                    {src.chars.toLocaleString()} {s.chars} · {rel(src.ts, lang)}
+                  </div>
+                </div>
+                <button className="ax-iconbtn" onClick={() => onOpen(src)} title={s.open} aria-label={s.open}>
+                  <ArrowUpRight size={16} aria-hidden />
+                </button>
+                <button className="ax-iconbtn" onClick={() => onRemove(src.id)} title={s.remove} aria-label={s.remove}>
+                  <Trash2 size={15} aria-hidden />
+                </button>
               </div>
-              <div className="ax-card__body">
-                <span className="ax-badge"><span className="ax-lamp is-neutral" />{s.pending}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <p className="ax-sec-label">{s.library}</p>
-        <div className="ax-empty" style={{ minHeight: 0, padding: "28px 16px" }}>
-          <p className="ax-empty__title">{s.empty}</p>
-          <p className="ax-empty__sub">{s.emptySub}</p>
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
