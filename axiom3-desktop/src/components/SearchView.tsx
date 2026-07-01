@@ -1,53 +1,100 @@
-// 检索 / Global search surface — retrieved evidence across sources, ranked by similarity (never an answer).
-import { Search, Filter, FileText, Table2, Sigma, Image as ImageIcon } from "lucide-react";
+// 检索 · 全局检索 — REAL search across the workspace: check-result claims + their
+// evidence, task titles/outputs, and the audit event log. Results are recalled matches
+// for your judgement, never an answer/verdict. Supports a `type:` filter prefix.
+import { useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Search, ListChecks, Sparkles, History } from "lucide-react";
 import type { Lang } from "../i18n";
+import type { Task, EventInfo } from "../lib/types";
+import { attentionOf, lampClass } from "../lib/attention";
 
 const S = {
   zh: {
     title: "检索 · 全局检索",
-    sub: "检索只返回带来源与位置的证据片段,按相似度排序 —— 这不是答案,请自行核对。",
-    placeholder: "搜索来源、片段、过往校对…",
-    filters: "筛选",
-    chips: ["文本", "图片", "表格", "公式", "来源:草稿", "来源:参考"],
-    results: "检索结果 / Results",
+    sub: "在校对结果的主张与证据、任务、以及审计事件中检索 —— 这是召回的匹配项,供你核对,不是结论。",
+    placeholder: "搜索主张、证据、任务、事件…  可用 type:claim / type:task / type:event",
+    results: "检索结果",
+    none: "没有匹配项。",
     emptyTitle: "输入关键词开始检索",
-    emptySub: "结果仅为按相似度召回的证据,附带来源与位置,供你判断,不代表结论。",
-    rows: [
-      { title: "样本量在 §2.1 处由 120 调整为 96", sub: "draft.pdf · 第3页", meta: "相似度 0.82", kind: "text" as const },
-      { title: "图 4:对照组与处理组的误差棒重叠区间", sub: "draft.pdf · 图4", meta: "相似度 0.77", kind: "image" as const },
-      { title: "表 2 中 p 值列与正文表述存在出入", sub: "ref_02.pdf · §2.1", meta: "片段", kind: "table" as const },
-      { title: "回归方程的自由度与脚注不一致", sub: "ref_02.pdf · 第7页", meta: "相似度 0.71", kind: "formula" as const },
-      { title: "引用编号 [12] 指向的来源未在参考列表中", sub: "draft.pdf · §4.3", meta: "相似度 0.65", kind: "text" as const },
-    ],
+    emptySub: "在你运行过的校对与工作流结果中检索;结果附来源,供你判断。",
+    all: "全部", claim: "主张", task: "任务", event: "事件",
+    kClaim: "主张", kTask: "任务", kEvent: "事件",
   },
   en: {
-    title: "Search · Across sources",
-    sub: "Search returns evidence snippets with their source and location, ranked by similarity — not an answer; verify yourself.",
-    placeholder: "Search sources, snippets, prior checks…",
-    filters: "Filter",
-    chips: ["Text", "Image", "Table", "Formula", "Source: draft", "Source: refs"],
-    results: "检索结果 / Results",
-    emptyTitle: "Type a query to start searching",
-    emptySub: "Results are evidence recalled by similarity with source and location — for your judgement, not a conclusion.",
-    rows: [
-      { title: "Sample size revised from 120 to 96 at §2.1", sub: "draft.pdf · p.3", meta: "similarity 0.82", kind: "text" as const },
-      { title: "Fig. 4: error bars overlap between control and treatment", sub: "draft.pdf · Fig. 4", meta: "similarity 0.77", kind: "image" as const },
-      { title: "p-value column in Table 2 differs from the prose", sub: "ref_02.pdf · §2.1", meta: "snippet", kind: "table" as const },
-      { title: "Degrees of freedom in regression disagree with footnote", sub: "ref_02.pdf · p.7", meta: "similarity 0.71", kind: "formula" as const },
-      { title: "Citation [12] points to a source absent from references", sub: "draft.pdf · §4.3", meta: "similarity 0.65", kind: "text" as const },
-    ],
+    title: "Search · Across the workspace",
+    sub: "Search claims + evidence from check results, tasks, and the audit event log — recalled matches for your judgement, not a conclusion.",
+    placeholder: "Search claims, evidence, tasks, events…  try type:claim / type:task / type:event",
+    results: "Results",
+    none: "No matches.",
+    emptyTitle: "Type a query to search",
+    emptySub: "Searches across the checks and workflows you've run; results carry their source, for your judgement.",
+    all: "All", claim: "Claims", task: "Tasks", event: "Events",
+    kClaim: "claim", kTask: "task", kEvent: "event",
   },
 };
 
-const ICONS = {
-  text: FileText,
-  image: ImageIcon,
-  table: Table2,
-  formula: Sigma,
+const OP: Record<string, { zh: string; en: string }> = {
+  "draft.checked": { zh: "校对草稿", en: "Checked a draft" },
+  note: { zh: "记录事件", en: "Note" },
 };
+function opLabel(op: string, lang: Lang): string {
+  return OP[op] ? OP[op][lang] : op;
+}
 
-export function SearchView({ lang }: { lang: Lang }) {
+type Hit = { kind: "task" | "claim" | "event"; title: string; sub: string; lamp: string; taskId?: string; key: string };
+
+export function SearchView({ lang, tasks, onOpenTask }: { lang: Lang; tasks: Task[]; onOpenTask: (id: string) => void }) {
   const s = S[lang];
+  const [query, setQuery] = useState("");
+  const [events, setEvents] = useState<EventInfo[]>([]);
+
+  useEffect(() => {
+    invoke<EventInfo[]>("list_events", { limit: 500 }).then(setEvents).catch(() => {});
+  }, []);
+
+  const { typeFilter, text } = useMemo(() => {
+    const m = query.match(/type:(claim|task|event)\b/i);
+    return { typeFilter: m ? m[1].toLowerCase() : null, text: query.replace(/type:\S+/i, "").trim().toLowerCase() };
+  }, [query]);
+
+  const hits: Hit[] = useMemo(() => {
+    if (!text) return [];
+    const out: Hit[] = [];
+    const want = (k: string) => !typeFilter || typeFilter === k;
+    for (const t of tasks) {
+      if (want("task") && (t.title.toLowerCase().includes(text) || (t.synthesis ?? "").toLowerCase().includes(text))) {
+        out.push({ kind: "task", title: t.title, sub: `${s.kTask} · /${t.type}`, lamp: t.status === "done" ? "is-green" : "is-neutral", taskId: t.id, key: `t${t.id}` });
+      }
+      if (want("claim") && t.result) {
+        for (const e of t.result.entries) {
+          if (e.text.toLowerCase().includes(text) || e.evidence.some((ev) => ev.toLowerCase().includes(text))) {
+            out.push({ kind: "claim", title: e.text, sub: `${s.kClaim} · ${t.title}`, lamp: lampClass[attentionOf(e)], taskId: t.id, key: `c${e.claim_id}` });
+          }
+        }
+      }
+    }
+    if (want("event")) {
+      for (const ev of events) {
+        if (opLabel(ev.op, lang).toLowerCase().includes(text) || ev.op.toLowerCase().includes(text) || ev.actor.toLowerCase().includes(text)) {
+          out.push({ kind: "event", title: opLabel(ev.op, lang), sub: `${s.kEvent} · #${ev.seq} · ${ev.actor}`, lamp: "is-green", key: `e${ev.seq}` });
+        }
+      }
+    }
+    return out.slice(0, 80);
+  }, [text, typeFilter, tasks, events, lang, s.kTask, s.kClaim, s.kEvent]);
+
+  const chips: { label: string; type: string | null }[] = [
+    { label: s.all, type: null },
+    { label: s.claim, type: "claim" },
+    { label: s.task, type: "task" },
+    { label: s.event, type: "event" },
+  ];
+  function setType(type: string | null) {
+    const base = query.replace(/type:\S+\s*/i, "").trim();
+    setQuery(type ? `type:${type} ${base}`.trim() : base);
+  }
+  const iconFor = (k: Hit["kind"]) => (k === "claim" ? ListChecks : k === "task" ? Sparkles : History);
+
   return (
     <div className="ax-surface">
       <div className="ax-surface__head">
@@ -55,50 +102,62 @@ export function SearchView({ lang }: { lang: Lang }) {
           <h2 className="ax-surface__title">{s.title}</h2>
           <p className="ax-surface__sub">{s.sub}</p>
         </div>
-        <div className="ax-surface__actions">
-          <button className="ax-btn" disabled><Filter size={15} aria-hidden /> {s.filters}</button>
-        </div>
       </div>
 
-      <div className="ax-toolrow" style={{ marginBottom: 8 }}>
-        <div className="ax-input" style={{ display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-          <Search size={15} aria-hidden />
-          <input
-            className="ax-input"
-            style={{ border: "none", padding: 0, flex: 1, background: "transparent" }}
-            placeholder={s.placeholder}
-            disabled
-          />
-        </div>
+      <div className="ax-input" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <Search size={15} aria-hidden />
+        <input
+          autoFocus
+          className="ax-input"
+          style={{ border: "none", padding: 0, flex: 1, background: "transparent" }}
+          placeholder={s.placeholder}
+          value={query}
+          onChange={(e) => setQuery(e.currentTarget.value)}
+        />
       </div>
-      <div className="ax-toolrow" style={{ flexWrap: "wrap", gap: 6, marginBottom: 4 }}>
-        {s.chips.map((c) => (
-          <span key={c} className="ax-badge">{c}</span>
+      <div className="ax-toolrow" style={{ flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+        {chips.map((c) => (
+          <button key={c.label} className={`ax-chip ${typeFilter === c.type ? "is-on" : ""}`} onClick={() => setType(c.type)} style={{ padding: "4px 11px" }}>
+            {c.label}
+          </button>
         ))}
       </div>
 
-      <div className="ax-sec-label">{s.results}</div>
-      <div className="ax-grid">
-        {s.rows.map((r, i) => {
-          const Icon = ICONS[r.kind];
-          return (
-            <div className="ax-row" key={i}>
-              <span className="ax-lamp is-neutral" />
-              <Icon size={15} aria-hidden />
-              <div className="ax-row__main">
-                <div className="ax-row__title">{r.title}</div>
-                <div className="ax-row__sub">{r.sub}</div>
-              </div>
-              <span className="ax-row__meta">{r.meta}</span>
+      {!text ? (
+        <div className="ax-empty" style={{ minHeight: 0, padding: "28px 16px", marginTop: 12 }}>
+          <div className="ax-empty__title">{s.emptyTitle}</div>
+          <div className="ax-empty__sub">{s.emptySub}</div>
+        </div>
+      ) : (
+        <>
+          <div className="ax-sec-label" style={{ marginTop: 14 }}>{s.results} · {hits.length}</div>
+          {hits.length === 0 ? (
+            <div className="ax-hint">{s.none}</div>
+          ) : (
+            <div className="ax-results__list">
+              {hits.map((h) => {
+                const Icon = iconFor(h.kind);
+                const clickable = !!h.taskId;
+                return (
+                  <button
+                    key={h.key}
+                    className="ax-row"
+                    style={{ width: "100%", textAlign: "left", cursor: clickable ? "pointer" : "default" }}
+                    onClick={() => h.taskId && onOpenTask(h.taskId)}
+                  >
+                    <span className={`ax-lamp ${h.lamp}`} />
+                    <Icon size={15} aria-hidden />
+                    <div className="ax-row__main">
+                      <div className="ax-row__title" style={{ whiteSpace: "normal" }}>{h.title}</div>
+                      <div className="ax-row__sub">{h.sub}</div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
-          );
-        })}
-      </div>
-
-      <div className="ax-empty" style={{ padding: "12px 14px", marginTop: 10 }}>
-        <div className="ax-empty__title">{s.emptyTitle}</div>
-        <div className="ax-empty__sub">{s.emptySub}</div>
-      </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

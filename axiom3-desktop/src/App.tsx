@@ -954,7 +954,17 @@ function App() {
             <div className="ax-canvas">
               {nav === "projects" && <ProjectsView lang={lang} />}
               {nav === "reading" && <ReadingView lang={lang} />}
-              {nav === "search" && <SearchView lang={lang} />}
+              {nav === "search" && (
+                <SearchView
+                  lang={lang}
+                  tasks={tasks}
+                  onOpenTask={(id) => {
+                    setNav("tasks");
+                    setActiveId(id);
+                    setView("thread");
+                  }}
+                />
+              )}
               {nav === "evidence" && <EvidenceView lang={lang} />}
               {nav === "fleet" && <FleetMonitor lang={lang} />}
               {nav === "shield" && <ShieldView lang={lang} />}

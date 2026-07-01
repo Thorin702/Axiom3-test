@@ -565,6 +565,7 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   font-family: var(--ax-sans); font-size: 12.5px; color: var(--ax-ink-soft);
   transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease; }
 .ax-chip:hover { border-color: var(--ax-ink-faint); color: var(--ax-ink); background: var(--ax-surface-2); }
+.ax-chip.is-on { border-color: var(--ax-accent); color: var(--ax-accent); background: var(--ax-accent-soft); }
 .ax-chip__d { color: var(--ax-ink-faint); }
 
 /* pinned tools group (kept out of the recents scroll) */
