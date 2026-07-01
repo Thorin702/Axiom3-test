@@ -22,6 +22,7 @@ import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { ActivityRail } from "./components/ActivityRail";
 import { Splash } from "./components/Splash";
 import { StatusBar } from "./components/StatusBar";
+import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
@@ -143,6 +144,7 @@ function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(localStorage.getItem("axiom3.rail") === "1");
   const [booting, setBooting] = useState(true);
+  const [dropping, setDropping] = useState(false);
 
   useEffect(() => {
     applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
@@ -173,6 +175,31 @@ function App() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Drag a document anywhere onto the window → import it into the composer (#6).
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    let alive = true;
+    import("@tauri-apps/api/webview").then(({ getCurrentWebview }) => {
+      getCurrentWebview()
+        .onDragDropEvent((e) => {
+          const ty = e.payload.type;
+          if (ty === "enter" || ty === "over") setDropping(true);
+          else if (ty === "leave") setDropping(false);
+          else if (ty === "drop") {
+            setDropping(false);
+            const p = (e.payload as { paths?: string[] }).paths?.[0];
+            if (p) importDropped(p);
+          }
+        })
+        .then((f) => (alive ? (un = f) : f()));
+    });
+    return () => {
+      alive = false;
+      if (un) un();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -276,6 +303,19 @@ function App() {
           `${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`
         );
       }
+    }
+  }
+
+  // Import a file dropped onto the window: extract text, open the /校对 composer with it.
+  async function importDropped(path: string) {
+    const text = await run(() => invoke<string>("import_document", { path }));
+    if (text !== undefined) {
+      setNav("tasks");
+      setActiveId(null);
+      setView("home");
+      setCmd("check_draft");
+      setDraft(text);
+      note(`${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`);
     }
   }
 
@@ -646,6 +686,15 @@ function App() {
       {paletteOpen && (
         <CommandPalette lang={lang} items={paletteItems} onPick={onPalettePick} onClose={() => setPaletteOpen(false)} />
       )}
+      {dropping && (
+        <div className="ax-dropzone">
+          <div className="ax-dropzone__box">
+            <Upload size={28} aria-hidden />
+            <p className="ax-dropzone__t">{lang === "zh" ? "拖放以导入文档" : "Drop to import a document"}</p>
+            <p className="ax-hint">PDF · DOCX · TXT · Markdown</p>
+          </div>
+        </div>
+      )}
       <div className={`ax-app ${railOpen ? "has-rail" : ""}`}>
       <aside className="ax-sidebar">
         <div className="ax-brand" style={{ fontSize: 19 }}>Axiom3</div>
@@ -739,6 +788,7 @@ function App() {
       </aside>
 
       <main className="ax-main">
+        <AppBanner lang={lang} error={error} onDismiss={() => setError("")} />
         <header className="ax-topbar">
           <div className="ax-crumb">
             {nav === "tasks" && view === "thread" && activeTask ? (
@@ -797,7 +847,7 @@ function App() {
         </header>
 
         <div className="ax-content">
-          {error && <p className="ax-error">⚠ {error}</p>}
+
 
           {nav !== "tasks" ? (
             <div className="ax-canvas">

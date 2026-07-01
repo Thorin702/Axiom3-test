@@ -29,6 +29,8 @@ pub fn run() {
                 let _ = w.set_focus();
             }
         }));
+        // Restore window geometry (size / position / maximized) across launches.
+        builder = builder.plugin(tauri_plugin_window_state::Builder::default().build());
     }
 
     builder

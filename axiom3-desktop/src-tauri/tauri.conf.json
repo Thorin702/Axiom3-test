@@ -12,9 +12,13 @@
   "app": {
     "windows": [
       {
-        "title": "axiom3-desktop",
-        "width": 800,
-        "height": 600
+        "title": "Axiom3",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 920,
+        "minHeight": 600,
+        "resizable": true,
+        "center": true
       }
     ],
     "security": {

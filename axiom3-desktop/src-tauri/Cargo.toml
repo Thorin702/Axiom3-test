@@ -43,6 +43,8 @@ axiom-ingest = { path = "../../crates/axiom-ingest" }
 # DB-key creation for the same project (see axiom-secrets::get_or_create_db_key).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
+# Restore window size/position/maximized across launches (feature-list #2).
+tauri-plugin-window-state = "2"
 
 [dev-dependencies]
 tempfile = "3"
