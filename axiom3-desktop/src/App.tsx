@@ -26,8 +26,12 @@ import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
-  Command, Bell, PanelRight, FolderOpen, Quote, type LucideIcon,
+  Command, Bell, PanelRight, FolderOpen, Quote, RotateCcw, type LucideIcon,
 } from "lucide-react";
+
+// Set during the tasks initializer (first render): how many persisted tasks were left
+// "running" when the app last closed — i.e. interrupted by an abnormal exit (#9).
+let bootInterrupted = 0;
 
 
 // The platform's task capabilities — typed after "/" in the composer (like Claude).
@@ -126,11 +130,13 @@ function App() {
     // closed can't still be running, so normalize it to cancelled on load.
     try {
       const raw: Task[] = JSON.parse(localStorage.getItem("axiom3.tasks") || "[]");
+      bootInterrupted = raw.filter((tk) => tk.status === "running").length;
       return raw.map((tk) => (tk.status === "running" ? { ...tk, status: "cancelled" } : tk));
     } catch {
       return [];
     }
   });
+  const [interrupted, setInterrupted] = useState(bootInterrupted);
   const [view, setView] = useState<"home" | "thread">("home");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [cmd, setCmd] = useState<string | null>(null);
@@ -198,6 +204,28 @@ function App() {
     return () => {
       alive = false;
       if (un) un();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Native macOS menu → app actions (#42).
+  useEffect(() => {
+    const un = listen<string>("menu", (e) => {
+      const a = e.payload;
+      if (a === "new-task") newTask();
+      else if (a === "new-workflow") {
+        newTask();
+        setCmd("workflow");
+      } else if (a === "settings") setSettingsOpen(true);
+      else if (a === "toggle-rail")
+        setRailOpen((o) => {
+          const n = !o;
+          localStorage.setItem("axiom3.rail", n ? "1" : "0");
+          return n;
+        });
+    });
+    return () => {
+      un.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -789,6 +817,21 @@ function App() {
 
       <main className="ax-main">
         <AppBanner lang={lang} error={error} onDismiss={() => setError("")} />
+        {interrupted > 0 && (
+          <div className="ax-banners">
+            <div className="ax-banner ax-banner--warn">
+              <RotateCcw size={14} aria-hidden />
+              <span className="ax-banner__msg">
+                {lang === "zh"
+                  ? `上次有 ${interrupted} 个任务被中断,已保留在任务历史中(标记为已取消)。`
+                  : `${interrupted} task(s) were interrupted last session — kept in your history (marked cancelled).`}
+              </span>
+              <button className="ax-iconbtn" onClick={() => setInterrupted(0)} title={lang === "zh" ? "知道了" : "Dismiss"} aria-label="dismiss">
+                <X size={13} aria-hidden />
+              </button>
+            </div>
+          </div>
+        )}
         <header className="ax-topbar">
           <div className="ax-crumb">
             {nav === "tasks" && view === "thread" && activeTask ? (
