@@ -1017,11 +1017,21 @@ function App() {
               )}
               {nav === "evidence" && <EvidenceView lang={lang} tasks={tasks} />}
               {nav === "fleet" && <FleetMonitor lang={lang} />}
-              {nav === "shield" && <ShieldView lang={lang} />}
+              {nav === "shield" && <ShieldView lang={lang} tasks={tasks} />}
               {nav === "integrity" && <IntegrityView lang={lang} />}
               {nav === "provenance" && <ProvenanceView lang={lang} />}
               {nav === "metrics" && <MetricsView lang={lang} />}
-              {nav === "notifications" && <NotificationsView lang={lang} />}
+              {nav === "notifications" && (
+                <NotificationsView
+                  lang={lang}
+                  tasks={tasks}
+                  onOpen={(id) => {
+                    setNav("tasks");
+                    setActiveId(id);
+                    setView("thread");
+                  }}
+                />
+              )}
             </div>
           ) : view === "home" ? (
             <div className="ax-home">
