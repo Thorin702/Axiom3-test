@@ -315,6 +315,15 @@ impl Workbench {
         Ok(self.durable.verify_chain()?)
     }
 
+    /// The full append-only audit trail (chain of custody), oldest → newest.
+    pub fn replay_events(&self) -> anyhow::Result<Vec<EventInfo>> {
+        let events = self.durable.replay()?;
+        Ok(events
+            .into_iter()
+            .map(|e| EventInfo { seq: e.seq, ts: e.ts, actor: e.actor, op: e.op, entry_hash: e.entry_hash })
+            .collect())
+    }
+
     /// Run the deterministic verification engine over a draft and PERSIST the
     /// result: one `draft.checked` event anchors a batch of immutable claims +
     /// verdicts in the encrypted store. Returns the ledger for the UI.
@@ -903,6 +912,23 @@ pub async fn verify_chain(state: tauri::State<'_, AppState>) -> Result<bool, Str
     tauri::async_runtime::spawn_blocking(move || wb.verify_chain().map_err(|e| e.to_string()))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// The open project's append-only audit trail (chain of custody), most-recent first.
+/// Powers the Provenance timeline. `limit` caps how many are returned.
+#[tauri::command]
+pub async fn list_events(state: tauri::State<'_, AppState>, limit: Option<usize>) -> Result<Vec<EventInfo>, String> {
+    let wb = state.get()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut events = wb.replay_events().map_err(|e| e.to_string())?;
+        events.reverse();
+        if let Some(n) = limit {
+            events.truncate(n);
+        }
+        Ok(events)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

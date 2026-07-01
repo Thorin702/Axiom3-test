@@ -85,6 +85,7 @@ pub fn run() {
             workbench::project_status,
             workbench::append_event,
             workbench::verify_chain,
+            workbench::list_events,
             workbench::check_draft,
             workbench::cancel_check,
             workbench::run_workflow,
