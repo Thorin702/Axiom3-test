@@ -195,6 +195,15 @@ function App() {
     }
   }
 
+  // Remove a task from the history (localStorage persists via the effect).
+  function removeTask(id: string) {
+    setTasks((ts) => ts.filter((tk) => tk.id !== id));
+    if (activeId === id) {
+      setActiveId(null);
+      setView("home");
+    }
+  }
+
   // Start a fresh task: clear the composer and show the home greeting.
   function newTask() {
     setNav("tasks");
@@ -624,21 +633,33 @@ function App() {
                 <div key={g.key}>
                   <p className="ax-nav__label">{lang === "zh" ? g.zh : g.en}</p>
                   {items.map((tk) => (
-                    <button
+                    <div
                       key={tk.id}
                       className={`ax-recent ${nav === "tasks" && activeId === tk.id ? "is-active" : ""}`}
-                      title={`${tk.title} · ${t(lang, `st_${tk.status}`)}`}
-                      onClick={() => {
-                        setNav("tasks");
-                        setActiveId(tk.id);
-                        setView("thread");
-                      }}
                     >
-                      <span className="ax-recent__title">
-                        <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
-                        <b>{tk.title}</b>
-                      </span>
-                    </button>
+                      <button
+                        className="ax-recent__main"
+                        title={`${tk.title} · ${t(lang, `st_${tk.status}`)}`}
+                        onClick={() => {
+                          setNav("tasks");
+                          setActiveId(tk.id);
+                          setView("thread");
+                        }}
+                      >
+                        <span className="ax-recent__title">
+                          <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
+                          <b>{tk.title}</b>
+                        </span>
+                      </button>
+                      <button
+                        className="ax-recent__del"
+                        title={lang === "zh" ? "删除任务" : "Delete task"}
+                        aria-label={lang === "zh" ? "删除任务" : "Delete task"}
+                        onClick={() => removeTask(tk.id)}
+                      >
+                        <X size={13} aria-hidden />
+                      </button>
+                    </div>
                   ))}
                 </div>
               );

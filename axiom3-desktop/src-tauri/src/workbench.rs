@@ -1512,8 +1512,11 @@ pub async fn run_workflow(
         return Err("empty goal".into());
     }
     let provider = provider.unwrap_or_else(|| "deepseek".to_string());
-    if Provider::parse(&provider).is_none() {
-        return Err(format!("unknown provider: {provider}"));
+    let pp = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
+    if std::env::var(pp.env_var()).is_err() {
+        return Err(format!(
+            "{provider} 密钥未连接 — 请在「设置 → 模型与提供方」中填入密钥后重试。 · {provider} key not connected — add it in Settings → Models & providers."
+        ));
     }
     let model = workflow_model_for(&provider);
     let cancel = Cancel::new();
@@ -1566,8 +1569,11 @@ pub async fn coding_run(
         return Err("empty goal".into());
     }
     let provider = provider.unwrap_or_else(|| "deepseek".to_string());
-    if Provider::parse(&provider).is_none() {
-        return Err(format!("unknown provider: {provider}"));
+    let pp = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
+    if std::env::var(pp.env_var()).is_err() {
+        return Err(format!(
+            "{provider} 密钥未连接 — 请在「设置 → 模型与提供方」中填入密钥后重试。 · {provider} key not connected — add it in Settings → Models & providers."
+        ));
     }
     let model_id = workflow_model_for(&provider);
     // Fail-closed: validate + canonicalize the workspace before anything runs. Write +

@@ -69,6 +69,7 @@ export type AgentView = {
   role: string;
   model: string;
   vendor: string;
+  phase: string;
   status: "running" | "ok" | "err" | "cancelled";
   tokensIn: number;
   tokensOut: number;

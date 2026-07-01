@@ -42,7 +42,7 @@ function applyEvent(runs: RunView[], ev: RunEvent): RunView[] {
     case "phase_changed": r.phase = ev.phase; break;
     case "agent_spawned":
       if (!r.agents.some((a) => a.id === ev.agent_id))
-        r.agents.push({ id: ev.agent_id, role: ev.role, model: ev.model, vendor: ev.vendor, status: "running", tokensIn: 0, tokensOut: 0, steps: [] });
+        r.agents.push({ id: ev.agent_id, role: ev.role, model: ev.model, vendor: ev.vendor, phase: ev.phase, status: "running", tokensIn: 0, tokensOut: 0, steps: [] });
       break;
     case "agent_progress":
       r.agents = r.agents.map((a) =>
@@ -119,13 +119,12 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
             const dur = fmtDur((r.finishedMs ?? Date.now()) - r.startedMs);
             const statusLabel = r.status === "running" ? s.running : r.status === "done" ? s.ok : r.status === "failed" ? s.failed : s.cancelled;
             const tokens = r.tokensIn + r.tokensOut;
-            const activePhase = Math.max(0, r.phases.indexOf(r.phase));
+            const nAgents = r.agents.filter((a) => a.phase === "executing").length || r.agents.length;
+            const idx = Math.max(0, r.phases.indexOf(r.phase));
+            const finished = r.status !== "running";
             return (
               <div className="ax-runcard" key={r.id}>
                 <div className="ax-runcard__head">
-                  <button className="ax-runcard__exp" onClick={() => setOpen((o) => ({ ...o, [r.id]: !o[r.id] }))} aria-label="expand">
-                    {open[r.id] ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
-                  </button>
                   <span className={`ax-lamp ${lampOf(r.status)}`} />
                   <span className="ax-runcard__title">{r.title}</span>
                   {r.status === "running" && (
@@ -138,52 +137,63 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                   <span className="ax-badge">/{r.taskKind === "workflow" ? (lang === "zh" ? "工作流" : "workflow") : r.taskKind}</span>
                   <span>{statusLabel}</span>
                   <span>· {dur}</span>
-                  <span>· {r.agents.length}/{r.agentsTotal || r.agents.length} {s.agents}</span>
+                  <span>· {nAgents} {s.agents}</span>
                   {tokens > 0 && <span>· {tokens.toLocaleString()} {s.tok}</span>}
                 </div>
 
                 {r.phases.length > 0 && (
-                  <div className="ax-phases">
-                    {r.phases.map((p, i) => (
-                      <span key={p} className="ax-phase">
-                        <span className={`ax-phase-dot ${i < activePhase || r.status === "done" ? "is-past" : i === activePhase ? "is-now" : ""}`} />
-                        <span className="ax-phase-l">{s[PHASE_LABEL[p] ?? "planning"]}</span>
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {r.agents.length > 0 && (
-                  <div className="ax-agents">
-                    {r.agents.slice(0, 12).map((a) => (
-                      <div className="ax-agent" key={a.id} title={a.summary || a.error || a.role}>
-                        <span className={`ax-lamp ${a.status === "ok" ? "is-green" : a.status === "running" ? "is-amber" : a.status === "err" ? "is-red" : "is-neutral"}`} />
-                        <span className="ax-agent__role">{a.role}</span>
-                        <span className="ax-agent__model">{a.vendor}</span>
-                      </div>
-                    ))}
-                    {r.agents.length > 12 && <div className="ax-agent ax-hint">+{r.agents.length - 12}</div>}
-                  </div>
-                )}
-
-                {open[r.id] && (
-                  <div className="ax-tr">
-                    {r.agents.every((a) => a.steps.length === 0 && !a.summary) ? (
-                      <div className="ax-tr__step ax-hint">{lang === "zh" ? "(暂无步骤)" : "(no steps yet)"}</div>
-                    ) : (
-                      r.agents.map((a) => (
-                        <div className="ax-tr__agent" key={a.id}>
-                          {r.agents.length > 1 && <div className="ax-tr__role">{a.role} · {a.vendor}</div>}
-                          {a.steps.map((st, i) => (
-                            <div className="ax-tr__step" key={i}>{st}</div>
-                          ))}
-                          {a.summary && <div className="ax-tr__sum">{a.summary}</div>}
-                          {a.error && <div className="ax-tr__err">{a.error}</div>}
+                  <div className="ax-phaselist">
+                    {r.phases.map((p, i) => {
+                      const pAgents = r.agents.filter((a) => a.phase === p);
+                      const isPast = finished || i < idx;
+                      const isNow = !finished && i === idx;
+                      const pk = `${r.id}:${p}`;
+                      const canExpand = pAgents.length > 0;
+                      return (
+                        <div className="ax-ph" key={p}>
+                          <button
+                            className="ax-ph__head"
+                            disabled={!canExpand}
+                            onClick={() => canExpand && setOpen((o) => ({ ...o, [pk]: !o[pk] }))}
+                          >
+                            <span className="ax-ph__name">{s[PHASE_LABEL[p] ?? "planning"]}</span>
+                            {canExpand &&
+                              (open[pk] ? <ChevronDown size={12} aria-hidden /> : <ChevronRight size={12} aria-hidden />)}
+                          </button>
+                          <div className="ax-ph__sq">
+                            {pAgents.length > 0 ? (
+                              pAgents.map((a) => (
+                                <span
+                                  key={a.id}
+                                  className={`ax-sq ${a.status === "ok" ? "is-done" : a.status === "running" ? "is-now" : a.status === "err" ? "is-fail" : "is-idle"}`}
+                                  title={a.role}
+                                />
+                              ))
+                            ) : (
+                              <span className={`ax-sq ${isPast ? "is-done" : isNow ? "is-now" : "is-idle"}`} />
+                            )}
+                          </div>
+                          {open[pk] && (
+                            <div className="ax-tr">
+                              {pAgents.map((a) => (
+                                <div className="ax-tr__agent" key={a.id}>
+                                  <div className="ax-tr__role">{a.role} · {a.vendor}</div>
+                                  {a.steps.map((st, k) => (
+                                    <div className="ax-tr__step" key={k}>{st}</div>
+                                  ))}
+                                  {a.summary && <div className="ax-tr__sum">{a.summary}</div>}
+                                  {a.error && <div className="ax-tr__err">{a.error}</div>}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      ))
-                    )}
+                      );
+                    })}
                   </div>
                 )}
+
+                {r.error && <div className="ax-runcard__err">{r.error}</div>}
               </div>
             );
           })
