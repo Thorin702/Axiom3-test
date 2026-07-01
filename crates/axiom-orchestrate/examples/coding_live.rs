@@ -5,6 +5,7 @@
 //!   DEEPSEEK_API_KEY=... cargo run -p axiom-orchestrate --example coding_live
 use axiom_orchestrate::coding::sandbox::{Sandbox, SandboxMode};
 use axiom_orchestrate::coding::{run_coding_agent, CodingBudget, ProviderModel};
+use axiom_orchestrate::Pause;
 use axiom_runtime::supervisor::Cancel;
 
 #[tokio::main]
@@ -29,6 +30,7 @@ async fn main() {
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 90 };
     let budget = CodingBudget { max_steps: 14, per_call_timeout_s: 90, cmd_timeout_s: 30 };
     let cancel = Cancel::new();
+    let pause = Pause::new();
 
     println!("=== coding agent (model={model_id}) on {} ===", dir.display());
     let res = run_coding_agent(
@@ -37,6 +39,7 @@ async fn main() {
         &sb,
         &model,
         &cancel,
+        &pause,
         &budget,
         |step| {
             let obs1: String = step.observation.lines().next().unwrap_or("").chars().take(90).collect();

@@ -79,6 +79,17 @@ const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGr
   { key: "provenance", zh: "溯源", en: "Provenance", icon: GitBranch, group: "trust" },
   { key: "metrics", zh: "概览", en: "Overview", icon: Gauge, group: "overview" },
 ];
+// Model choices offered in the task control bar (the connected provider is DeepSeek).
+// "" = auto (the app's default per provider). deepseek-reasoner emits a real chain-of-thought.
+const MODELS: { id: string; label: string }[] = [
+  { id: "", label: "自动 · Auto" },
+  { id: "deepseek-chat", label: "DeepSeek Chat" },
+  { id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+];
+// Target agent count for /工作流 (0 = let the model decide by goal complexity).
+const AGENT_CHOICES = [0, 2, 4, 6, 8];
+
 function App() {
   const [lang, setLangState] = useState<Lang>(
     (localStorage.getItem("axiom3.lang") as Lang) || "zh"
@@ -101,6 +112,8 @@ function App() {
   const [references, setReferences] = useState("");
   const [codeWs, setCodeWs] = useState<string | null>(null);
   const [codeWritable, setCodeWritable] = useState(false);
+  const [taskModel, setTaskModel] = useState(""); // "" = auto
+  const [wfAgents, setWfAgents] = useState(0); // 0 = auto
   const [tasks, setTasks] = useState<Task[]>(() => {
     // Task history persists like Claude's chat list. A task left "running" when the app
     // closed can't still be running, so normalize it to cancelled on load.
@@ -316,7 +329,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string | null }>(() =>
-      invoke("run_workflow", { goal: g, runid })
+      invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined })
     );
     setTasks((ts) =>
       ts.map((x) =>
@@ -348,7 +361,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs, writable: codeWritable })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs, writable: codeWritable, model: taskModel || undefined })
     );
     setTasks((ts) =>
       ts.map((x) =>
@@ -561,6 +574,16 @@ function App() {
                   <button className="ax-btn ax-btn--primary" onClick={() => runWorkflow(draft)} disabled={busy || !draft.trim()}>
                     {t(lang, "task_run")}
                   </button>
+                  <select className="ax-select" value={wfAgents} onChange={(e) => setWfAgents(Number(e.currentTarget.value))} title={lang === "zh" ? "并行智能体数量" : "parallel agents"}>
+                    {AGENT_CHOICES.map((n) => (
+                      <option key={n} value={n}>{n === 0 ? (lang === "zh" ? "智能体:自动" : "agents: auto") : `${n} ${lang === "zh" ? "智能体" : "agents"}`}</option>
+                    ))}
+                  </select>
+                  <select className="ax-select" value={taskModel} onChange={(e) => setTaskModel(e.currentTarget.value)} title={lang === "zh" ? "模型" : "model"}>
+                    {MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </select>
                 </div>
               </>
             ) : cmd === "code" ? (
@@ -593,6 +616,11 @@ function App() {
                   >
                     {codeWritable ? (lang === "zh" ? "写入 · 构建" : "write · build") : (lang === "zh" ? "只读" : "read-only")}
                   </button>
+                  <select className="ax-select" value={taskModel} onChange={(e) => setTaskModel(e.currentTarget.value)} title={lang === "zh" ? "模型" : "model"}>
+                    {MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </select>
                 </div>
               </>
             ) : (

@@ -232,6 +232,10 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 }
 .ax-textarea { resize: vertical; line-height: 1.6; }
 .ax-input:focus, .ax-textarea:focus { outline: none; border-color: var(--ax-accent); box-shadow: var(--ax-focus); }
+.ax-select { font-family: var(--ax-sans); font-size: 12.5px; color: var(--ax-ink); background: var(--ax-surface);
+  border: 1px solid var(--ax-line); border-radius: var(--ax-radius); padding: 6px 8px; cursor: pointer; }
+.ax-select:hover { border-color: var(--ax-ink-faint); }
+.ax-select:focus { outline: none; border-color: var(--ax-ink-faint); box-shadow: var(--ax-focus); }
 
 .ax-btn { font-family: var(--ax-sans); font-size: 13px; padding: 7px 14px; border-radius: var(--ax-radius);
   border: 0.5px solid var(--ax-line); background: var(--ax-surface); color: var(--ax-ink); cursor: pointer;

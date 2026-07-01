@@ -30,7 +30,7 @@ use axiom_orchestrate::events::{EventSink, RunEvent, RunEventBody, SeqEmitter};
 use axiom_orchestrate::model::Run;
 use axiom_orchestrate::step::ProviderStep;
 use axiom_orchestrate::supervisor::LlmDecomposer;
-use axiom_orchestrate::{orchestrate, OrchestrateOptions};
+use axiom_orchestrate::{orchestrate, OrchestrateOptions, Pause};
 use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
 use axiom_vector::LanceStore;
@@ -673,9 +673,9 @@ pub struct AppState {
     /// SESSION DOI cache: a Crossref result per DOI, so a re-check (or the same DOI in
     /// several claims) isn't re-queried. Cleared on project close/switch.
     doi_cache: Mutex<HashMap<String, DoiStatus>>,
-    /// In-flight orchestration runs, keyed by run id → its cancel handle. Unlike the
-    /// single `cancel` check slot, MANY workflow runs can be live at once.
-    runs: Mutex<HashMap<String, Cancel>>,
+    /// In-flight orchestration runs, keyed by run id → (cancel, pause) handles. Unlike
+    /// the single `cancel` check slot, MANY runs can be live at once.
+    runs: Mutex<HashMap<String, (Cancel, Pause)>>,
 }
 
 impl AppState {
@@ -757,20 +757,30 @@ impl AppState {
     }
     /// Reserve a run id in the registry. `None` if that id is already live. The guard
     /// removes ONLY its own entry on drop (every exit path), so runs can't leak.
-    fn begin_run(&self, run_id: &str, c: Cancel) -> Option<RunGuard<'_>> {
+    fn begin_run(&self, run_id: &str, c: Cancel, p: Pause) -> Option<RunGuard<'_>> {
         let mut runs = self.runs.lock().unwrap_or_else(|p| p.into_inner());
         if runs.contains_key(run_id) {
             return None;
         }
-        runs.insert(run_id.to_string(), c);
+        runs.insert(run_id.to_string(), (c, p));
         Some(RunGuard { state: self, run_id: run_id.to_string() })
     }
     fn clear_run(&self, run_id: &str) {
         self.runs.lock().unwrap_or_else(|p| p.into_inner()).remove(run_id);
     }
     fn cancel_run(&self, run_id: &str) {
-        if let Some(c) = self.runs.lock().unwrap_or_else(|p| p.into_inner()).get(run_id) {
+        if let Some((c, _)) = self.runs.lock().unwrap_or_else(|p| p.into_inner()).get(run_id) {
             c.cancel();
+        }
+    }
+    fn pause_run(&self, run_id: &str) {
+        if let Some((_, p)) = self.runs.lock().unwrap_or_else(|g| g.into_inner()).get(run_id) {
+            p.pause();
+        }
+    }
+    fn resume_run(&self, run_id: &str) {
+        if let Some((_, p)) = self.runs.lock().unwrap_or_else(|g| g.into_inner()).get(run_id) {
+            p.resume();
         }
     }
 }
@@ -1507,6 +1517,8 @@ pub async fn run_workflow(
     goal: String,
     runid: String,
     provider: Option<String>,
+    model: Option<String>,
+    agents: Option<usize>,
 ) -> Result<Run, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
@@ -1518,20 +1530,22 @@ pub async fn run_workflow(
             "{provider} 密钥未连接 — 请在「设置 → 模型与提供方」中填入密钥后重试。 · {provider} key not connected — add it in Settings → Models & providers."
         ));
     }
-    let model = workflow_model_for(&provider);
+    let model_id = model.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| workflow_model_for(&provider));
+    let target = agents.filter(|n| *n > 0); // user's target agent count (None = model decides)
+    let concurrency = target.map(|n| n.min(8)).unwrap_or(4);
     let cancel = Cancel::new();
     // Reserve the run slot (rejects a duplicate run id) for the whole run lifetime.
     let _guard = state
-        .begin_run(&runid, cancel.clone())
+        .begin_run(&runid, cancel.clone(), Pause::new())
         .ok_or("a run with this id is already in flight")?;
     let sink: Arc<dyn EventSink> = Arc::new(TauriSink { app: app.clone() });
     let opts = OrchestrateOptions {
         run_id: runid.clone(),
         provider: provider.clone(),
-        model: model.clone(),
-        concurrency: 4,
+        model: model_id.clone(),
+        concurrency,
     };
-    let decomposer = LlmDecomposer { provider: provider.clone(), model: model.clone() };
+    let decomposer = LlmDecomposer { provider: provider.clone(), model: model_id.clone(), target };
     let run = orchestrate(&goal, &opts, &decomposer, &ProviderStep, sink, &cancel).await;
     Ok(run)
 }
@@ -1541,6 +1555,17 @@ pub async fn run_workflow(
 #[tauri::command]
 pub fn cancel_run(state: tauri::State<'_, AppState>, runid: String) {
     state.cancel_run(&runid);
+}
+
+/// Pause a run (coding: waits between turns). Resume with `resume_run`.
+#[tauri::command]
+pub fn pause_run(state: tauri::State<'_, AppState>, runid: String) {
+    state.pause_run(&runid);
+}
+
+#[tauri::command]
+pub fn resume_run(state: tauri::State<'_, AppState>, runid: String) {
+    state.resume_run(&runid);
 }
 
 #[derive(Serialize)]
@@ -1564,6 +1589,7 @@ pub async fn coding_run(
     workspace: String,
     writable: Option<bool>,
     provider: Option<String>,
+    model: Option<String>,
 ) -> Result<CodingRunResult, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
@@ -1575,14 +1601,15 @@ pub async fn coding_run(
             "{provider} 密钥未连接 — 请在「设置 → 模型与提供方」中填入密钥后重试。 · {provider} key not connected — add it in Settings → Models & providers."
         ));
     }
-    let model_id = workflow_model_for(&provider);
+    let model_id = model.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| workflow_model_for(&provider));
     // Fail-closed: validate + canonicalize the workspace before anything runs. Write +
     // build/test are enabled ONLY when the user explicitly opted in (writable).
     let mode = if writable.unwrap_or(false) { SandboxMode::ReadWrite } else { SandboxMode::ReadOnly };
     let sandbox = Sandbox::with_mode(&workspace, mode).map_err(|e| e.to_string())?;
     let cancel = Cancel::new();
+    let pause = Pause::new();
     let _guard = state
-        .begin_run(&runid, cancel.clone())
+        .begin_run(&runid, cancel.clone(), pause.clone())
         .ok_or("a run with this id is already in flight")?;
 
     let sink: Arc<dyn EventSink> = Arc::new(TauriSink { app: app.clone() });
@@ -1605,7 +1632,7 @@ pub async fn coding_run(
 
     let model = ProviderModel { provider: provider.clone(), model: model_id, timeout_s: 90 };
     let budget = CodingBudget::default();
-    let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &budget, |step| {
+    let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &pause, &budget, |step| {
         let think: String = step.reasoning.chars().take(600).collect();
         let note = if think.is_empty() {
             format!("{} {}", step.tool, step.detail)

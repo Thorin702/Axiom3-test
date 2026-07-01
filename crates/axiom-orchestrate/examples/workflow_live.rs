@@ -39,7 +39,8 @@ async fn main() {
     };
     let model = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
     let opts = OrchestrateOptions { run_id: "run-live".into(), provider: "deepseek".into(), model: model.clone(), concurrency: 4 };
-    let dec = LlmDecomposer { provider: "deepseek".into(), model: model.clone() };
+    let target = std::env::var("AXIOM_AGENTS").ok().and_then(|s| s.parse().ok());
+    let dec = LlmDecomposer { provider: "deepseek".into(), model: model.clone(), target };
     let cancel = Cancel::new();
 
     println!("=== workflow (model={model})\n=== goal: {goal}\n");

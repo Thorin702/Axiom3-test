@@ -10,11 +10,14 @@
 //! RED LINE: this crate produces FREE-FORM work and must NOT depend on axiom-core (the
 //! verdict types). The truth-checking tier is a separate engine; this is orchestration.
 pub mod coding;
+pub mod control;
 pub mod events;
 pub mod model;
 pub mod step;
 pub mod supervisor;
 pub mod synthesize;
+
+pub use control::Pause;
 
 use events::{now_ms, EventSink, RunEventBody, SeqEmitter};
 use model::{Kind, Plan, Run, RunStatus, StepState, StepStatus};

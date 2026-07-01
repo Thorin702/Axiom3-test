@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { X, Boxes, Square, ChevronRight, ChevronDown } from "lucide-react";
+import { X, Boxes, Square, ChevronRight, ChevronDown, Pause, Play } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { RunEvent, RunView } from "../lib/types";
 
@@ -83,6 +83,7 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
   const s = S[lang];
   const [runs, setRuns] = useState<RunView[]>([]);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [paused, setPaused] = useState<Record<string, boolean>>({});
   const [, setTick] = useState(0);
 
   useEffect(() => {
@@ -128,9 +129,25 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                   <span className={`ax-lamp ${lampOf(r.status)}`} />
                   <span className="ax-runcard__title">{r.title}</span>
                   {r.status === "running" && (
-                    <button className="ax-iconbtn" onClick={() => invoke("cancel_run", { runid: r.id }).catch(() => {})} title={s.cancel} aria-label={s.cancel}>
-                      <Square size={12} aria-hidden />
-                    </button>
+                    <>
+                      {r.taskKind === "coding" && (
+                        <button
+                          className="ax-iconbtn"
+                          onClick={() => {
+                            const p = !paused[r.id];
+                            invoke(p ? "pause_run" : "resume_run", { runid: r.id }).catch(() => {});
+                            setPaused((o) => ({ ...o, [r.id]: p }));
+                          }}
+                          title={paused[r.id] ? (lang === "zh" ? "继续" : "Resume") : lang === "zh" ? "暂停" : "Pause"}
+                          aria-label={paused[r.id] ? "resume" : "pause"}
+                        >
+                          {paused[r.id] ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
+                        </button>
+                      )}
+                      <button className="ax-iconbtn" onClick={() => invoke("cancel_run", { runid: r.id }).catch(() => {})} title={s.cancel} aria-label={s.cancel}>
+                        <Square size={12} aria-hidden />
+                      </button>
+                    </>
                   )}
                 </div>
                 <div className="ax-runcard__meta">

@@ -7,6 +7,7 @@
 //! commands shell-free against a mode-gated allowlist.
 pub mod sandbox;
 
+use crate::control::Pause;
 use axiom_providers::message::{ContentBlock, Message, Request};
 use axiom_runtime::supervisor::{is_retryable_error, retry_async, Cancel, RetryPolicy};
 use axiom_runtime::{complete_with, Provider};
@@ -127,6 +128,7 @@ pub async fn run_coding_agent(
     sandbox: &Sandbox,
     model: &impl CodingModel,
     cancel: &Cancel,
+    pause: &Pause,
     budget: &CodingBudget,
     mut on_step: impl FnMut(CodingStepRec),
 ) -> CodingResult {
@@ -135,6 +137,10 @@ pub async fn run_coding_agent(
     let mut ran_command = false; // did the agent run a build/test command this run?
     let mut nudged = false; // pushed back once for finishing without verifying
     for n in 1..=budget.max_steps {
+        // Cooperative pause: wait here between turns while paused (cancel still wins).
+        while pause.is_paused() && !cancel.is_cancelled() {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
         if cancel.is_cancelled() {
             return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1 };
         }
@@ -320,7 +326,7 @@ mod tests {
             ]),
         };
         let mut steps = 0;
-        let res = run_coding_agent("review main.rs", &sb, &model, &Cancel::new(), &CodingBudget::default(), |_| steps += 1).await;
+        let res = run_coding_agent("review main.rs", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), |_| steps += 1).await;
         assert_eq!(res.status, "done");
         assert!(res.summary.contains("prints hi"));
         assert_eq!(steps, 2); // list_dir + read_file (final isn't a tool step)
@@ -338,7 +344,7 @@ mod tests {
                 r#"{"final":"created hello.txt"}"#.into(),
             ]),
         };
-        let res = run_coding_agent("make hello.txt", &sb, &model, &Cancel::new(), &CodingBudget::default(), |_| {}).await;
+        let res = run_coding_agent("make hello.txt", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), |_| {}).await;
         assert_eq!(res.status, "done");
         assert_eq!(std::fs::read_to_string(root.join("hello.txt")).unwrap(), "hi there");
         let _ = std::fs::remove_dir_all(&root);
@@ -354,7 +360,7 @@ mod tests {
                 r#"{"final":"could not write"}"#.into(),
             ]),
         };
-        let res = run_coding_agent("try to write", &sb, &model, &Cancel::new(), &CodingBudget::default(), |_| {}).await;
+        let res = run_coding_agent("try to write", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), |_| {}).await;
         assert_eq!(res.status, "done");
         assert!(!root.join("x.txt").exists(), "read-only sandbox must not create files");
         let _ = std::fs::remove_dir_all(&root);
@@ -367,7 +373,7 @@ mod tests {
         let model = ScriptModel { replies: Mutex::new(vec![r#"{"tool":"list_dir","path":"."}"#.into()]) };
         let cancel = Cancel::new();
         cancel.cancel();
-        let res = run_coding_agent("x", &sb, &model, &cancel, &CodingBudget::default(), |_| {}).await;
+        let res = run_coding_agent("x", &sb, &model, &cancel, &Pause::new(), &CodingBudget::default(), |_| {}).await;
         assert_eq!(res.status, "cancelled");
         let _ = std::fs::remove_dir_all(&root);
     }

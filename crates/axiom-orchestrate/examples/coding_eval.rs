@@ -5,6 +5,7 @@
 //!   DEEPSEEK_API_KEY=... cargo run -p axiom-orchestrate --example coding_eval
 use axiom_orchestrate::coding::sandbox::{Sandbox, SandboxMode};
 use axiom_orchestrate::coding::{run_coding_agent, CodingBudget, ProviderModel};
+use axiom_orchestrate::Pause;
 use axiom_runtime::supervisor::Cancel;
 
 struct Task {
@@ -70,7 +71,7 @@ async fn main() {
 
         let sb = Sandbox::with_mode(&dir, SandboxMode::ReadWrite).unwrap();
         let goal = format!("{} Then run `python3 check.py` and iterate until it prints PASS.", t.goal);
-        let res = run_coding_agent(&goal, &sb, &model, &Cancel::new(), &budget, |_| {}).await;
+        let res = run_coding_agent(&goal, &sb, &model, &Cancel::new(), &Pause::new(), &budget, |_| {}).await;
 
         let out = std::process::Command::new("python3").arg("check.py").current_dir(&dir).output();
         let ok = out
