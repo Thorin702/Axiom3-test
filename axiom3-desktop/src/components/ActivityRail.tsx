@@ -14,11 +14,13 @@ const S = {
     title: "活动", none: "暂无运行", noneSub: "用 /工作流 启动一个多智能体任务,这里会实时显示。",
     agents: "智能体", planning: "规划", executing: "执行", verifying: "审查", synthesizing: "汇总", done: "完成",
     running: "运行中", ok: "完成", failed: "失败", cancelled: "已取消", cancel: "取消", tok: "令牌",
+    lRun: "运行中", lFin: "已结束", lErr: "出错/暂停",
   },
   en: {
     title: "Activity", none: "No runs yet", noneSub: "Start a multi-agent task with /workflow — it streams here live.",
     agents: "agents", planning: "Planning", executing: "Executing", verifying: "Reviewing", synthesizing: "Synthesizing", done: "Done",
     running: "running", ok: "done", failed: "failed", cancelled: "cancelled", cancel: "Cancel", tok: "tok",
+    lRun: "running", lFin: "finished", lErr: "error/paused",
   },
 };
 
@@ -119,7 +121,13 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
             <p className="ax-rail__empty-s">{s.noneSub}</p>
           </div>
         ) : (
-          runs.map((r) => {
+          <>
+          <div className="ax-rail__legend">
+            <span><span className="ax-adot is-run" /> {s.lRun}</span>
+            <span><span className="ax-adot is-fin" /> {s.lFin}</span>
+            <span><span className="ax-adot is-err" /> {s.lErr}</span>
+          </div>
+          {runs.map((r) => {
             const dur = fmtDur((r.finishedMs ?? Date.now()) - r.startedMs);
             const statusLabel = r.status === "running" ? s.running : r.status === "done" ? s.ok : r.status === "failed" ? s.failed : s.cancelled;
             const tokens = r.tokensIn + r.tokensOut;
@@ -202,12 +210,12 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                                     {pAgents.map((a) => (
                                       <span
                                         key={a.id}
-                                        className={`ax-sq ${a.status === "ok" ? "is-done" : a.status === "running" ? "is-now" : a.status === "err" ? "is-fail" : "is-idle"}`}
-                                        title={a.role}
+                                        className={`ax-adot ${a.status === "running" ? "is-run" : a.status === "ok" ? "is-fin" : a.status === "err" || a.status === "cancelled" ? "is-err" : "is-fin"}`}
+                                        title={`${a.role} · ${a.model}`}
                                       />
                                     ))}
                                     {Array.from({ length: queuePad }).map((_, k) => (
-                                      <span key={`q${k}`} className="ax-sq is-idle" title={lang === "zh" ? "排队中" : "queued"} />
+                                      <span key={`q${k}`} className="ax-adot is-queue" title={lang === "zh" ? "排队中" : "queued"} />
                                     ))}
                                   </>
                                 );
@@ -217,16 +225,24 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                           </div>
                           {open[pk] && (
                             <div className="ax-tr">
-                              {pAgents.map((a) => (
-                                <div className="ax-tr__agent" key={a.id}>
-                                  <div className="ax-tr__role">{a.role} · {a.vendor}</div>
-                                  {a.steps.map((st, k) => (
-                                    <div className="ax-tr__step" key={k}>{st}</div>
-                                  ))}
-                                  {a.summary && <div className="ax-tr__sum">{a.summary}</div>}
-                                  {a.error && <div className="ax-tr__err">{a.error}</div>}
-                                </div>
-                              ))}
+                              {pAgents.map((a) => {
+                                const tok = a.tokensIn + a.tokensOut;
+                                return (
+                                  <div className="ax-tr__agent" key={a.id}>
+                                    <div className="ax-tr__role">
+                                      <span className={`ax-adot ${a.status === "running" ? "is-run" : a.status === "ok" ? "is-fin" : "is-err"}`} />
+                                      <span className="ax-tr__rolename">{a.role}</span>
+                                      <span className="ax-tr__model">{a.model}</span>
+                                      <span className="ax-tr__tok">{tok > 0 ? `${tok.toLocaleString()} ${s.tok}` : "—"}</span>
+                                    </div>
+                                    {a.steps.map((st, k) => (
+                                      <div className="ax-tr__step" key={k}>{st}</div>
+                                    ))}
+                                    {a.summary && <div className="ax-tr__sum">{a.summary}</div>}
+                                    {a.error && <div className="ax-tr__err">{a.error}</div>}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -238,7 +254,8 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                 {r.error && <div className="ax-runcard__err">{r.error}</div>}
               </div>
             );
-          })
+          })}
+          </>
         )}
       </div>
     </aside>

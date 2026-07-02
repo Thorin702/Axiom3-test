@@ -750,6 +750,7 @@ function App() {
     const at = tasks.find((x) => x.id === activeId);
     if (at?.type === "workflow") runWorkflow(text);
     else if (at?.type === "code" && codeWs) runCoding(text);
+    else if (deepSearch) runWorkflow(text); // deep-search mode: run the task as AB-MCTS
     else runCheckDraft(text);
     return true;
   }
@@ -803,6 +804,22 @@ function App() {
                 aria-label={t(lang, "task_run")}
               >
                 <ArrowUp size={16} aria-hidden />
+              </button>
+            </div>
+            {/* Deep-search mode: sits below the send button so it's discoverable. ON → the
+                typed task runs as a Multi-LLM AB-MCTS search (adaptive explore/refine across
+                models); OFF → the usual check/answer. */}
+            <div className="ax-toolrow" style={{ justifyContent: "flex-start", marginTop: 2 }}>
+              <button
+                className={`ax-toggle ${deepSearch ? "on" : ""}`}
+                onClick={() => setDeepSearch(!deepSearch)}
+                title={
+                  deepSearch
+                    ? (lang === "zh" ? "深度搜索:把任务交给多智能体自适应搜索(AB-MCTS,跨模型扩展/精修择优)" : "Deep search: run the task as an adaptive multi-agent search (AB-MCTS across models)")
+                    : (lang === "zh" ? "标准模式:直接校对/回答。开启深度搜索让多智能体自适应择优。" : "Standard mode. Turn on deep search for an adaptive multi-agent search.")
+                }
+              >
+                <Boxes size={13} aria-hidden /> {deepSearch ? (lang === "zh" ? "深度搜索 · 开" : "deep search · on") : (lang === "zh" ? "深度搜索" : "deep search")}
               </button>
             </div>
             {slashOpen && slashMatches.length > 0 && (
@@ -1187,13 +1204,18 @@ function App() {
           ) : view === "home" ? (
             <div className="ax-home">
               <h1 className="ax-home__greeting">{greeting()}</h1>
+              <p className="ax-home__sub">
+                {lang === "zh"
+                  ? "输入一个任务,或从下面选择一种能力。开启「深度搜索」让多智能体自适应择优。"
+                  : "Type a task, or pick a capability below. Turn on deep search for an adaptive multi-agent run."}
+              </p>
               {composerBlock()}
               <div className="ax-chips">
                 {["check_draft", "verify", "research", "write", "ppt", "code"].map((k) => {
                   const c = COMMANDS.find((x) => x.key === k);
                   if (!c) return null;
                   return (
-                    <button key={k} className="ax-chip" onClick={() => { setCmd(c.key); setSlash(""); }}>
+                    <button key={k} className={`ax-chip ${c.active ? "" : "is-soon"}`} onClick={() => { setCmd(c.key); setSlash(""); }}>
                       /{lang === "zh" ? c.zh : c.en}
                       {!c.active && <span className="ax-chip__d"> · {t(lang, "coming_soon")}</span>}
                     </button>
