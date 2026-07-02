@@ -96,6 +96,9 @@ struct Arm {
 }
 impl Arm {
     fn update(&mut self, reward: f64) {
+        if !reward.is_finite() {
+            return; // never let a non-finite reward poison sum (defense-in-depth)
+        }
         self.sum += reward.clamp(0.0, 1.0);
         self.n += 1.0;
     }
@@ -201,11 +204,12 @@ pub async fn search_core<G: Generator, S: Scorer>(
         gen_arm: Arm::default(),
     }];
     let mut model_arms: Vec<Arm> = vec![Arm::default(); arms.len()];
+    let mut arm_attempts: Vec<usize> = vec![0; arms.len()];
     let mut rng = StdRng::seed_from_u64(cfg.seed);
 
     let mut ok = 0usize;
     let mut err = 0usize;
-    for i in 0..budget {
+    for _ in 0..budget {
         if cancel.is_cancelled() {
             break;
         }
@@ -213,14 +217,19 @@ pub async fn search_core<G: Generator, S: Scorer>(
         let sel = select(&nodes, max_depth, &mut rng);
 
         // ── which model to sample from (multi-LLM axis) ──
-        // Warm-start: try each model at least once before Thompson-sampling. Without this a
-        // model that scores high on its first draw dominates the posterior and the others
-        // are never sampled — defeating the "collective intelligence" of multiple models.
-        let arm_idx = if i < arms.len() { i } else { pick_arm(&model_arms, &mut rng) };
+        // Warm-start on ATTEMPTS (not the loop index): try any un-attempted model first, so
+        // every model gets one real try even if an earlier warm-start generation failed —
+        // then Thompson-sample. Keying on attempts also means a permanently-failing arm is
+        // tried once and then dropped, rather than capturing the whole budget.
+        let arm_idx = match arm_attempts.iter().position(|&a| a == 0) {
+            Some(k) => k,
+            None => pick_arm(&model_arms, &mut rng),
+        };
+        arm_attempts[arm_idx] += 1;
         let arm = &arms[arm_idx];
         let refine_of = nodes[sel].candidate.clone();
         let going_deeper = refine_of.is_some();
-        let node_id = format!("{}-n{}", opts.run_id, i + 1);
+        let node_id = format!("{}-n{}", opts.run_id, ok + err + 1); // 1-based attempt number
         em.emit(RunEventBody::AgentSpawned {
             agent_id: node_id.clone(),
             role: format!("{} · {}", if going_deeper { "refine" } else { "explore" }, arm.model),
@@ -237,11 +246,18 @@ pub async fn search_core<G: Generator, S: Scorer>(
                 err += 1;
                 let msg = gen.err().map(|e| e.to_string()).unwrap_or_else(|| "empty candidate".into());
                 em.emit(RunEventBody::AgentFinished { agent_id: node_id, outcome: "err".into(), tokens_in: 0, tokens_out: 0, error: Some(msg), summary: None });
+                // Advance progress on the error path too, so the bar doesn't stall (mirrors
+                // the success path + the flat orchestrate, which emits on both outcomes).
+                let done = ok + err;
+                em.emit(RunEventBody::RunProgress { agents_done: done, agents_total: budget, agents_running: 0, agents_queued: budget.saturating_sub(done) });
                 continue;
             }
         };
         // ── SCORE: the adversarial-verify critique, as a quality rubric in [0,1] ──
-        let score = scorer.score(goal, &candidate, cancel).await.clamp(0.0, 1.0);
+        // Sanitize at the boundary: a non-finite score (e.g. a buggy external Scorer) must
+        // not enter the tree/posteriors — fall back to neutral rather than poison the search.
+        let raw = scorer.score(goal, &candidate, cancel).await;
+        let score = if raw.is_finite() { raw.clamp(0.0, 1.0) } else { 0.5 };
         ok += 1;
 
         let new_idx = nodes.len();
@@ -495,24 +511,45 @@ impl Scorer for ProviderScorer {
     }
 }
 
-/// Parse the first numeric token out of a reply → [0,1]. Accepts an integer/decimal on the
-/// 0-100 scale ("87" → 0.87) AND a bare [0,1] fraction ("0.85" → 0.85), so a model that
-/// ignores the "integer" instruction isn't unfairly scored 0. Out-of-range (e.g. a leading
-/// year "2026") → None, which the caller turns into the neutral 0.5 fallback.
+/// Parse a model's score reply → [0,1]. Handles the common LLM rating formats: an explicit
+/// fraction ("9/10", "9 out of 10", "85/100") → num/denom; a bare [0,1] fraction ("0.85") →
+/// 0.85; a 0-100 integer/decimal ("87") → 0.87. Out-of-range / no number (e.g. a leading
+/// year "2026") → None → the neutral 0.5 fallback. The explicit-denominator case prevents a
+/// "9/10" reply being mis-scaled to 0.09.
 fn parse_score(text: &str) -> Option<f64> {
+    // leading numeric token + where it ends
     let mut tok = String::new();
-    for ch in text.chars() {
+    let mut end = text.len();
+    let mut started = false;
+    for (idx, ch) in text.char_indices() {
         if ch.is_ascii_digit() || (ch == '.' && !tok.is_empty() && !tok.contains('.')) {
             tok.push(ch);
-        } else if !tok.is_empty() {
+            started = true;
+        } else if started {
+            end = idx;
             break;
         }
     }
-    let v: f64 = tok.trim_end_matches('.').parse().ok()?;
-    if tok.contains('.') && (0.0..=1.0).contains(&v) {
-        Some(v) // already a [0,1] fraction, e.g. "0.85"
-    } else if (0.0..=100.0).contains(&v) {
-        Some(v / 100.0) // a 0-100 score, e.g. "87"
+    let num: f64 = tok.trim_end_matches('.').parse().ok()?;
+
+    // explicit denominator? "9/10" or "9 out of 10"
+    let rest = text[end..].trim_start();
+    let after_denom = rest
+        .strip_prefix('/')
+        .or_else(|| rest.get(..6).filter(|p| p.eq_ignore_ascii_case("out of")).map(|_| &rest[6..]));
+    if let Some(a) = after_denom {
+        let ds: String = a.trim_start().chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        if let Ok(d) = ds.trim_end_matches('.').parse::<f64>() {
+            if d > 0.0 && num <= d {
+                return Some((num / d).clamp(0.0, 1.0));
+            }
+        }
+    }
+
+    if tok.contains('.') && (0.0..=1.0).contains(&num) {
+        Some(num) // already a [0,1] fraction, e.g. "0.85"
+    } else if (0.0..=100.0).contains(&num) {
+        Some(num / 100.0) // a 0-100 score, e.g. "87"
     } else {
         None // out of range → neutral fallback
     }
@@ -653,8 +690,62 @@ mod tests {
         // a model that replies with a [0,1] fraction is honored, not scored 0
         assert_eq!(parse_score("0.85"), Some(0.85));
         assert_eq!(parse_score("quality: 0.9"), Some(0.9));
+        // explicit fractions must NOT be mis-scaled to /100 (the review's med finding)
+        assert_eq!(parse_score("9/10"), Some(0.9));
+        assert_eq!(parse_score("It's a 9 out of 10"), Some(0.9));
+        assert_eq!(parse_score("85/100"), Some(0.85));
         // a leading out-of-range number (a year) → rejected → neutral fallback
         assert_eq!(parse_score("in 2026 the score is 55"), None);
         assert_eq!(parse_score("no number here"), None);
+    }
+
+    #[tokio::test]
+    async fn nan_score_does_not_poison_the_search() {
+        // A buggy external Scorer returning NaN must degrade to neutral, not silently kill
+        // the search (Beta posteriors stuck at 0.5 forever).
+        struct NanScorer;
+        impl Scorer for NanScorer {
+            #[allow(clippy::manual_async_fn)]
+            fn score(&self, _t: &str, _c: &str, _cn: &Cancel) -> impl std::future::Future<Output = f64> + Send {
+                async { f64::NAN }
+            }
+        }
+        let run = search_core("g", &opts(), cfg(6, 3, 5), &GrowGen, &NanScorer, Arc::new(VecSink::default()), &Cancel::new()).await;
+        assert_eq!(run.status, RunStatus::Done);
+        assert!(!run.steps.is_empty(), "candidates are still produced");
+        // the run completes cleanly; no panic, no hang.
+    }
+
+    #[tokio::test]
+    async fn warm_start_survives_a_failing_arm() {
+        // Arm m0 always errors; the warm-start (keyed on attempts) must still give m1 a real
+        // try, and m0's failure must not capture the whole budget.
+        struct PickyGen;
+        impl Generator for PickyGen {
+            #[allow(clippy::manual_async_fn)]
+            fn generate(&self, _t: &str, _r: Option<&str>, arm: &ModelArm, _c: &Cancel)
+                -> impl std::future::Future<Output = anyhow::Result<String>> + Send {
+                let bad = arm.model == "m0";
+                async move {
+                    if bad { anyhow::bail!("m0 down") } else { Ok("ok".to_string()) }
+                }
+            }
+        }
+        struct Flat;
+        impl Scorer for Flat {
+            #[allow(clippy::manual_async_fn)]
+            fn score(&self, _t: &str, _c: &str, _cn: &Cancel) -> impl std::future::Future<Output = f64> + Send {
+                async { 0.7 }
+            }
+        }
+        let mut c = cfg(8, 2, 3);
+        c.models = vec![
+            ModelArm { provider: "p0".into(), model: "m0".into() },
+            ModelArm { provider: "p1".into(), model: "m1".into() },
+        ];
+        let run = search_core("g", &opts(), c, &PickyGen, &Flat, Arc::new(VecSink::default()), &Cancel::new()).await;
+        assert_eq!(run.status, RunStatus::Done);
+        // m1 produced usable candidates despite m0 failing every time
+        assert!(run.steps.iter().any(|s| s.spec.model == "m1"), "the healthy arm still contributes");
     }
 }
