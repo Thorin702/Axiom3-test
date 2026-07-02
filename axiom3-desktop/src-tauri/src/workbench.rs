@@ -30,7 +30,7 @@ use axiom_orchestrate::events::{EventSink, RunEvent, RunEventBody, SeqEmitter};
 use axiom_orchestrate::model::Run;
 use axiom_orchestrate::step::ProviderStep;
 use axiom_orchestrate::supervisor::LlmDecomposer;
-use axiom_orchestrate::{orchestrate, orchestrate_deep, OrchestrateOptions, Pause};
+use axiom_orchestrate::{orchestrate, orchestrate_deep, orchestrate_search, ModelArm, OrchestrateOptions, Pause, SearchConfig};
 use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
 use axiom_vector::LanceStore;
@@ -78,6 +78,23 @@ fn fleet_from_env() -> Vec<FleetMember> {
             provider: p.family().to_string(),
             model: (*model).to_string(),
         })
+        .collect()
+}
+
+/// The connected models as AB-MCTS arms (the multi-LLM axis of deep-search mode). Mirrors
+/// `fleet_from_env` — only providers with a key in env are included.
+fn search_arms_from_env() -> Vec<ModelArm> {
+    let candidates = [
+        (Provider::Anthropic, "claude-haiku-4-5-20251001"),
+        (Provider::OpenAi, "gpt-4o-mini"),
+        (Provider::DeepSeek, "deepseek-v4-flash"),
+        (Provider::Gemini, "gemini-2.5-flash"),
+        (Provider::Qwen, "qwen-plus"),
+    ];
+    candidates
+        .iter()
+        .filter(|(p, _)| std::env::var(p.env_var()).is_ok())
+        .map(|(p, model)| ModelArm { provider: p.family().to_string(), model: (*model).to_string() })
         .collect()
 }
 
@@ -1567,6 +1584,7 @@ fn workflow_model_for(provider: &str) -> String {
 /// it can correlate the live stream before this returns. Free-form work — NOT verdict-
 /// bound (the red line scopes only the checking features).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command args bind 1:1 to JS invoke keys
 pub async fn run_workflow(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -1575,13 +1593,22 @@ pub async fn run_workflow(
     provider: Option<String>,
     model: Option<String>,
     agents: Option<usize>,
+    search: Option<bool>,
 ) -> Result<Run, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }
+    let deep_search = search == Some(true);
     let provider = provider.unwrap_or_else(|| "deepseek".to_string());
     let pp = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
-    if std::env::var(pp.env_var()).is_err() {
+    // Deep-search draws its models from ALL connected providers (the multi-LLM axis), so it
+    // only needs ≥1 key; the flat/deep paths use the single primary provider.
+    let key_ok = if deep_search {
+        !search_arms_from_env().is_empty() || std::env::var(pp.env_var()).is_ok()
+    } else {
+        std::env::var(pp.env_var()).is_ok()
+    };
+    if !key_ok {
         return Err(format!(
             "{provider} 密钥未连接 — 请在「设置 → 模型与提供方」中填入密钥后重试。 · {provider} key not connected — add it in Settings → Models & providers."
         ));
@@ -1604,7 +1631,19 @@ pub async fn run_workflow(
         concurrency,
     };
     let total = target.unwrap_or(0);
-    let run = if total > 8 {
+    let run = if deep_search {
+        // Multi-LLM AB-MCTS: adaptively go wider/deeper across all connected models. Budget
+        // = the agent-count control (default 8). Seed derived from the run id so each run
+        // explores differently but is reproducible given the same id.
+        let mut arms = search_arms_from_env();
+        if arms.is_empty() {
+            arms.push(ModelArm { provider: provider.clone(), model: model_id.clone() });
+        }
+        let budget = target.unwrap_or(8).clamp(2, 64);
+        let seed = runid.bytes().fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(b as u64));
+        let cfg = SearchConfig { budget, max_depth: 3, models: arms, seed };
+        orchestrate_search(&goal, &opts, cfg, sink, &cancel).await
+    } else if total > 8 {
         // deep two-level fan-out: top × sub ≈ total → tens of agents queue through the pool
         let top = ((total as f64).sqrt().ceil() as usize).clamp(2, 8);
         let sub = total.div_ceil(top).clamp(2, 8); // overflow-free ceil-div
@@ -1647,6 +1686,7 @@ pub struct CodingRunResult {
 /// [`Sandbox`] enforces path-jail + a read-only command allowlist). Streams its steps on
 /// the `run_event` channel into the ActivityRail. Cancel via `cancel_run`.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri command args bind 1:1 to JS invoke keys
 pub async fn coding_run(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -1710,7 +1750,7 @@ pub async fn coding_run(
         // and had zero visibility into writes in read-write mode.
         let obs: String = step.observation.chars().take(1200).collect();
         if !obs.trim().is_empty() {
-            note.push_str("\n");
+            note.push('\n');
             note.push_str(obs.trim_end());
         }
         em.emit(RunEventBody::AgentProgress {

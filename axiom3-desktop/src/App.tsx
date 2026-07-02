@@ -151,6 +151,9 @@ function App() {
     const n = parseInt(localStorage.getItem("axiom3.wfAgents") || "", 10);
     return Number.isFinite(n) && n >= 0 ? n : 0; // 0 = auto
   });
+  // Deep-search mode: run the workflow as Multi-LLM AB-MCTS (adaptive wider/deeper search
+  // across the connected models) instead of a one-shot fan-out.
+  const [deepSearch, setDeepSearch] = useState(() => localStorage.getItem("axiom3.deepSearch") === "1");
   const [tasks, setTasks] = useState<Task[]>(() => {
     // Task history persists like Claude's chat list. A task left "running" when the app
     // closed can't still be running, so normalize it to cancelled on load.
@@ -242,7 +245,8 @@ function App() {
   useEffect(() => {
     localStorage.setItem("axiom3.taskModel", taskModel);
     localStorage.setItem("axiom3.wfAgents", String(wfAgents));
-  }, [taskModel, wfAgents]);
+    localStorage.setItem("axiom3.deepSearch", deepSearch ? "1" : "0");
+  }, [taskModel, wfAgents, deepSearch]);
 
   // Persist the source library (most recent first, ≤12). A full document's text can be
   // megabytes, so capping to 12 ENTRIES doesn't bound the payload — bound it by BYTES: if
@@ -614,7 +618,7 @@ function App() {
       status: string;
       synthesis: string | null;
       steps?: { spec: { role: string }; status: string; output?: string }[];
-    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined }));
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch }));
     setTasks((ts) =>
       ts.map((x) =>
         x.id === runid
@@ -881,6 +885,17 @@ function App() {
                       <option key={m.id} value={m.id}>{m.label}</option>
                     ))}
                   </select>
+                  <button
+                    className={`ax-toggle ${deepSearch ? "on" : ""}`}
+                    onClick={() => setDeepSearch(!deepSearch)}
+                    title={
+                      deepSearch
+                        ? (lang === "zh" ? "深度搜索:自适应地扩展/精修候选,跨多个模型择优(AB-MCTS)" : "Deep search: adaptively explore/refine candidates across models (AB-MCTS)")
+                        : (lang === "zh" ? "标准:一次性并行扇出" : "Standard: one-shot parallel fan-out")
+                    }
+                  >
+                    {deepSearch ? (lang === "zh" ? "深度搜索" : "deep search") : (lang === "zh" ? "标准" : "standard")}
+                  </button>
                 </div>
               </>
             ) : cmd === "code" ? (
