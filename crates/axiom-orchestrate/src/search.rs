@@ -482,13 +482,17 @@ impl Scorer for ProviderScorer {
                 return 0.5;
             }
             let Some(p) = Provider::parse(&provider) else { return 0.5 };
-            let system = "You rate the QUALITY of a draft answer as a piece of work, on a \
-                          0-100 scale. Judge only work quality: does it fully address the \
-                          task, is it coherent, specific, well-structured, and internally \
-                          consistent? This is NOT a judgment of whether any factual claim is \
-                          true — do not fact-check; rate only craftsmanship and task-fit. \
-                          Reply with ONLY an integer 0-100.";
-            let user = format!("TASK:\n{task}\n\nDRAFT:\n{candidate}\n\nQuality score (0-100):");
+            // Multi-lens rubric in ONE call (no extra latency): rate three craftsmanship
+            // axes so a fluent-but-shallow draft can't win on coherence alone. This is a
+            // work-quality judgment, NOT fact-checking (red line).
+            let system = "You rate a draft answer's QUALITY AS WORK on three axes, each 0-100: \
+                          (1) COMPLETENESS — does it fully address every part of the task; \
+                          (2) RIGOR — is it specific, well-supported, and internally consistent; \
+                          (3) CLARITY — is it well-structured and coherent. This is a \
+                          craftsmanship judgment, NOT a judgment of whether any claim is true — \
+                          do not fact-check. Reply with EXACTLY three integers 0-100 separated \
+                          by spaces, e.g. `85 70 90`. No other text.";
+            let user = format!("TASK:\n{task}\n\nDRAFT:\n{candidate}\n\nScores (completeness rigor clarity):");
             let req = Request {
                 system: Some(system.into()),
                 messages: vec![Message::user(vec![ContentBlock::text(user)])],
@@ -504,7 +508,15 @@ impl Scorer for ProviderScorer {
             })
             .await;
             match reply {
-                Ok(text) => parse_score(&text).unwrap_or(0.5),
+                Ok(text) => {
+                    let lenses = parse_lens(&text);
+                    if lenses.len() >= 2 {
+                        combine_lens(&lenses)
+                    } else {
+                        // a model that ignored the format and gave one holistic score
+                        parse_score(&text).unwrap_or(0.5)
+                    }
+                }
                 Err(_) => 0.5,
             }
         }
@@ -553,6 +565,48 @@ fn parse_score(text: &str) -> Option<f64> {
     } else {
         None // out of range → neutral fallback
     }
+}
+
+/// Extract up to 3 integer axis scores 0-100 (→ [0,1]) from a multi-lens reply like
+/// "85 70 90". Ignores tokens > 100 (a stray year/id) rather than mis-scaling them.
+fn parse_lens(text: &str) -> Vec<f64> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let flush = |cur: &mut String, out: &mut Vec<f64>| {
+        if !cur.is_empty() {
+            if let Ok(v) = cur.parse::<u32>() {
+                if v <= 100 {
+                    out.push(v as f64 / 100.0);
+                }
+            }
+            cur.clear();
+        }
+    };
+    for ch in text.chars() {
+        if ch.is_ascii_digit() {
+            cur.push(ch);
+        } else {
+            flush(&mut cur, &mut out);
+            if out.len() >= 3 {
+                return out;
+            }
+        }
+    }
+    flush(&mut cur, &mut out);
+    out.truncate(3);
+    out
+}
+
+/// Combine axis scores into one [0,1] quality signal. A blend of mean and MIN so a draft
+/// that's strong on one axis but weak on another (e.g. fluent but incomplete) can't ride
+/// its best axis to the top — the weakest axis pulls it down.
+fn combine_lens(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.5;
+    }
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    let min = v.iter().copied().fold(f64::INFINITY, f64::min);
+    (0.5 * mean + 0.5 * min).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -697,6 +751,26 @@ mod tests {
         // a leading out-of-range number (a year) → rejected → neutral fallback
         assert_eq!(parse_score("in 2026 the score is 55"), None);
         assert_eq!(parse_score("no number here"), None);
+    }
+
+    #[test]
+    fn parse_lens_extracts_axes() {
+        assert_eq!(parse_lens("85 70 90"), vec![0.85, 0.7, 0.9]);
+        assert_eq!(parse_lens("C:85 R:70 L:90"), vec![0.85, 0.7, 0.9]);
+        assert_eq!(parse_lens("85"), vec![0.85]);
+        // a stray out-of-range number (a year) is ignored, the three axes still parse
+        assert_eq!(parse_lens("as of 2026: 85 70 90"), vec![0.85, 0.7, 0.9]);
+        assert!(parse_lens("no numbers").is_empty());
+    }
+
+    #[test]
+    fn combine_lens_penalizes_the_weakest_axis() {
+        // balanced → ~the level; lopsided → pulled toward the min (can't ride one axis)
+        assert!((combine_lens(&[0.9, 0.9, 0.9]) - 0.9).abs() < 1e-9);
+        let lopsided = combine_lens(&[0.9, 0.9, 0.1]);
+        let balanced = combine_lens(&[0.63, 0.63, 0.63]);
+        assert!(lopsided < balanced, "a weak axis must drag the score down ({lopsided} vs {balanced})");
+        assert_eq!(combine_lens(&[]), 0.5);
     }
 
     #[tokio::test]
