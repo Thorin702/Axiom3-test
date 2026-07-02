@@ -617,6 +617,8 @@ dependencies = [
  "anyhow",
  "axiom-providers",
  "axiom-runtime",
+ "rand 0.9.4",
+ "rand_distr",
  "serde",
  "serde_json",
  "tokio",

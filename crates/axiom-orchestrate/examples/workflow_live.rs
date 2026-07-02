@@ -47,7 +47,7 @@ async fn main() {
     let run = orchestrate(&goal, &opts, &dec, &ProviderStep, Arc::new(PrintSink), &cancel).await;
     println!("\n=== status: {:?} · {} sub-agents ===", run.status, run.steps.len());
     for s in &run.steps {
-        println!("  - [{}] {} → {}", s.spec.role, s.spec.goal.chars().take(60).collect::<String>(), format!("{:?}", s.status));
+        println!("  - [{}] {} → {:?}", s.spec.role, s.spec.goal.chars().take(60).collect::<String>(), s.status);
     }
     println!("\n=== SYNTHESIS ===\n{}", run.synthesis.unwrap_or_default());
 }

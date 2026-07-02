@@ -13,11 +13,13 @@ pub mod coding;
 pub mod control;
 pub mod events;
 pub mod model;
+pub mod search;
 pub mod step;
 pub mod supervisor;
 pub mod synthesize;
 
 pub use control::Pause;
+pub use search::{orchestrate_search, ModelArm, SearchConfig};
 
 use events::{now_ms, EventSink, RunEventBody, SeqEmitter};
 use model::{Kind, Plan, Run, RunStatus, StepSpec, StepState, StepStatus};

@@ -37,6 +37,9 @@ pub trait AgentStep: Send + Sync {
 pub struct ProviderStep;
 
 impl AgentStep for ProviderStep {
+    // Not `async fn`: the trait requires `impl Future + Send`, which an async-fn-in-trait
+    // impl does not guarantee, so the manual form is intentional.
+    #[allow(clippy::manual_async_fn)]
     fn run(
         &self,
         input: StepInput,
@@ -88,6 +91,7 @@ fn build_request(input: &StepInput) -> Request {
 pub struct MockStep;
 
 impl AgentStep for MockStep {
+    #[allow(clippy::manual_async_fn)]
     fn run(
         &self,
         input: StepInput,
