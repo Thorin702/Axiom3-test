@@ -7,16 +7,13 @@ import "./theme.css";
 import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source, RunEvent } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
+import { ArtifactInspector } from "./components/ArtifactInspector";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { ReadingView } from "./components/ReadingView";
 import { ProjectsView } from "./components/ProjectsView";
-import { EvidenceView } from "./components/EvidenceView";
 import { SearchView } from "./components/SearchView";
 import { FleetMonitor } from "./components/FleetMonitor";
-import { ShieldView } from "./components/ShieldView";
-import { IntegrityView } from "./components/IntegrityView";
-import { ProvenanceView } from "./components/ProvenanceView";
 import { MetricsView } from "./components/MetricsView";
 import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
@@ -26,8 +23,8 @@ import { StatusBar } from "./components/StatusBar";
 import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
-  Sparkles, BookOpen, Search, Boxes, ShieldCheck, FileCheck, GitBranch, Gauge,
-  Command, Bell, PanelRight, FolderOpen, Quote, RotateCcw, WrapText, Check, type LucideIcon,
+  Sparkles, BookOpen, Search, Boxes, GitBranch, Gauge,
+  Command, Bell, PanelRight, FolderOpen, RotateCcw, WrapText, Check, type LucideIcon,
 } from "lucide-react";
 
 // Set during the tasks initializer (first render): how many persisted tasks were left
@@ -78,16 +75,14 @@ type NavKey =
   | "shield" | "integrity" | "provenance" | "evidence"
   | "metrics" | "notifications";
 type NavGroup = "work" | "trust" | "overview";
+// Rigor is NOT a set of destinations — it lives on the artifact (see the session's
+// inspector tabs: 证据 / 护盾 / 溯源 / 完整性). The sidebar keeps only the places you go.
 const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGroup }[] = [
-  { key: "tasks", zh: "任务", en: "Tasks", icon: Sparkles, group: "work" },
+  { key: "tasks", zh: "会话", en: "Sessions", icon: Sparkles, group: "work" },
   { key: "projects", zh: "项目", en: "Projects", icon: FolderOpen, group: "work" },
-  { key: "reading", zh: "阅读", en: "Reading", icon: BookOpen, group: "work" },
+  { key: "reading", zh: "材料", en: "Materials", icon: BookOpen, group: "work" },
   { key: "search", zh: "检索", en: "Search", icon: Search, group: "work" },
-  { key: "fleet", zh: "舰队", en: "Fleet", icon: Boxes, group: "work" },
-  { key: "shield", zh: "护盾", en: "Shield", icon: ShieldCheck, group: "trust" },
-  { key: "integrity", zh: "完整性", en: "Integrity", icon: FileCheck, group: "trust" },
-  { key: "provenance", zh: "溯源", en: "Provenance", icon: GitBranch, group: "trust" },
-  { key: "evidence", zh: "证据", en: "Evidence", icon: Quote, group: "trust" },
+  { key: "fleet", zh: "舰队", en: "Fleet", icon: Boxes, group: "overview" },
   { key: "metrics", zh: "概览", en: "Overview", icon: Gauge, group: "overview" },
 ];
 // Model choices offered in the task control bar (the connected provider is DeepSeek).
@@ -210,7 +205,15 @@ function App() {
   });
 
   useEffect(() => {
-    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "system");
+    // Dark-first, like Claude Science. Both themes are maintained; the user can switch.
+    // One-time migration: the OLD default already persisted "system" on first launch, so a
+    // plain default change would never take effect. Flip once, then respect user choice.
+    if (!localStorage.getItem("axiom3.themeMigrated")) {
+      localStorage.setItem("axiom3.themeMigrated", "1");
+      applyTheme("dark");
+      return;
+    }
+    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "dark");
   }, []);
 
   // Persist the task history (most recent first, ≤50). A task's result carries all its
@@ -1218,11 +1221,9 @@ function App() {
                   }}
                 />
               )}
-              {nav === "evidence" && <EvidenceView lang={lang} tasks={tasks} />}
+              {/* 证据 / 护盾 / 溯源 / 完整性 are no longer destinations — they are the
+                  artifact's own inspector tabs (see ArtifactInspector in the session view). */}
               {nav === "fleet" && <FleetMonitor lang={lang} agg={fleetAgg} />}
-              {nav === "shield" && <ShieldView lang={lang} tasks={tasks} />}
-              {nav === "integrity" && <IntegrityView lang={lang} />}
-              {nav === "provenance" && <ProvenanceView lang={lang} />}
               {nav === "metrics" && <MetricsView lang={lang} tasks={tasks} />}
               {nav === "notifications" && (
                 <NotificationsView
@@ -1411,13 +1412,17 @@ function App() {
                       {/* Every finished artifact states how it was made (Claude-Science-style
                           auditable history): which agents/models, which audit event, lineage. */}
                       {tk.status !== "running" && (tk.result || tk.synthesis) && (
-                        <ArtifactProvenance
-                          lang={lang}
-                          task={tk}
-                          forkedFromTitle={tasks.find((x) => x.id === tk.forkedFrom)?.title}
-                          onExport={exportProvenance}
-                          busy={busy}
-                        />
+                        <>
+                          <ArtifactProvenance
+                            lang={lang}
+                            task={tk}
+                            forkedFromTitle={tasks.find((x) => x.id === tk.forkedFrom)?.title}
+                            onExport={exportProvenance}
+                            busy={busy}
+                          />
+                          {/* rigor folded onto the artifact, not parked in sidebar destinations */}
+                          <ArtifactInspector lang={lang} task={tk} />
+                        </>
                       )}
                     </>
                   );

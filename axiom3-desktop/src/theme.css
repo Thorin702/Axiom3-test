@@ -31,40 +31,40 @@
    accent (Codex-family). Forced by [data-theme="dark"]; follows the OS otherwise. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ax-paper: #0E0E0D;
-    --ax-surface: #1C1C1A;
-    --ax-surface-2: #131311;
-    --ax-ink: #ECECEA;
-    --ax-ink-soft: #9A9A96;
-    --ax-ink-faint: #6E6E6A;
-    --ax-line: #262624;
-    --ax-line-soft: #1A1A18;
-    --ax-accent: #2DBF98;
-    --ax-accent-soft: #15302A;
-    --ax-lamp-green: #3FBF87;
-    --ax-lamp-amber: #E0AC4D;
-    --ax-lamp-neutral: #6E6E6A;
+    --ax-paper: #131312;
+    --ax-surface: #1B1B19;
+    --ax-surface-2: #171716;
+    --ax-ink: #EDEDEA;
+    --ax-ink-soft: #A3A39D;
+    --ax-ink-faint: #74746E;
+    --ax-line: #2B2B28;
+    --ax-line-soft: #201F1D;
+    --ax-accent: #48B394;
+    --ax-accent-soft: #182E28;
+    --ax-lamp-green: #4FB393;
+    --ax-lamp-amber: #D9A552;
+    --ax-lamp-neutral: #74746E;
     --ax-lamp-violet: #9B81C4;
-    --ax-lamp-red: #DD6A5E;
+    --ax-lamp-red: #D46C60;
     --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.55);
   }
 }
 :root[data-theme="dark"] {
-  --ax-paper: #0E0E0D;
-  --ax-surface: #1C1C1A;
-  --ax-surface-2: #131311;
-  --ax-ink: #ECECEA;
-  --ax-ink-soft: #9A9A96;
-  --ax-ink-faint: #6E6E6A;
-  --ax-line: #262624;
-  --ax-line-soft: #1A1A18;
-  --ax-accent: #2DBF98;
-  --ax-accent-soft: #15302A;
-  --ax-lamp-green: #3FBF87;
-  --ax-lamp-amber: #E0AC4D;
-  --ax-lamp-neutral: #6E6E6A;
+  --ax-paper: #131312;
+  --ax-surface: #1B1B19;
+  --ax-surface-2: #171716;
+  --ax-ink: #EDEDEA;
+  --ax-ink-soft: #A3A39D;
+  --ax-ink-faint: #74746E;
+  --ax-line: #2B2B28;
+  --ax-line-soft: #201F1D;
+  --ax-accent: #48B394;
+  --ax-accent-soft: #182E28;
+  --ax-lamp-green: #4FB393;
+  --ax-lamp-amber: #D9A552;
+  --ax-lamp-neutral: #74746E;
   --ax-lamp-violet: #9B81C4;
-  --ax-lamp-red: #DD6A5E;
+  --ax-lamp-red: #D46C60;
   --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.55);
 }
 
@@ -637,6 +637,26 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-prov__row { display: flex; gap: 12px; align-items: baseline; font-size: 12px; }
 .ax-prov__row dt { flex: none; width: 84px; color: var(--ax-ink-faint); }
 .ax-prov__row dd { margin: 0; color: var(--ax-ink); word-break: break-word; }
+
+/* Artifact inspector — rigor folded onto the artifact (evidence / shield / provenance /
+   integrity), instead of living in separate sidebar destinations. */
+.ax-inspect { margin-top: 10px; }
+.ax-inspect__toggle { display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 9px 12px; border: 0.5px solid var(--ax-line-soft); border-radius: 10px;
+  background: transparent; color: var(--ax-ink-soft); font-size: 12px; cursor: pointer;
+  font-family: var(--ax-sans); transition: color .12s ease, border-color .12s ease; }
+.ax-inspect__toggle:hover { color: var(--ax-ink); border-color: var(--ax-line); }
+.ax-inspect__chev { margin-left: auto; font-size: 13px; color: var(--ax-ink-faint); }
+.ax-inspect__tabs { display: flex; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+.ax-inspect__tab { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px;
+  border: 0.5px solid var(--ax-line); border-radius: 999px; background: transparent;
+  color: var(--ax-ink-soft); font-size: 11.5px; cursor: pointer; font-family: var(--ax-sans);
+  transition: color .12s ease, background .12s ease, border-color .12s ease; }
+.ax-inspect__tab:hover { color: var(--ax-ink); background: var(--ax-surface-2); }
+.ax-inspect__tab.is-on { color: var(--ax-accent); border-color: var(--ax-accent); background: var(--ax-accent-soft); }
+.ax-inspect__body { margin-top: 10px; }
+/* the reused surfaces already carry their own card chrome — soften it inside the inspector */
+.ax-inspect__body .ax-surface { padding: 0; background: transparent; border: none; }
 .ax-chip.is-soon:hover { opacity: 0.7; }
 .ax-chip__d { color: var(--ax-ink-faint); }
 
