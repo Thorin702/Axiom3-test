@@ -6,6 +6,7 @@ import { Lang, t } from "./i18n";
 import "./theme.css";
 import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source, RunEvent } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
+import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { ReadingView } from "./components/ReadingView";
@@ -154,6 +155,8 @@ function App() {
   // Deep-search mode: run the workflow as Multi-LLM AB-MCTS (adaptive wider/deeper search
   // across the connected models) instead of a one-shot fan-out.
   const [deepSearch, setDeepSearch] = useState(() => localStorage.getItem("axiom3.deepSearch") === "1");
+  // When a session is forked, the next session created inherits this lineage (then clears).
+  const [forkOrigin, setForkOrigin] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>(() => {
     // Task history persists like Claude's chat list. A task left "running" when the app
     // closed can't still be running, so normalize it to cancelled on load.
@@ -426,6 +429,22 @@ function App() {
   }
 
   // Remove a task from the history (localStorage persists via the effect).
+  // Fork a session: reload its goal + settings into the composer as a NEW session, so you
+  // can vary one thing (deep search, model, agents) and compare — the original is untouched.
+  function forkSession(tk: Task) {
+    if (!tk.goal) return;
+    if (!confirmReplaceDraft()) return;
+    setForkOrigin(tk.id);
+    setNav("tasks");
+    setView("home");
+    setActiveId(null);
+    setSlash("");
+    setDraft(tk.goal);
+    setCmd(tk.type === "workflow" || tk.type === "code" ? tk.type : "check_draft");
+    if (tk.type === "workflow") setDeepSearch(!!tk.deep);
+    note(lang === "zh" ? `已分叉:「${tk.title}」— 改设置后运行即可对比` : `Forked: "${tk.title}" — tweak a setting and run to compare`);
+  }
+
   function removeTask(id: string) {
     setTasks((ts) => ts.filter((tk) => tk.id !== id));
     if (activeId === id) {
@@ -566,7 +585,8 @@ function App() {
     if (!proj) return;
     const id = `t${Date.now()}`;
     const title = useDraft.slice(0, 42) + (useDraft.length > 42 ? "…" : "");
-    setTasks((ts) => [{ id, type: "check_draft", title, status: "running", ts: Date.now() }, ...ts]);
+    setTasks((ts) => [{ id, type: "check_draft", title, status: "running", ts: Date.now(), goal: useDraft, forkedFrom: forkOrigin ?? undefined }, ...ts]);
+    setForkOrigin(null);
     setActiveId(id);
     setNav("tasks");
     setView("thread");
@@ -606,7 +626,8 @@ function App() {
     if (!proj) return;
     const runid = `run-${crypto.randomUUID()}`;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
-    setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now() }, ...ts]);
+    setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: deepSearch, forkedFrom: forkOrigin ?? undefined }, ...ts]);
+    setForkOrigin(null);
     setActiveId(runid);
     setNav("tasks");
     setView("thread");
@@ -617,7 +638,7 @@ function App() {
     const r = await run<{
       status: string;
       synthesis: string | null;
-      steps?: { spec: { role: string }; status: string; output?: string }[];
+      steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
     }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch }));
     setTasks((ts) =>
       ts.map((x) =>
@@ -627,8 +648,9 @@ function App() {
                 ...x,
                 status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed",
                 synthesis: r.synthesis ?? undefined,
-                // Keep each sub-agent's full output so the run stays inspectable after reload.
-                steps: r.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "" })),
+                // Keep each sub-agent's full output + model so the artifact can state how it
+                // was made (which model produced each part) after reload.
+                steps: r.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model })),
               }
             : { ...x, status: "failed", error: "failed" }
           : x
@@ -646,7 +668,8 @@ function App() {
     if (!g || !codeWs) return;
     const runid = `run-${crypto.randomUUID()}`;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
-    setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now() }, ...ts]);
+    setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined }, ...ts]);
+    setForkOrigin(null);
     setActiveId(runid);
     setNav("tasks");
     setView("thread");
@@ -983,7 +1006,7 @@ function App() {
         <div className="ax-brand" style={{ fontSize: 19 }}>Axiom3</div>
 
         <button className="ax-side-new" onClick={newTask}>
-          <Plus size={16} aria-hidden /> {lang === "zh" ? "新建任务" : "New task"}
+          <Plus size={16} aria-hidden /> {lang === "zh" ? "新建研究会话" : "New session"}
         </button>
 
         {tasks.length > 4 && (
@@ -1003,7 +1026,7 @@ function App() {
         <div className="ax-side-scroll">
           {tasks.length === 0 ? (
             <p className="ax-hint" style={{ padding: "6px 9px" }}>
-              {lang === "zh" ? "还没有任务。在中间的输入框开始第一个。" : "No tasks yet. Start your first in the box in the center."}
+              {lang === "zh" ? "还没有研究会话。在中间的输入框开始第一个。" : "No sessions yet. Start your first in the box in the center."}
             </p>
           ) : (
             RECENT_GROUPS.map((g) => {
@@ -1028,9 +1051,21 @@ function App() {
                       >
                         <span className="ax-recent__title">
                           <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
+                          {tk.forkedFrom && <span className="ax-fork-mark" title={lang === "zh" ? "由其他会话分叉" : "forked from another session"}>↳</span>}
                           <b>{tk.title}</b>
+                          {tk.deep && <span className="ax-recent__deep" title={lang === "zh" ? "深度搜索(AB-MCTS)" : "deep search (AB-MCTS)"}>深</span>}
                         </span>
                       </button>
+                      {tk.goal && (
+                        <button
+                          className="ax-recent__del"
+                          title={lang === "zh" ? "分叉此会话(对比另一种做法)" : "Fork this session (compare another approach)"}
+                          aria-label={lang === "zh" ? "分叉会话" : "Fork session"}
+                          onClick={() => forkSession(tk)}
+                        >
+                          <GitBranch size={13} aria-hidden />
+                        </button>
+                      )}
                       <button
                         className="ax-recent__del"
                         title={lang === "zh" ? "删除任务" : "Delete task"}
@@ -1371,6 +1406,18 @@ function App() {
                               ))}
                           </div>
                         </>
+                      )}
+
+                      {/* Every finished artifact states how it was made (Claude-Science-style
+                          auditable history): which agents/models, which audit event, lineage. */}
+                      {tk.status !== "running" && (tk.result || tk.synthesis) && (
+                        <ArtifactProvenance
+                          lang={lang}
+                          task={tk}
+                          forkedFromTitle={tasks.find((x) => x.id === tk.forkedFrom)?.title}
+                          onExport={exportProvenance}
+                          busy={busy}
+                        />
                       )}
                     </>
                   );

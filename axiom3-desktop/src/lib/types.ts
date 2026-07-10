@@ -102,14 +102,21 @@ export type RunView = {
 export type TaskType = "check_draft" | "workflow" | "ppt" | "code" | "research";
 export type TaskStatus = "running" | "done" | "failed" | "cancelled";
 // One sub-agent's rolled-up result from a workflow run (persisted so the per-agent output
-// is readable after reload, not just as an ephemeral 120-char rail summary).
-export type AgentStepView = { role: string; status: string; output: string };
+// is readable after reload, not just as an ephemeral 120-char rail summary). `model` is
+// kept so an artifact can state which model produced each part (provenance).
+export type AgentStepView = { role: string; status: string; output: string; model?: string };
+// A research SESSION: the unit of work. Carries its full goal so it can be FORKED (re-run
+// a variant without losing the original thread), and enough lineage/provenance for the
+// artifact to state how it was made.
 export type Task = {
   id: string;
   type: TaskType;
   title: string;
   status: TaskStatus;
   ts: number;
+  goal?: string; // the full input (title is a truncation) — needed to fork
+  forkedFrom?: string; // session id this was forked from
+  deep?: boolean; // ran as an adaptive multi-agent (AB-MCTS) search
   result?: DraftCheck;
   synthesis?: string; // workflow runs: the folded multi-agent output
   steps?: AgentStepView[]; // workflow runs: each sub-agent's output

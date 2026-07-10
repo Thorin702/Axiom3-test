@@ -12,21 +12,24 @@ import type { RunEvent, RunView } from "../lib/types";
 const S = {
   zh: {
     title: "活动", none: "暂无运行", noneSub: "用 /工作流 启动一个多智能体任务,这里会实时显示。",
-    agents: "智能体", planning: "规划", executing: "执行", verifying: "审查", synthesizing: "汇总", done: "完成",
+    agents: "智能体", planning: "规划", executing: "执行", searching: "自适应搜索", verifying: "审查", synthesizing: "汇总", done: "完成",
     running: "运行中", ok: "完成", failed: "失败", cancelled: "已取消", cancel: "取消", tok: "令牌",
     lRun: "运行中", lFin: "已结束", lErr: "出错/暂停",
   },
   en: {
     title: "Activity", none: "No runs yet", noneSub: "Start a multi-agent task with /workflow — it streams here live.",
-    agents: "agents", planning: "Planning", executing: "Executing", verifying: "Reviewing", synthesizing: "Synthesizing", done: "Done",
+    agents: "agents", planning: "Planning", executing: "Executing", searching: "Adaptive search", verifying: "Reviewing", synthesizing: "Synthesizing", done: "Done",
     running: "running", ok: "done", failed: "failed", cancelled: "cancelled", cancel: "Cancel", tok: "tok",
     lRun: "running", lFin: "finished", lErr: "error/paused",
   },
 };
 
 const PHASE_LABEL: Record<string, keyof typeof S.zh> = {
-  planning: "planning", executing: "executing", verifying: "verifying", synthesizing: "synthesizing", done: "done",
+  planning: "planning", executing: "executing", searching: "searching", verifying: "verifying", synthesizing: "synthesizing", done: "done",
 };
+// Phases where the specialist agents actually do work (AB-MCTS emits "searching",
+// the flat/deep fan-out emits "executing"). Both render the live agent queue.
+const WORK_PHASES = ["executing", "searching"];
 
 function applyEvent(runs: RunView[], ev: RunEvent): RunView[] {
   if (ev.kind === "run_started") {
@@ -131,7 +134,7 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
             const dur = fmtDur((r.finishedMs ?? Date.now()) - r.startedMs);
             const statusLabel = r.status === "running" ? s.running : r.status === "done" ? s.ok : r.status === "failed" ? s.failed : s.cancelled;
             const tokens = r.tokensIn + r.tokensOut;
-            const execAgents = r.agents.filter((a) => a.phase === "executing");
+            const execAgents = r.agents.filter((a) => WORK_PHASES.includes(a.phase));
             const planned = Math.max(execAgents.length, r.agentsTotal || 0);
             const nAgents = planned || r.agents.length;
             const qDone = execAgents.filter((a) => a.status === "ok" || a.status === "err").length;
@@ -203,7 +206,7 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                             {(() => {
                               // the executing phase shows the whole queue: started agents by
                               // status + queued placeholders up to the planned count.
-                              const queuePad = p === "executing" ? Math.max(0, planned - pAgents.length) : 0;
+                              const queuePad = WORK_PHASES.includes(p) ? Math.max(0, planned - pAgents.length) : 0;
                               if (pAgents.length > 0 || queuePad > 0) {
                                 return (
                                   <>
@@ -231,6 +234,9 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                                   <div className="ax-tr__agent" key={a.id}>
                                     <div className="ax-tr__role">
                                       <span className={`ax-adot ${a.status === "running" ? "is-run" : a.status === "ok" ? "is-fin" : "is-err"}`} />
+                                      <span className={`ax-tr__kind ${a.phase === "verifying" ? "is-reviewer" : ""}`}>
+                                        {a.phase === "verifying" ? (lang === "zh" ? "审查员" : "reviewer") : lang === "zh" ? "专家" : "specialist"}
+                                      </span>
                                       <span className="ax-tr__rolename">{a.role}</span>
                                       <span className="ax-tr__model">{a.model}</span>
                                       <span className="ax-tr__tok">{tok > 0 ? `${tok.toLocaleString()} ${s.tok}` : "—"}</span>
