@@ -163,12 +163,15 @@ impl FileSecretStore {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        // A unique temp name (pid + counter) plus O_EXCL create means we never follow or
-        // truncate a pre-planted symlink, and two writers never share a temp file.
-        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
         let base = self.path.file_name().and_then(|s| s.to_str()).unwrap_or("secrets");
-        let tmp = self.path.with_file_name(format!(".{base}.{}.{seq}.tmp", std::process::id()));
-        {
+        // A unique temp name (pid + counter) plus O_EXCL create means we never follow or
+        // truncate a pre-planted symlink, and two writers never share a temp file. On the
+        // rare AlreadyExists (a crash-left temp whose pid+seq gets reused) retry with a fresh
+        // sequence number rather than failing the write.
+        let mut last: Option<std::io::Error> = None;
+        for _ in 0..8 {
+            let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let tmp = self.path.with_file_name(format!(".{base}.{}.{seq}.tmp", std::process::id()));
             let mut opts = std::fs::OpenOptions::new();
             opts.write(true).create_new(true);
             #[cfg(unix)]
@@ -176,18 +179,51 @@ impl FileSecretStore {
                 use std::os::unix::fs::OpenOptionsExt;
                 opts.mode(0o600); // 0600 from byte zero — no default-umask window
             }
-            let mut f = opts.open(&tmp)?;
+            let mut f = match opts.open(&tmp) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => { last = Some(e); continue; }
+                Err(e) => return Err(e.into()),
+            };
             use std::io::Write;
             f.write_all(out.as_bytes())?;
             f.sync_all()?;
-        }
-        match std::fs::rename(&tmp, &self.path) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp); // don't leave the temp behind on failure
-                Err(e.into())
+            drop(f);
+            match std::fs::rename(&tmp, &self.path) {
+                Ok(()) => {
+                    // fsync the parent directory so the rename itself is crash-durable
+                    // (otherwise a crash right after rename can lose it on some filesystems).
+                    #[cfg(unix)]
+                    if let Some(dir) = self.path.parent() {
+                        let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+                    }
+                    return Ok(());
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&tmp); // don't leave the temp behind on failure
+                    return Err(e.into());
+                }
             }
         }
+        Err(last.map(Into::into).unwrap_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::AlreadyExists, "could not create temp secret file").into()
+        }))
+    }
+
+    /// Insert `value` for `name` only if it is still absent on disk (under the write lock),
+    /// returning whatever value ends up stored — so a concurrent `set` of a newer value is
+    /// never clobbered by a slower read-through migration.
+    fn rmw_get_or_insert(&self, name: &str, value: &str) -> Result<String> {
+        let _lock = FILE_WRITE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let mut disk = Self::load(&self.path);
+        let stored = if let Some(existing) = disk.get(name) {
+            existing.clone()
+        } else {
+            disk.insert(name.to_string(), value.to_string());
+            self.persist(&disk)?;
+            value.to_string()
+        };
+        *self.map() = disk;
+        Ok(stored)
     }
 }
 
@@ -233,8 +269,10 @@ impl SecretStore for FileSecretStore {
         // one (which would seal the DB with a key nobody holds).
         if let Some(src) = &self.migrate_from {
             if let Some(v) = src.get(name)? {
-                self.set(name, &v)?;
-                return Ok(Some(v));
+                // Insert-if-absent so a concurrent set() of a newer value wins over the
+                // (older) migrated value instead of being clobbered.
+                let stored = self.rmw_get_or_insert(name, &v)?;
+                return Ok(Some(stored));
             }
         }
         Ok(None)

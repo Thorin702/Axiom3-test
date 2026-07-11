@@ -22,5 +22,10 @@ rand_distr = "0.5"
 # work and never judges truth. The dependency edge is intentionally absent; a CI grep
 # guards `use axiom_core` from creeping into this crate's source.
 
+# Kill a runaway kernel by process GROUP on timeout (so grandchildren die and the reader
+# thread gets EOF instead of blocking forever). Unix only.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

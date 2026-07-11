@@ -1290,11 +1290,29 @@ fn detect_python() -> Option<String> {
 /// environment we manage (Claude-Science-style), never the user's system Python. This
 /// returns that interpreter, creating the venv on first use. The scientific stack
 /// (numpy/pandas/matplotlib) is seeded separately by `kernel_prepare`.
+/// A filesystem-safe single path component from an (untrusted) run id. These commands are
+/// directly invokable, so a crafted runid must never escape the app-data dir via `..` / `/`.
+fn safe_run_component(runid: &str) -> String {
+    let s: String = runid
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(80)
+        .collect();
+    if s.is_empty() { "run".to_string() } else { s }
+}
+
 fn ensure_kernel_env(base: &std::path::Path) -> Result<std::path::PathBuf, String> {
     let venv = base.join("notebook").join(".venv");
     let py = venv.join(if cfg!(windows) { "Scripts\\python.exe" } else { "bin/python" });
     if py.exists() {
         return Ok(py);
+    }
+    // Serialize first-run creation so two concurrent callers (a notebook cell + an analysis
+    // run) don't race `python -m venv` on the same path and corrupt a half-built venv.
+    static VENV_INIT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _init = VENV_INIT.lock().unwrap_or_else(|p| p.into_inner());
+    if py.exists() {
+        return Ok(py); // another caller finished while we waited on the lock
     }
     let sys = detect_python().ok_or("Python 3 未安装 — 请先安装 Python 3。 · Python 3 not found.")?;
     std::fs::create_dir_all(&venv).ok();
@@ -1346,11 +1364,20 @@ pub async fn kernel_exec(app: tauri::AppHandle, state: tauri::State<'_, AppState
         }
         guard.as_ref().unwrap().clone()
     };
-    tauri::async_runtime::spawn_blocking(move || {
+    let res = tauri::async_runtime::spawn_blocking(move || {
         kernel.exec(&code, std::time::Duration::from_secs(60)).map_err(|e| e.to_string())
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    // If the kernel died unrecoverably, drop the cached handle so the next cell spawns a
+    // fresh one instead of returning "kernel exited" forever. (A cell timeout now restarts
+    // the kernel in place, so that case is already usable.)
+    if let Err(ref e) = res {
+        if e.contains("kernel exited") || e.contains("closed unexpectedly") || e.contains("restart failed") {
+            *state.kernel.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        }
+    }
+    res
 }
 
 /// Restart the kernel (drop it → the process is killed; the next cell starts a fresh one).
@@ -1878,7 +1905,7 @@ async fn compute_figures_for_report(
     cancel: &Cancel,
 ) -> Result<String, String> {
     let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let ws = base.join("analysis").join(runid);
+    let ws = base.join("analysis").join(safe_run_component(runid));
     std::fs::create_dir_all(&ws).map_err(|e| e.to_string())?;
     let sandbox = Sandbox::with_mode(&ws, SandboxMode::ReadWrite).map_err(|e| e.to_string())?;
     // copy any attached data files into the workspace (the kernel's cwd)
@@ -2016,7 +2043,7 @@ pub async fn coding_run(
     // attach data and ask — no need to pick a code directory.
     let workspace = if workspace.trim().is_empty() && is_analyze {
         let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        let dir = base.join("analysis").join(&runid);
+        let dir = base.join("analysis").join(safe_run_component(&runid));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         dir.to_string_lossy().into_owned()
     } else {

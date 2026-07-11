@@ -61,10 +61,22 @@ function segment(text: string): Seg[] {
   return segs;
 }
 
+// Prose/table tags that CANNOT load a remote resource. Agent/imported markdown is untrusted,
+// so we ALLOWLIST (not denylist): anything not here — img, video, audio, svg, iframe, a, object,
+// … — is dropped, so a poisoned artifact can neither navigate nor beacon out (a denylist missed
+// <video poster>, <svg><image href>, <audio src>, etc.).
+const MD_ALLOWED_TAGS = [
+  "p", "br", "hr", "span", "div", "strong", "em", "b", "i", "u", "del", "s", "mark", "sub", "sup",
+  "code", "pre", "kbd", "samp", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6",
+  "ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption",
+];
 function renderMd(md: string): string {
   const raw = marked.parse(md, { async: false }) as string;
-  // strip anything that could navigate or beacon; keep link/inline-code text.
-  return DOMPurify.sanitize(raw, { FORBID_TAGS: ["a", "img", "iframe", "form", "input"], FORBID_ATTR: ["style", "onerror", "onload"] });
+  return DOMPurify.sanitize(raw, {
+    ALLOWED_TAGS: MD_ALLOWED_TAGS,
+    ALLOWED_ATTR: ["class", "colspan", "rowspan", "align"],
+    ALLOW_DATA_ATTR: false,
+  });
 }
 
 function renderMath(tex: string): string {

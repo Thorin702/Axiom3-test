@@ -2,12 +2,12 @@
 // themed to our design system. Self-contained: it subscribes to the orchestration
 // `run_event` stream, folds it into per-run cards (status, duration, agents, tokens,
 // phase dots), and offers per-run cancel. No props beyond lang + close.
-import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { X, Boxes, Square, ChevronRight, ChevronDown, Pause, Play } from "lucide-react";
 import type { Lang } from "../i18n";
-import type { RunEvent, RunView } from "../lib/types";
+import type { RunView } from "../lib/types";
+import { runStore } from "../lib/runStore";
 
 const S = {
   zh: {
@@ -33,54 +33,7 @@ const PHASE_LABEL: Record<string, keyof typeof S.zh> = {
 };
 // Phases where the specialist agents actually do work (AB-MCTS emits "searching",
 // the flat/deep fan-out emits "executing"). Both render the live agent queue.
-const WORK_PHASES = ["executing", "searching"];
-
-function applyEvent(runs: RunView[], ev: RunEvent): RunView[] {
-  if (ev.kind === "run_started") {
-    if (runs.some((r) => r.id === ev.run_id)) return runs;
-    return [
-      { id: ev.run_id, taskKind: ev.task_kind, title: ev.title, status: "running", phase: "planning", phases: [], agents: [], agentsTotal: 0, agentsDone: 0, tokensIn: 0, tokensOut: 0, startedMs: ev.ts },
-      ...runs,
-    ];
-  }
-  const i = runs.findIndex((r) => r.id === ev.run_id);
-  if (i < 0) return runs;
-  const r: RunView = { ...runs[i], agents: [...runs[i].agents] };
-  switch (ev.kind) {
-    case "plan_ready": r.phases = ev.phases; r.agentsTotal = ev.planned_agents; break;
-    case "phase_changed": r.phase = ev.phase; break;
-    case "agent_spawned":
-      if (!r.agents.some((a) => a.id === ev.agent_id))
-        r.agents.push({ id: ev.agent_id, role: ev.role, model: ev.model, vendor: ev.vendor, phase: ev.phase, status: "running", tokensIn: 0, tokensOut: 0, steps: [], startedMs: ev.ts });
-      break;
-    case "agent_progress":
-      r.agents = r.agents.map((a) =>
-        a.id === ev.agent_id
-          ? { ...a, tokensIn: ev.tokens_in, tokensOut: ev.tokens_out, steps: ev.note ? [...a.steps, ev.note] : a.steps }
-          : a
-      );
-      break;
-    case "agent_finished":
-      r.agents = r.agents.map((a) =>
-        a.id === ev.agent_id
-          ? { ...a, status: ev.outcome === "ok" ? "ok" : ev.outcome === "cancelled" ? "cancelled" : "err", tokensIn: ev.tokens_in, tokensOut: ev.tokens_out, summary: ev.summary ?? undefined, error: ev.error ?? undefined, finishedMs: ev.ts }
-          : a
-      );
-      break;
-    // Never let a progress total SHRINK the planned estimate (the deep path announces
-    // top×sub up front; a group-granularity total must not clobber it — belt-and-suspenders
-    // alongside the backend fix).
-    case "run_progress": r.agentsDone = ev.agents_done; r.agentsTotal = Math.max(r.agentsTotal, ev.agents_total); break;
-    case "run_finished":
-      r.status = ev.status === "done" ? "done" : ev.status === "cancelled" ? "cancelled" : "failed";
-      r.finishedMs = ev.ts; r.error = ev.error ?? undefined; break;
-  }
-  r.tokensIn = r.agents.reduce((s, a) => s + a.tokensIn, 0);
-  r.tokensOut = r.agents.reduce((s, a) => s + a.tokensOut, 0);
-  const next = [...runs];
-  next[i] = r;
-  return next;
-}
+const WORK_PHASES = runStore.WORK_PHASES;
 
 function fmtDur(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -97,15 +50,12 @@ function lampOf(status: RunView["status"]): string {
 
 export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => void }) {
   const s = S[lang];
-  const [runs, setRuns] = useState<RunView[]>([]);
+  // Runs come from a module-level store (survives this component unmounting/remounting,
+  // so an in-flight run is never lost when the rail is toggled).
+  const runs = useSyncExternalStore(runStore.subscribe, runStore.snapshot);
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [paused, setPaused] = useState<Record<string, boolean>>({});
   const [, setTick] = useState(0);
-
-  useEffect(() => {
-    const un = listen<RunEvent>("run_event", (e) => setRuns((rs) => applyEvent(rs, e.payload)));
-    return () => { un.then((f) => f()); };
-  }, []);
 
   // tick once a second for live durations while any run is active
   const live = runs.some((r) => r.status === "running");
@@ -116,7 +66,7 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
   }, [live]);
 
   const finishedCount = runs.filter((r) => r.status !== "running").length;
-  const clearFinished = () => setRuns((rs) => rs.filter((r) => r.status === "running"));
+  const clearFinished = () => runStore.clearFinished();
 
   return (
     <aside className="ax-rail">

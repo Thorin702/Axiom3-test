@@ -88,37 +88,64 @@ pub struct PyKernel {
     io: Mutex<Io>,
     seq: AtomicU64,
     python: String,
+    cwd: std::path::PathBuf, // kept so a timed-out kernel can be respawned in place
+}
+
+/// Build + spawn the kernel subprocess, returning its pipes. The child runs in its OWN
+/// process group so a runaway cell — and any grandchildren it spawned that inherited the
+/// stdout pipe — can be killed as a GROUP on timeout; otherwise a lingering grandchild
+/// keeps the pipe's write end open, the reader never sees EOF, and the kernel wedges.
+fn spawn_io(python: &str, cwd: &Path) -> anyhow::Result<Io> {
+    let mut cmd = Command::new(python);
+    cmd.arg("-u") // unbuffered
+        .arg("-c")
+        .arg(DRIVER)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    scrub_env(&mut cmd);
+    // The python.org macOS build ships no usable trust store, so in-cell HTTPS (fetching
+    // datasets, PDB files) fails with CERTIFICATE_VERIFY_FAILED. Point it at the system CA
+    // bundle unless the caller already set one.
+    if std::env::var_os("SSL_CERT_FILE").is_none() {
+        for p in ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"] {
+            if Path::new(p).exists() {
+                cmd.env("SSL_CERT_FILE", p);
+                break;
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0); // new process group; pgid == the child's pid
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("could not start {python}: {e}"))?;
+    let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
+    let stdout = BufReader::new(child.stdout.take().ok_or_else(|| anyhow::anyhow!("no stdout"))?);
+    Ok(Io { child, stdin, stdout })
+}
+
+/// SIGKILL the child's whole process group so grandchildren die too (closing the stdout
+/// pipe) — then the reader thread gets EOF instead of blocking forever.
+fn kill_group(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let pid = child.id() as i32;
+        // pgid == pid (process_group(0)); negative target = the whole group.
+        unsafe { libc::kill(-pid, libc::SIGKILL) };
+    }
+    let _ = child.kill();
 }
 
 impl PyKernel {
     /// Start a kernel. `python` is the interpreter (e.g. "python3"); `cwd` is where cells run.
     pub fn start(python: &str, cwd: &Path) -> anyhow::Result<Self> {
-        let mut cmd = Command::new(python);
-        cmd.arg("-u") // unbuffered
-            .arg("-c")
-            .arg(DRIVER)
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        scrub_env(&mut cmd);
-        // The python.org macOS build ships no usable trust store, so in-cell HTTPS
-        // (fetching datasets, PDB files) fails with CERTIFICATE_VERIFY_FAILED. Point it
-        // at the system CA bundle unless the caller already set one.
-        if std::env::var_os("SSL_CERT_FILE").is_none() {
-            for p in ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"] {
-                if Path::new(p).exists() {
-                    cmd.env("SSL_CERT_FILE", p);
-                    break;
-                }
-            }
-        }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("could not start {python}: {e}"))?;
-        let stdin = child.stdin.take().ok_or_else(|| anyhow::anyhow!("no stdin"))?;
-        let stdout = BufReader::new(child.stdout.take().ok_or_else(|| anyhow::anyhow!("no stdout"))?);
-        Ok(Self { io: Mutex::new(Io { child, stdin, stdout }), seq: AtomicU64::new(0), python: python.to_string() })
+        let io = spawn_io(python, cwd)?;
+        Ok(Self { io: Mutex::new(io), seq: AtomicU64::new(0), python: python.to_string(), cwd: cwd.to_path_buf() })
     }
 
     pub fn python(&self) -> &str {
@@ -131,61 +158,81 @@ impl PyKernel {
         let id = self.seq.fetch_add(1, Ordering::Relaxed);
         let req = serde_json::json!({ "id": id, "code": code }).to_string();
         let mut guard = self.io.lock().unwrap_or_else(|p| p.into_inner());
-        // Split the struct into disjoint field borrows so the read thread (stdout) and the
-        // timeout kill (child) don't conflict.
-        let Io { child, stdin, stdout } = &mut *guard;
 
         // is the child still alive?
-        if let Ok(Some(status)) = child.try_wait() {
+        if let Ok(Some(status)) = guard.child.try_wait() {
             anyhow::bail!("kernel exited ({status})");
         }
-        stdin.write_all(req.as_bytes()).map_err(|e| anyhow::anyhow!("kernel write failed: {e}"))?;
-        stdin.write_all(b"\n")?;
-        stdin.flush()?;
+        guard.stdin.write_all(req.as_bytes()).map_err(|e| anyhow::anyhow!("kernel write failed: {e}"))?;
+        guard.stdin.write_all(b"\n")?;
+        guard.stdin.flush()?;
 
         // Read the AXKERNEL result line on a worker thread so we can enforce a timeout.
-        let (tx, rx) = mpsc::channel::<std::io::Result<Option<String>>>();
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                loop {
-                    let mut line = String::new();
-                    match stdout.read_line(&mut line) {
-                        Ok(0) => {
-                            let _ = tx.send(Ok(None)); // EOF
-                            return;
-                        }
-                        Ok(_) => {
-                            if let Some(rest) = line.strip_prefix("AXKERNEL ") {
-                                let _ = tx.send(Ok(Some(rest.trim_end().to_string())));
+        let mut timed_out = false;
+        let outcome: anyhow::Result<CellResult> = {
+            // Split the struct into disjoint field borrows so the read thread (stdout) and the
+            // timeout kill (child) don't conflict.
+            let Io { child, stdin: _, stdout } = &mut *guard;
+            let (tx, rx) = mpsc::channel::<std::io::Result<Option<String>>>();
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    loop {
+                        let mut line = String::new();
+                        match stdout.read_line(&mut line) {
+                            Ok(0) => {
+                                let _ = tx.send(Ok(None)); // EOF
                                 return;
                             }
-                            // ignore stray output lines
-                        }
-                        Err(e) => {
-                            let _ = tx.send(Err(e));
-                            return;
+                            Ok(_) => {
+                                if let Some(rest) = line.strip_prefix("AXKERNEL ") {
+                                    let _ = tx.send(Ok(Some(rest.trim_end().to_string())));
+                                    return;
+                                }
+                                // ignore stray output lines
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Err(e));
+                                return;
+                            }
                         }
                     }
+                });
+                match rx.recv_timeout(timeout) {
+                    Ok(Ok(Some(json))) => parse_result(&json),
+                    Ok(Ok(None)) => anyhow::bail!("kernel closed unexpectedly"),
+                    Ok(Err(e)) => anyhow::bail!("kernel read failed: {e}"),
+                    Err(_) => {
+                        // Kill the whole process GROUP (not just the child) so grandchildren
+                        // die and the stdout pipe closes — otherwise the scoped reader below
+                        // would never see EOF and the scope join would deadlock the kernel.
+                        kill_group(child);
+                        timed_out = true;
+                        anyhow::bail!("cell timed out after {}s", timeout.as_secs())
+                    }
                 }
-            });
-            match rx.recv_timeout(timeout) {
-                Ok(Ok(Some(json))) => parse_result(&json),
-                Ok(Ok(None)) => anyhow::bail!("kernel closed unexpectedly"),
-                Ok(Err(e)) => anyhow::bail!("kernel read failed: {e}"),
-                Err(_) => {
-                    let _ = child.kill();
-                    anyhow::bail!("cell timed out after {}s (kernel restarted)", timeout.as_secs());
-                }
+            })
+        };
+
+        if timed_out {
+            // Respawn a fresh interpreter IN PLACE so the kernel stays usable (the previous
+            // version killed the child but left the dead handle installed, bricking every
+            // later cell). Reap the old child first to avoid a zombie.
+            let _ = guard.child.wait();
+            match spawn_io(&self.python, &self.cwd) {
+                Ok(fresh) => *guard = fresh,
+                Err(e) => anyhow::bail!("cell timed out after {}s; kernel restart failed: {e}", timeout.as_secs()),
             }
-        })
+            anyhow::bail!("cell timed out after {}s (kernel restarted — state was reset)", timeout.as_secs());
+        }
+        outcome
     }
 }
 
 impl Drop for PyKernel {
     fn drop(&mut self) {
-        if let Ok(mut io) = self.io.lock() {
-            let _ = io.child.kill();
-        }
+        let mut io = self.io.lock().unwrap_or_else(|p| p.into_inner());
+        kill_group(&mut io.child);
+        let _ = io.child.wait(); // reap so we don't leave a zombie
     }
 }
 
@@ -203,8 +250,9 @@ fn parse_result(json: &str) -> anyhow::Result<CellResult> {
 
 /// Strip credential env vars before running Python (a cell shouldn't inherit provider keys).
 fn scrub_env(cmd: &mut Command) {
-    for (k, _) in std::env::vars() {
-        let up = k.to_ascii_uppercase();
+    // vars_os (not vars) so an unusual non-UTF8 env var name can't panic credential scrubbing.
+    for (k, _) in std::env::vars_os() {
+        let up = k.to_string_lossy().to_ascii_uppercase();
         if up.contains("KEY") || up.contains("TOKEN") || up.contains("SECRET") || up.contains("PASSWORD")
             || up.starts_with("AWS_") || up.contains("DEEPSEEK") || up.contains("ANTHROPIC")
             || up.contains("OPENAI") || up.contains("DASHSCOPE") || up == "SSH_AUTH_SOCK"
@@ -250,5 +298,34 @@ mod tests {
         // kernel survives the error
         let r2 = k.exec("print('still alive')", Duration::from_secs(20)).unwrap();
         assert!(r2.ok && r2.stdout.contains("still alive"));
+    }
+
+    #[test]
+    fn timeout_restarts_kernel_and_stays_usable() {
+        let Some(py) = have_python() else { return };
+        let k = PyKernel::start(&py, std::env::temp_dir().as_path()).unwrap();
+        // A runaway cell — must time out, not hang the test.
+        let r = k.exec("while True:\n    pass", Duration::from_millis(600));
+        assert!(r.is_err(), "runaway cell should time out");
+        assert!(r.unwrap_err().to_string().contains("timed out"));
+        // The kernel must be RESTARTED (usable), not bricked — the old bug left a dead child
+        // so every later cell returned "kernel exited".
+        let r2 = k.exec("print(6 * 7)", Duration::from_secs(20)).unwrap();
+        assert!(r2.ok, "kernel must work after a timeout, err: {:?}", r2.error);
+        assert!(r2.stdout.contains("42"), "stdout after restart: {:?}", r2.stdout);
+    }
+
+    #[test]
+    fn timeout_with_pipe_inheriting_grandchild_does_not_deadlock() {
+        let Some(py) = have_python() else { return };
+        let k = PyKernel::start(&py, std::env::temp_dir().as_path()).unwrap();
+        // A background grandchild inherits stdout; on the old code its open pipe write-end
+        // kept the reader blocked so the scope join deadlocked. The group-kill must free it.
+        let code = "import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\nwhile True:\n    pass";
+        let r = k.exec(code, Duration::from_millis(800));
+        assert!(r.is_err(), "should time out, not deadlock");
+        // And still usable after.
+        let r2 = k.exec("print('ok')", Duration::from_secs(20)).unwrap();
+        assert!(r2.ok && r2.stdout.contains("ok"));
     }
 }
