@@ -2178,6 +2178,8 @@ pub async fn coding_run(
             "write_file" => format!("✎ wrote `{}`", step.input),
             "edit" => format!("✎ edited `{}` — {}", step.input, obs_full),
             "glob" => format!("`glob {}`\n\n```\n{}\n```", step.input, obs_full),
+            "search_skills" => format!("**🧭 检索技能 · {}**\n\n{}", step.input, obs_full),
+            "load_skill" => format!("**📖 加载技能 · {}**\n\n{}", step.input, obs_full),
             "litsearch" => format!("**📚 文献检索 · {}**\n\n{}", step.input, obs_full),
             "pip_install" => format!("**📦 安装依赖 · {}**\n\n```\n{}\n```", step.input, obs_full),
             "job_start" => format!("**🚀 后台作业**\n\n```python\n{}\n```\n\n{}", step.input.trim(), obs_full),

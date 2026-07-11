@@ -15,6 +15,7 @@ pub mod events;
 pub mod kernel;
 pub mod model;
 pub mod search;
+pub mod skills;
 pub mod step;
 pub mod supervisor;
 pub mod synthesize;

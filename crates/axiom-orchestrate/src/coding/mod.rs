@@ -9,6 +9,7 @@ pub mod sandbox;
 
 use crate::control::Pause;
 use crate::kernel::PyKernel;
+use crate::skills;
 use axiom_providers::message::{ContentBlock, Message, Request};
 use axiom_runtime::litsearch::LitSearch;
 use axiom_runtime::supervisor::{is_retryable_error, retry_async, Cancel, RetryPolicy};
@@ -179,6 +180,12 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              {\"tool\":\"checkpoint\"}   (snapshot the kernel's variables to disk before a risky or huge \
              step, so you can recover them.)  {\"tool\":\"restore\"}   (reload them after a kernel restart \
              or crash — in-memory state is otherwise lost when the kernel restarts.)\n\
+             {\"tool\":\"search_skills\",\"query\":\"<domain/task>\"}   (search the domain SKILL library \
+             for an expert playbook — e.g. single-cell, phylogenetics, differential expression, CRISPR \
+             screen, protein engineering, GWAS. Returns matching skill names.)\n\
+             {\"tool\":\"load_skill\",\"name\":\"<skill name>\"}   (load a skill card: the exact packages \
+             to pip_install, the canonical pipeline, which native figure block to emit, and the rigor \
+             pitfalls. When a task is in a known domain, SEARCH + LOAD the skill BEFORE writing code.)\n\
              {\"tool\":\"litsearch\",\"query\":\"<search terms>\"}   (search the peer-reviewed \
              literature via OpenAlex — returns real titles, years, authors, DOIs and abstracts. Use \
              it to FRAME an analysis around a real published study, to find the canonical dataset/method \
@@ -409,6 +416,25 @@ pub async fn run_coding_agent(
                 };
                 (q, obs)
             }
+            "search_skills" => {
+                let q = arg_str(&v, "query");
+                let hits = skills::search(q);
+                let obs = if hits.is_empty() {
+                    format!("(no skill matched '{q}') Available skills:\n{}", skills::catalogue())
+                } else {
+                    let list = hits.iter().map(|s| format!("- {} — {}", s.name, s.summary)).collect::<Vec<_>>().join("\n");
+                    format!("{list}\n\nLoad one with load_skill.")
+                };
+                (q.to_string(), obs)
+            }
+            "load_skill" => {
+                let name = arg_str(&v, "name");
+                let obs = match skills::get(name) {
+                    Some(s) => s.card.to_string(),
+                    None => format!("(no skill named '{name}') Available skills:\n{}", skills::catalogue()),
+                };
+                (name.to_string(), obs)
+            }
             "pip_install" => match &kernel {
                 Some(k) => {
                     let pkgs: Vec<String> = v
@@ -601,7 +627,8 @@ pub async fn run_coding_agent(
         let input = match tool.as_str() {
             "python" => arg_str(&v, "code").to_string(),
             "read_file" | "list_dir" | "write_file" | "edit" => arg_str(&v, "path").to_string(),
-            "search" | "litsearch" => arg_str(&v, "query").to_string(),
+            "search" | "litsearch" | "search_skills" => arg_str(&v, "query").to_string(),
+            "load_skill" => arg_str(&v, "name").to_string(),
             "glob" => arg_str(&v, "pattern").to_string(),
             "job_start" => arg_str(&v, "code").to_string(),
             "job_status" => arg_str(&v, "id").to_string(),
