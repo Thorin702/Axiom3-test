@@ -1300,7 +1300,8 @@ fn detect_python() -> Option<String> {
 /// The notebook runs in a DEDICATED virtualenv under the app data dir — an isolated
 /// environment we manage (Claude-Science-style), never the user's system Python. This
 /// returns that interpreter, creating the venv on first use. The scientific stack
-/// (numpy/pandas/matplotlib) is seeded separately by `kernel_prepare`.
+/// (numpy/pandas/scipy/matplotlib/statsmodels/scikit-learn) is seeded separately by
+/// `kernel_prepare`.
 /// A filesystem-safe single path component from an (untrusted) run id. These commands are
 /// directly invokable, so a crafted runid must never escape the app-data dir via `..` / `/`.
 fn safe_run_component(runid: &str) -> String {
@@ -1338,9 +1339,21 @@ fn ensure_kernel_env(base: &std::path::Path) -> Result<std::path::PathBuf, Strin
     Ok(py)
 }
 
-/// Whether the managed venv has the scientific stack (marker written by `kernel_prepare`).
+/// The current scientific-stack revision. Bump this whenever `kernel_prepare` changes
+/// which packages it seeds — the marker stores this value, so a venv prepared under an
+/// older revision reads as "not ready" and gets re-prepared (already-present packages
+/// are no-ops). Rev 2 added scipy, statsmodels and scikit-learn to rev 1's numpy/pandas/
+/// matplotlib. Rev 3 added requests, so the kernel can fetch public datasets over HTTP(S).
+const SCI_MARKER_REV: &[u8] = b"3";
+
+/// Whether the managed venv has the CURRENT scientific stack. The marker records the
+/// revision it was prepared under; an older (or absent) marker means a re-prepare is
+/// needed to pick up newly-seeded packages.
 fn sci_ready(base: &std::path::Path) -> bool {
-    base.join("notebook").join(".venv").join(".sci_ready").exists()
+    match std::fs::read(base.join("notebook").join(".venv").join(".sci_ready")) {
+        Ok(rev) => rev == SCI_MARKER_REV,
+        Err(_) => false,
+    }
 }
 
 /// A CA bundle for pip/HTTPS. The python.org macOS framework build ships without a
@@ -1398,8 +1411,11 @@ pub fn kernel_reset(state: tauri::State<'_, AppState>) {
 }
 
 /// One-time (idempotent) setup of the notebook's scientific stack — numpy, pandas,
-/// matplotlib — into the managed venv, so figures are COMPUTED from data. Blocking +
-/// networked; the UI calls it behind a visible "preparing…" state. Writes a
+/// scipy, matplotlib, statsmodels, scikit-learn — into the managed venv, so figures and
+/// statistics are COMPUTED from data (regression CIs, hypothesis tests, ML) rather than
+/// hand-derived. Without this, the sandboxed agent can't `pip install` at run time (the
+/// run_command allowlist blocks it), so the standard libraries must be seeded up front.
+/// Blocking + networked; the UI calls it behind a visible "preparing…" state. Writes a
 /// `.sci_ready` marker on success so we don't reinstall every launch.
 #[tauri::command]
 pub async fn kernel_prepare(app: tauri::AppHandle) -> Result<String, String> {
@@ -1427,9 +1443,17 @@ pub async fn kernel_prepare(app: tauri::AppHandle) -> Result<String, String> {
             }
         };
         pip(&["install", "--upgrade", "pip", "--quiet", "--disable-pip-version-check"])?;
-        pip(&["install", "--quiet", "--disable-pip-version-check", "numpy", "pandas", "matplotlib"])?;
-        std::fs::write(base.join("notebook").join(".venv").join(".sci_ready"), b"1").ok();
-        Ok::<String, String>("科学环境已就绪 · numpy · pandas · matplotlib".into())
+        // Seed the standard analysis stack in one resolve so shared deps (scipy underpins
+        // statsmodels and scikit-learn) are pinned consistently. The agent relies on these
+        // being present — it cannot install packages itself at run time.
+        pip(&[
+            "install", "--quiet", "--disable-pip-version-check",
+            "numpy", "pandas", "scipy", "matplotlib", "statsmodels", "scikit-learn", "requests",
+        ])?;
+        std::fs::write(base.join("notebook").join(".venv").join(".sci_ready"), SCI_MARKER_REV).ok();
+        Ok::<String, String>(
+            "科学环境已就绪 · numpy · pandas · scipy · matplotlib · statsmodels · scikit-learn · requests".into(),
+        )
     })
     .await
     .map_err(|e| e.to_string())?
@@ -2090,8 +2114,9 @@ pub async fn coding_run(
         }
     }
     let goal = format!("{goal}{data_note}");
-    // Analysis mode: give the agent a PERSISTENT Python kernel (numpy/pandas/matplotlib
-    // from the managed venv), cwd = the workspace so files it writes and code it runs
+    // Analysis mode: give the agent a PERSISTENT Python kernel (numpy/pandas/scipy/
+    // matplotlib/statsmodels/scikit-learn from the managed venv), cwd = the workspace so
+    // files it writes and code it runs
     // agree. Figures it computes are captured into the artifact. A dedicated kernel per
     // run keeps it isolated from the user's notebook.
     let kernel = if analyze.unwrap_or(false) {
@@ -2153,6 +2178,8 @@ pub async fn coding_run(
             "write_file" => format!("✎ wrote `{}`", step.input),
             "edit" => format!("✎ edited `{}` — {}", step.input, obs_full),
             "glob" => format!("`glob {}`\n\n```\n{}\n```", step.input, obs_full),
+            "litsearch" => format!("**📚 文献检索 · {}**\n\n{}", step.input, obs_full),
+            "pip_install" => format!("**📦 安装依赖 · {}**\n\n```\n{}\n```", step.input, obs_full),
             "read_file" | "list_dir" | "search" => format!("`{} {}`", step.tool, step.input),
             _ => format!("**{}** {}\n\n{}", step.tool, step.detail, obs_full),
         };
@@ -2202,6 +2229,21 @@ pub async fn coding_run(
             synthesis.push_str("\n```pyfig\n");
             synthesis.push_str(f);
             synthesis.push_str("\n```\n");
+        }
+    }
+    // Per-file artifact manifest: the data tables / sequences / saved figures the agent wrote
+    // into the workspace, each referenced by name + size (large files stay by-name, not inlined).
+    if !result.artifacts.is_empty() {
+        synthesis.push_str("\n\n## 产物文件 · Files produced\n");
+        for a in &result.artifacts {
+            let sz = if a.bytes >= 1_048_576 {
+                format!("{:.1} MB", a.bytes as f64 / 1_048_576.0)
+            } else if a.bytes >= 1024 {
+                format!("{:.1} KB", a.bytes as f64 / 1024.0)
+            } else {
+                format!("{} B", a.bytes)
+            };
+            synthesis.push_str(&format!("- `{}` — {sz}\n", a.path));
         }
     }
     Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace })

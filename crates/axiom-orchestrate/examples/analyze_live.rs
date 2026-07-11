@@ -1,5 +1,5 @@
 //! Live smoke test of the "AI Scientist" loop: an agent given a PERSISTENT Python kernel
-//! (numpy/pandas/matplotlib from the managed venv) is asked to compute a result and plot
+//! (numpy/pandas/scipy/matplotlib/statsmodels/scikit-learn from the managed venv) is asked to compute a result and plot
 //! it. Verifies the loop drives the kernel and that a real matplotlib FIGURE is captured
 //! (computed from data, not asserted).
 //!
