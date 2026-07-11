@@ -139,6 +139,11 @@ function App() {
   );
   const [references, setReferences] = useState(() => localStorage.getItem("axiom3.references") ?? "");
   const [codeWs, setCodeWs] = useState<string | null>(null);
+  // The session's project directory (working folder on disk). A new session must pick one.
+  const [projectDir, setProjectDir] = useState<string | null>(() => localStorage.getItem("axiom3.projectDir"));
+  const [newSessionOpen, setNewSessionOpen] = useState(false); // the "pick a project directory" dialog
+  const [pickingDir, setPickingDir] = useState<string | null>(null); // dir chosen inside that dialog
+  const projectName = (dir: string | null) => (dir ? dir.split(/[/\\]/).filter(Boolean).pop() || dir : "");
   const [codeWritable, setCodeWritable] = useState(false);
   const [codeAnalyze, setCodeAnalyze] = useState(false); // give the agent a live Python kernel
   const [codeAttachments, setCodeAttachments] = useState<string[]>([]); // data files for analysis
@@ -560,15 +565,31 @@ function App() {
   }
 
   // Start a fresh task: clear the composer and show the home greeting.
+  // A new session must first pick a project directory — open that dialog (default to the last dir).
   function newTask() {
+    setPickingDir(projectDir);
+    setNewSessionOpen(true);
+  }
+  async function pickProjectDir() {
+    const dir = await open({ directory: true, multiple: false });
+    if (typeof dir === "string") setPickingDir(dir);
+  }
+  // Confirm the project directory, then start a fresh session anchored to it.
+  function confirmNewSession() {
+    const dir = pickingDir;
+    if (!dir) return;
+    setProjectDir(dir);
+    localStorage.setItem("axiom3.projectDir", dir);
+    setCodeWs(dir); // the agent works in the project directory
+    invoke<ProjectStatus>("open_project", { name: projectName(dir) }).then(setStatus).catch(() => {});
+    setNewSessionOpen(false);
     setNav("tasks");
     setView("home");
     setActiveId(null);
     setCmd(null);
     setSlash("");
     setDraft("");
-    // Keep `references`: it's the user's evidence corpus, not per-task scratch. Clearing it
-    // silently ungrounded follow-up checks (grounded verdicts flip when the base vanishes).
+    // Keep `references`: it's the user's evidence corpus, not per-task scratch.
   }
 
   // Time-of-day greeting for the home screen.
@@ -1300,6 +1321,32 @@ function App() {
       {paletteOpen && (
         <CommandPalette lang={lang} items={paletteItems} onPick={onPalettePick} onClose={() => setPaletteOpen(false)} />
       )}
+      {/* New session must pick a project directory first (Claude-style). */}
+      {newSessionOpen && (
+        <div className="ax-set-overlay" onClick={() => setNewSessionOpen(false)}>
+          <div className="ax-newsess" onClick={(e) => e.stopPropagation()}>
+            <p className="ax-newsess__title">{lang === "zh" ? "新建会话 · 选择项目目录" : "New session · pick a project folder"}</p>
+            <p className="ax-newsess__hint">{lang === "zh" ? "会话在这个目录里工作:数据、产物、代码都在此。" : "The session works inside this folder — its data, artifacts, and code live here."}</p>
+            <button className="ax-newsess__pick" onClick={pickProjectDir}>
+              <FolderOpen size={16} aria-hidden />
+              {pickingDir ? (
+                <span className="ax-newsess__path">
+                  <b>{projectName(pickingDir)}</b>
+                  <span>{pickingDir}</span>
+                </span>
+              ) : (
+                <span>{lang === "zh" ? "选择文件夹…" : "Choose a folder…"}</span>
+              )}
+            </button>
+            <div className="ax-newsess__actions">
+              <button className="ax-btn" onClick={() => setNewSessionOpen(false)}>{lang === "zh" ? "取消" : "Cancel"}</button>
+              <button className="ax-btn ax-btn--primary" onClick={confirmNewSession} disabled={!pickingDir}>
+                {lang === "zh" ? "开始" : "Start"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {dropping && (
         <div className="ax-dropzone">
           <div className="ax-dropzone__box">
@@ -1635,6 +1682,13 @@ function App() {
                 {lang === "zh" ? "输入任务开始,或用 / 唤出能力" : "Type a task, or use / for capabilities"}
               </p>
               {composerBlock()}
+              {projectDir && (
+                <p className="ax-proj-line" title={projectDir}>
+                  <FolderOpen size={12} aria-hidden />
+                  <b>{projectName(projectDir)}</b>
+                  <span>{projectDir}</span>
+                </p>
+              )}
 
               <details className="ax-dev" style={{ maxWidth: 700, margin: "26px auto 0" }}>
                 <summary>{t(lang, "dev_tools")}</summary>

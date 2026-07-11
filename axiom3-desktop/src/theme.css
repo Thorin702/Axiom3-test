@@ -388,6 +388,29 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   box-shadow: var(--ax-shadow); padding: 6px; max-height: 280px; overflow-y: auto; }
 .ax-slash-head { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
   color: var(--ax-ink-faint); padding: 4px 10px 6px; }
+
+/* ── new-session: pick a project directory ─────────────────────────── */
+.ax-newsess { width: min(440px, 92vw); background: var(--ax-surface); border: 1px solid var(--ax-line);
+  border-radius: var(--ax-radius-lg); box-shadow: var(--ax-shadow); padding: 22px; }
+.ax-newsess__title { font-size: 16px; font-weight: 650; margin: 0 0 6px; color: var(--ax-ink); }
+.ax-newsess__hint { font-size: 12.5px; color: var(--ax-ink-soft); margin: 0 0 16px; line-height: 1.5; }
+.ax-newsess__pick { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  padding: 12px 14px; border: 1px dashed var(--ax-line-strong, var(--ax-line)); border-radius: 10px;
+  background: var(--ax-paper); color: var(--ax-ink); cursor: pointer; transition: border-color .12s, background .12s; }
+.ax-newsess__pick:hover { border-color: var(--ax-accent); background: var(--ax-surface); }
+.ax-newsess__path { display: flex; flex-direction: column; min-width: 0; }
+.ax-newsess__path b { font-size: 13.5px; font-weight: 600; }
+.ax-newsess__path span { font-size: 11px; color: var(--ax-ink-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ax-newsess__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.ax-btn--primary { background: var(--ax-accent); border-color: var(--ax-accent); color: #fff; }
+.ax-btn--primary:hover:not(:disabled) { filter: brightness(0.93); }
+.ax-btn--primary:disabled { opacity: 0.5; cursor: default; }
+
+/* project directory line, right under the composer */
+.ax-proj-line { display: flex; align-items: center; gap: 6px; margin: 8px 2px 0; font-size: 11.5px;
+  color: var(--ax-ink-faint); min-width: 0; }
+.ax-proj-line b { color: var(--ax-ink-soft); font-weight: 600; flex: none; }
+.ax-proj-line span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ax-slash-item { display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
   border: none; background: transparent; border-radius: var(--ax-radius); padding: 8px 10px;
   cursor: pointer; font-family: var(--ax-sans); }
