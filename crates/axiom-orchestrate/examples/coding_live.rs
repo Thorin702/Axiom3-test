@@ -13,7 +13,13 @@ async fn main() {
     let dir = std::env::temp_dir().join(format!("axiom-coding-live-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("solution.py"), "def fib(n):\n    pass  # TODO: implement\n").unwrap();
+    // Seed a fib with a one-line BUG (a,b start at 1,1 instead of 0,1) so the agent should
+    // LOCATE + fix it with a precise `edit`, not rewrite the whole file.
+    std::fs::write(
+        dir.join("solution.py"),
+        "def fib(n):\n    a, b = 1, 1  # start values\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n",
+    )
+    .unwrap();
     std::fs::write(
         dir.join("check.py"),
         "from solution import fib\n\
@@ -33,9 +39,11 @@ async fn main() {
     let pause = Pause::new();
 
     println!("=== coding agent (model={model_id}) on {} ===", dir.display());
+    let mut used_edit = false;
     let res = run_coding_agent(
-        "Implement fib(n) in solution.py as the 0-indexed Fibonacci sequence (fib(0)=0, fib(1)=1). \
-         Then run `python3 check.py` and ensure it prints ALL TESTS PASSED. Iterate until it passes.",
+        "solution.py has a fib(n) with a BUG (check.py fails). Locate it, fix it with a precise \
+         `edit` (do not rewrite the whole file), then run `python3 check.py` until it prints \
+         ALL TESTS PASSED.",
         &sb,
         &model,
         &cancel,
@@ -43,11 +51,13 @@ async fn main() {
         &budget,
         None,
         |step| {
+            if step.tool == "edit" { used_edit = true; }
             let obs1: String = step.observation.lines().next().unwrap_or("").chars().take(90).collect();
             println!("  [step {}] {} {} → {}", step.n, step.tool, step.detail, obs1);
         },
     )
     .await;
+    println!("=== used `edit` tool: {} ===", if used_edit { "YES ✓" } else { "no" });
 
     println!("\n=== status: {} ({} steps) ===", res.status, res.steps);
     println!("SUMMARY:\n{}\n", res.summary.chars().take(800).collect::<String>());

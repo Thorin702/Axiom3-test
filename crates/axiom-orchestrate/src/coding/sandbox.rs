@@ -184,6 +184,71 @@ impl Sandbox {
         Ok(())
     }
 
+    /// Precisely edit a file (read-write mode): replace the UNIQUE occurrence of `old` with
+    /// `new`. Refused — not misapplied — if `old` is absent or appears more than once, so the
+    /// agent must include enough surrounding context to target exactly one spot. This is the
+    /// key upgrade over rewriting the whole file: it scales to large files and can't silently
+    /// clobber. Inherits read/write permission + atomic write from read_file/write_file.
+    pub fn edit_file(&self, p: &str, old: &str, new: &str) -> Result<(), String> {
+        if old.is_empty() {
+            return Err("edit: 'old' must not be empty".into());
+        }
+        if old == new {
+            return Err("edit: 'old' and 'new' are identical (nothing to do)".into());
+        }
+        let content = self.read_file(p)?;
+        let count = content.matches(old).count();
+        if count == 0 {
+            return Err(format!("edit: 'old' text not found in {p}"));
+        }
+        if count > 1 {
+            return Err(format!(
+                "edit: 'old' matches {count} places in {p}; include more surrounding context so it's unique"
+            ));
+        }
+        let updated = content.replacen(old, new, 1);
+        self.write_file(p, &updated)
+    }
+
+    /// Find files by a simplified glob within the workspace — PURE RUST, no external `rg`
+    /// (which may be absent). Supports `**/`, `*.ext`, `*substr*`, `prefix*`, `*suffix`, and
+    /// plain names; skips .git / target / node_modules / dotdirs. Up to 200 relative paths.
+    pub fn glob(&self, pattern: &str) -> Result<String, String> {
+        let pat = pattern.trim().trim_start_matches("./").trim_start_matches("**/");
+        let mut out: Vec<String> = Vec::new();
+        let mut stack = vec![self.root.clone()];
+        let mut budget: i64 = 50_000;
+        while let Some(dir) = stack.pop() {
+            let rd = match std::fs::read_dir(&dir) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            for e in rd.flatten() {
+                budget -= 1;
+                if budget < 0 {
+                    break;
+                }
+                let name = e.file_name().to_string_lossy().into_owned();
+                let path = e.path();
+                if path.is_dir() {
+                    if name == ".git" || name == "target" || name == "node_modules" || name.starts_with('.') {
+                        continue;
+                    }
+                    stack.push(path);
+                    continue;
+                }
+                if glob_match(pat, &name) {
+                    if let Ok(rel) = path.strip_prefix(&self.root) {
+                        out.push(rel.to_string_lossy().replace('\\', "/"));
+                    }
+                }
+            }
+        }
+        out.sort();
+        out.truncate(200);
+        Ok(if out.is_empty() { "(no matching files)".into() } else { out.join("\n") })
+    }
+
     /// Reject command arguments that point outside the workspace or at DENY paths, so the
     /// allowlisted read tools (`cat`/`grep`/`find`/…) can't be turned into a filesystem
     /// exfiltrator (`cat /etc/passwd`, `cat .env`, `find / -name id_rsa`). Flags (leading
@@ -357,6 +422,29 @@ fn cap_tail(s: &mut String, max: usize) {
     *s = format!("…[truncated]\n{tail}");
 }
 
+/// Match a filename against a simplified glob token (see `Sandbox::glob`).
+fn glob_match(pat: &str, name: &str) -> bool {
+    if pat.is_empty() || pat == "*" || pat == "**" {
+        return true;
+    }
+    if let Some(ext) = pat.strip_prefix("*.") {
+        return name.ends_with(&format!(".{ext}"));
+    }
+    let star_pre = pat.starts_with('*');
+    let star_suf = pat.ends_with('*');
+    let core = pat.trim_matches('*');
+    if star_pre && star_suf {
+        return !core.is_empty() && name.contains(core);
+    }
+    if star_pre {
+        return name.ends_with(core);
+    }
+    if star_suf {
+        return name.starts_with(core);
+    }
+    name == pat
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +464,44 @@ mod tests {
         assert_eq!(sb.read_file("a.txt").unwrap(), "hello");
         assert!(sb.read_file("../../../etc/passwd").is_err());
         assert!(sb.read_file("/etc/passwd").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn edit_replaces_unique_refuses_missing_and_ambiguous() {
+        let root = tmp("edit");
+        std::fs::write(root.join("f.rs"), "let x = 1;\nlet y = 2;\nlet x2 = 1;\n").unwrap();
+        let rw = Sandbox::with_mode(&root, SandboxMode::ReadWrite).unwrap();
+        // unique match -> replaced
+        rw.edit_file("f.rs", "let y = 2;", "let y = 99;").unwrap();
+        assert!(rw.read_file("f.rs").unwrap().contains("let y = 99;"));
+        // missing -> refused
+        assert!(rw.edit_file("f.rs", "let z = 3;", "x").unwrap_err().contains("not found"));
+        // ambiguous ("= 1;" appears twice) -> refused, file unchanged
+        let before = rw.read_file("f.rs").unwrap();
+        assert!(rw.edit_file("f.rs", "= 1;", "= 7;").unwrap_err().contains("matches"));
+        assert_eq!(rw.read_file("f.rs").unwrap(), before);
+        // read-only mode can't edit
+        let ro = Sandbox::new(&root).unwrap();
+        assert!(ro.edit_file("f.rs", "let x = 1;", "let x = 0;").is_err());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn glob_finds_by_pattern_and_skips_git() {
+        let root = tmp("glob");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/a.rs"), "x").unwrap();
+        std::fs::write(root.join("src/b.rs"), "x").unwrap();
+        std::fs::write(root.join("README.md"), "x").unwrap();
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".git/aa.rs"), "x").unwrap();
+        let sb = Sandbox::new(&root).unwrap();
+        let rs = sb.glob("*.rs").unwrap();
+        assert!(rs.contains("src/a.rs") && rs.contains("src/b.rs"), "got: {rs}");
+        assert!(!rs.contains("README"), "should not match README");
+        assert!(!rs.contains(".git"), ".git must be skipped: {rs}");
+        assert!(sb.glob("**/*.md").unwrap().contains("README.md"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

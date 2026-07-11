@@ -108,16 +108,22 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
          EXACTLY ONE JSON object and nothing else — one of:\n\
          {\"tool\":\"read_file\",\"path\":\"<relative path>\"}\n\
          {\"tool\":\"list_dir\",\"path\":\"<relative path>\"}\n\
+         {\"tool\":\"glob\",\"pattern\":\"<glob, e.g. src/**/*.rs>\"}   (find files by name/pattern)\n\
          {\"tool\":\"search\",\"query\":\"<text to grep for>\"}\n",
     );
     if mode == SandboxMode::ReadWrite {
         s.push_str(
-            "{\"tool\":\"write_file\",\"path\":\"<relative path>\",\"content\":\"<COMPLETE new file contents>\"}\n\
+            "{\"tool\":\"edit\",\"path\":\"<relative path>\",\"old\":\"<exact snippet to replace>\",\"new\":\"<replacement>\"}\n\
+             {\"tool\":\"write_file\",\"path\":\"<relative path>\",\"content\":\"<COMPLETE new file contents>\"}\n\
              {\"tool\":\"run\",\"cmd\":[\"prog\",\"arg\",...]}   (build/test, e.g. [\"cargo\",\"test\"] or [\"pytest\",\"-q\"])\n\
              {\"final\":\"<what you changed and the test result>\"}\n\
-             You CAN create/overwrite files and run build/test commands. Make the change, RUN the \
-             tests, read failures, and iterate until they pass — THEN finish. write_file replaces the \
-             WHOLE file, so include its complete contents.",
+             Workflow: use glob/search to LOCATE, read_file to understand, then make SMALL precise \
+             changes with `edit` — its `old` must match a UNIQUE spot verbatim (include enough \
+             surrounding lines), and it fails rather than misapply if `old` is missing or ambiguous. \
+             Prefer edit over write_file; use write_file only to CREATE a file or rewrite it wholesale \
+             (it replaces the entire file). After a SUCCESSFUL edit, do NOT repeat the same edit — move \
+             on to the next change or run the tests. After changing, RUN the tests, read failures, and \
+             iterate until they pass — THEN finish.",
         );
     } else {
         s.push_str(
@@ -227,12 +233,35 @@ pub async fn run_coding_agent(
                 };
                 (p, obs)
             }
+            "edit" => {
+                let p = arg_str(&v, "path").to_string();
+                let old = arg_str(&v, "old");
+                let new = arg_str(&v, "new");
+                let obs = match sandbox.edit_file(&p, old, new) {
+                    Ok(()) => format!("edited {p} (1 replacement)"),
+                    Err(e) => format!("ERROR: {e}"),
+                };
+                (p, obs)
+            }
+            "glob" => {
+                let pat = arg_str(&v, "pattern").to_string();
+                let obs = sandbox.glob(&pat).unwrap_or_else(|e| format!("ERROR: {e}"));
+                (pat, obs)
+            }
             "search" => {
                 let q = arg_str(&v, "query").to_string();
-                let argv = vec!["rg".into(), "-n".into(), "--max-count".into(), "40".into(), q.clone()];
-                let obs = match sandbox.run_command(&argv, Duration::from_secs(budget.cmd_timeout_s)).await {
+                let to = Duration::from_secs(budget.cmd_timeout_s);
+                let rg = vec!["rg".into(), "-n".into(), "--max-count".into(), "40".into(), q.clone()];
+                let obs = match sandbox.run_command(&rg, to).await {
                     Ok(r) => if r.output.trim().is_empty() { "(no matches)".into() } else { r.output },
-                    Err(e) => format!("ERROR: {e}"),
+                    // ripgrep binary may be absent — fall back to grep (also allowlisted).
+                    Err(_) => {
+                        let grep = vec!["grep".into(), "-rnI".into(), "--".into(), q.clone(), ".".into()];
+                        match sandbox.run_command(&grep, to).await {
+                            Ok(r) => if r.output.trim().is_empty() { "(no matches)".into() } else { r.output },
+                            Err(e) => format!("ERROR: {e}"),
+                        }
+                    }
                 };
                 (q, obs)
             }
@@ -286,8 +315,9 @@ pub async fn run_coding_agent(
         // The full tool input, for the execution log (detail is only a short label).
         let input = match tool.as_str() {
             "python" => arg_str(&v, "code").to_string(),
-            "read_file" | "list_dir" | "write_file" => arg_str(&v, "path").to_string(),
+            "read_file" | "list_dir" | "write_file" | "edit" => arg_str(&v, "path").to_string(),
             "search" => arg_str(&v, "query").to_string(),
+            "glob" => arg_str(&v, "pattern").to_string(),
             _ => detail.clone(), // "run": the joined argv
         };
         on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone(), input, reasoning: reasoning.clone(), figures: step_figures });
