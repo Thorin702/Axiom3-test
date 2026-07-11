@@ -4,7 +4,7 @@
 // carrying its own rigor. Scoped to workflow / coding sessions (the generated artifacts);
 // draft-check sessions keep their claim-by-claim flow in the thread.
 import { useEffect, useState } from "react";
-import { X, FileDown, ScanSearch } from "lucide-react";
+import { X, FileDown, ScanSearch, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
@@ -29,9 +29,16 @@ export function ArtifactPane({
   busy?: boolean;
 }) {
   const zh = lang === "zh";
-  const steps = task.steps ?? [];
-  const reviewFindings = task.review
-    ? task.review.split("\n").map((l) => l.replace(/^\s*[-*•·]\s?/, "").trim()).filter((l) => l.length > 1)
+
+  // Version history: a follow-up iterates the artifact (v1 → v2 …). Default to the latest.
+  const versions = task.versions ?? [{ synthesis: task.synthesis, review: task.review, steps: task.steps, ts: task.ts, goal: task.goal ?? "" }];
+  const [vIdx, setVIdx] = useState(versions.length - 1);
+  useEffect(() => setVIdx(versions.length - 1), [task.id, versions.length]);
+  const ver = versions[Math.min(vIdx, versions.length - 1)];
+
+  const steps = ver.steps ?? [];
+  const reviewFindings = ver.review
+    ? ver.review.split("\n").map((l) => l.replace(/^\s*[-*•·]\s?/, "").trim()).filter((l) => l.length > 1)
     : [];
 
   const TABS: { key: Tab; zh: string; en: string; n?: number }[] = [
@@ -49,7 +56,19 @@ export function ArtifactPane({
     <aside className="ax-artpane">
       <div className="ax-artpane__head">
         <span className="ax-artpane__name" title={task.title}>{task.title}</span>
-        <span className="ax-artpane__ver" title={zh ? "版本(暂为单版)" : "version"}>v1</span>
+        {versions.length > 1 ? (
+          <span className="ax-artpane__vsel">
+            <button className="ax-artpane__vbtn" disabled={vIdx <= 0} onClick={() => setVIdx((i) => Math.max(0, i - 1))} title={zh ? "上一版" : "previous version"}>
+              <ChevronLeft size={13} aria-hidden />
+            </button>
+            <span className="ax-artpane__ver" title={zh ? "版本" : "version"}>v{vIdx + 1}/{versions.length}</span>
+            <button className="ax-artpane__vbtn" disabled={vIdx >= versions.length - 1} onClick={() => setVIdx((i) => Math.min(versions.length - 1, i + 1))} title={zh ? "下一版" : "next version"}>
+              <ChevronRight size={13} aria-hidden />
+            </button>
+          </span>
+        ) : (
+          <span className="ax-artpane__ver" title={zh ? "版本" : "version"}>v1</span>
+        )}
         <div className="ax-artpane__actions">
           <button className="ax-iconbtn" onClick={onExport} disabled={busy} title={zh ? "导出溯源" : "Export provenance"} aria-label="export">
             <FileDown size={15} aria-hidden />
@@ -77,7 +96,14 @@ export function ArtifactPane({
 
       <div className="ax-artpane__body">
         {tab === "artifact" && (
-          task.synthesis ? <ArtifactBody text={task.synthesis} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>
+          <>
+            {versions.length > 1 && (
+              <p className="ax-hint" style={{ marginBottom: 10 }}>
+                {zh ? `第 ${vIdx + 1} 版 · 目标:${ver.goal}` : `Version ${vIdx + 1} · goal: ${ver.goal}`}
+              </p>
+            )}
+            {ver.synthesis ? <ArtifactBody text={ver.synthesis} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>}
+          </>
         )}
 
         {tab === "messages" && (

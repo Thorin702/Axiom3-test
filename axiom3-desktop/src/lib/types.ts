@@ -105,6 +105,10 @@ export type TaskStatus = "running" | "done" | "failed" | "cancelled";
 // is readable after reload, not just as an ephemeral 120-char rail summary). `model` is
 // kept so an artifact can state which model produced each part (provenance).
 export type AgentStepView = { role: string; status: string; output: string; model?: string };
+// One version of a session's artifact — a follow-up run iterates the artifact (v1 → v2 …)
+// rather than spawning a new session (forking does that). The task's top-level
+// synthesis/review/steps mirror the LATEST version.
+export type ArtifactVersion = { synthesis?: string; review?: string; steps?: AgentStepView[]; ts: number; goal: string };
 // A research SESSION: the unit of work. Carries its full goal so it can be FORKED (re-run
 // a variant without losing the original thread), and enough lineage/provenance for the
 // artifact to state how it was made.
@@ -118,8 +122,9 @@ export type Task = {
   forkedFrom?: string; // session id this was forked from
   deep?: boolean; // ran as an adaptive multi-agent (AB-MCTS) search
   result?: DraftCheck;
-  synthesis?: string; // workflow runs: the folded multi-agent output
+  synthesis?: string; // workflow runs: the folded multi-agent output (latest version)
   review?: string; // the reviewer agent's critique/findings (never a verdict)
   steps?: AgentStepView[]; // workflow runs: each sub-agent's output
+  versions?: ArtifactVersion[]; // artifact history (v1…vN); present once iterated
   error?: string;
 };

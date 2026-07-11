@@ -625,16 +625,24 @@ function App() {
   // Launch a dynamic multi-agent WORKFLOW run. The supervisor decomposes the goal,
   // fans out sub-agents, and streams their lifecycle into the ActivityRail; we open the
   // rail and record a task so its synthesized result is readable in the thread.
-  async function runWorkflow(goal: string) {
+  // `appendTo` = iterate an existing session's artifact (a follow-up → v2, v3 …). Without
+  // it, a fresh session is created. Forking (separate thread) is handled elsewhere.
+  async function runWorkflow(goal: string, appendTo?: string) {
     const g = goal.trim();
     if (!g) return;
     const proj = await ensureProject();
     if (!proj) return;
     const runid = `run-${crypto.randomUUID()}`;
+    const sessionId = appendTo ?? runid;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
-    setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: deepSearch, forkedFrom: forkOrigin ?? undefined }, ...ts]);
-    setForkOrigin(null);
-    setActiveId(runid);
+    if (appendTo) {
+      setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running" } : x)));
+      setActiveId(appendTo);
+    } else {
+      setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: deepSearch, forkedFrom: forkOrigin ?? undefined }, ...ts]);
+      setForkOrigin(null);
+      setActiveId(runid);
+    }
     setNav("tasks");
     setView("thread");
     setCmd(null);
@@ -647,22 +655,20 @@ function App() {
       review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
     }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch }));
+    const steps = r?.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model }));
     setTasks((ts) =>
-      ts.map((x) =>
-        x.id === runid
-          ? r
-            ? {
-                ...x,
-                status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed",
-                synthesis: r.synthesis ?? undefined,
-                review: r.review ?? undefined,
-                // Keep each sub-agent's full output + model so the artifact can state how it
-                // was made (which model produced each part) after reload.
-                steps: r.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model })),
-              }
-            : { ...x, status: "failed", error: "failed" }
-          : x
-      )
+      ts.map((x) => {
+        if (x.id !== sessionId) return x;
+        if (!r) return { ...x, status: "failed" as const, error: "failed" };
+        const status = r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed";
+        const newVer = { synthesis: r.synthesis ?? undefined, review: r.review ?? undefined, steps, ts: Date.now(), goal: g };
+        if (appendTo) {
+          // seed v1 from the pre-iteration state, then append this run as the newest version.
+          const prior = x.versions ?? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }];
+          return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps, goal: g, versions: [...prior, newVer] };
+        }
+        return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps };
+      })
     );
   }
 
@@ -795,7 +801,7 @@ function App() {
     const text = slash.trim();
     if (!text || text.startsWith("/")) return false;
     const at = tasks.find((x) => x.id === activeId);
-    if (at?.type === "workflow") runWorkflow(text);
+    if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → iterate the artifact (v2…)
     else if (at?.type === "code" && codeWs) runCoding(text);
     else if (deepSearch) runWorkflow(text); // deep-search mode: run the task as AB-MCTS
     else runCheckDraft(text);

@@ -24,8 +24,11 @@
   --ax-radius-lg: 14px;
   --ax-shadow: 0 1px 2px rgba(20, 24, 22, 0.05), 0 8px 24px rgba(20, 24, 22, 0.08);
   --ax-focus: 0 0 0 3px var(--ax-accent-soft);
-  --ax-serif: "Source Han Serif SC", "Songti SC", "Noto Serif CJK SC", Georgia, "Times New Roman", serif;
-  --ax-sans: "Inter", -apple-system, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+  /* Chinese = Microsoft YaHei (微软雅黑) where present, else PingFang SC / Source Han Sans
+     (clean humanist sans on macOS, since YaHei ships with Windows/Office). Latin display
+     keeps an editorial serif (Georgia) — like Claude Science's serif titles. */
+  --ax-serif: Georgia, "Times New Roman", "Microsoft YaHei", "微软雅黑", "PingFang SC", "Source Han Sans SC", "Noto Sans SC", serif;
+  --ax-sans: "Inter", "Microsoft YaHei", "微软雅黑", "PingFang SC", "Source Han Sans SC", "Noto Sans SC", -apple-system, "Helvetica Neue", sans-serif;
 }
 /* Dark palette — a warm near-black 3-tier stack for real depth + a brighter, alive
    accent (Codex-family). Forced by [data-theme="dark"]; follows the OS otherwise. */
@@ -730,6 +733,11 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   text-overflow: ellipsis; white-space: nowrap; }
 .ax-artpane__ver { flex: none; font-size: 10px; color: var(--ax-ink-faint); border: 0.5px solid var(--ax-line);
   border-radius: 999px; padding: 1px 7px; }
+.ax-artpane__vsel { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.ax-artpane__vbtn { display: inline-flex; align-items: center; border: none; background: transparent; cursor: pointer;
+  color: var(--ax-ink-soft); padding: 2px; border-radius: 4px; }
+.ax-artpane__vbtn:hover:not(:disabled) { color: var(--ax-ink); background: var(--ax-surface-2); }
+.ax-artpane__vbtn:disabled { opacity: 0.3; cursor: default; }
 .ax-artpane__actions { margin-left: auto; display: flex; gap: 2px; flex: none; }
 .ax-artpane__tabs { display: flex; gap: 2px; padding: 8px 10px 0; flex: none; border-bottom: 0.5px solid var(--ax-line-soft); }
 .ax-artpane__tab { position: relative; border: none; background: transparent; cursor: pointer; padding: 6px 10px 9px;
