@@ -139,6 +139,59 @@ pub async fn complete_with(provider: Provider, req: &Request) -> anyhow::Result<
     }
 }
 
+// ── User-configured model connections ──────────────────────────────────────────────
+// Most LLM APIs speak OpenAI Chat Completions, so ONE generic path — base URL + key +
+// model — covers DeepSeek, Qwen, OpenAI, Together, Groq, OpenRouter, and local vLLM/Ollama.
+// The app registers the user's connections here; agents dispatch to them by label.
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
+fn connections() -> &'static Mutex<HashMap<String, (String, String)>> {
+    static C: OnceLock<Mutex<HashMap<String, (String, String)>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Register (or replace) an OpenAI-compatible connection: `label` → (base URL, API key).
+pub fn register_connection(label: &str, base_url: &str, api_key: &str) {
+    connections()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(label.to_string(), (base_url.trim_end_matches('/').to_string(), api_key.to_string()));
+}
+
+/// Drop all registered connections (call before re-registering from fresh settings).
+pub fn clear_connections() {
+    connections().lock().unwrap_or_else(|p| p.into_inner()).clear();
+}
+
+fn lookup_connection(label: &str) -> Option<(String, String)> {
+    connections().lock().unwrap_or_else(|p| p.into_inner()).get(label).cloned()
+}
+
+/// Run a request against ANY OpenAI-compatible chat-completions endpoint.
+pub async fn complete_openai_compatible(base_url: &str, api_key: &str, req: &Request) -> anyhow::Result<String> {
+    run_provider_agent!(
+        openai::CompletionsClient::builder()
+            .api_key(api_key)
+            .base_url(base_url.trim_end_matches('/'))
+            .build()
+            .map_err(anyerr)?,
+        req
+    )
+}
+
+/// Dispatch by NAME: a user-registered connection label wins (OpenAI-compatible with its own
+/// URL+key); otherwise fall back to a built-in provider (env-keyed). This is the seam the coding
+/// and fleet agents call, so a connection label can be used anywhere a provider name is expected.
+pub async fn complete_by_name(name: &str, req: &Request) -> anyhow::Result<String> {
+    if let Some((base_url, key)) = lookup_connection(name) {
+        return complete_openai_compatible(&base_url, &key, req).await;
+    }
+    let provider =
+        Provider::parse(name).ok_or_else(|| anyhow::anyhow!("unknown provider or connection: {name}"))?;
+    complete_with(provider, req).await
+}
+
 /// Flatten the last user message's text blocks into a prompt string.
 /// (Multi-turn history, tool, and thinking blocks are TODO — P0.5.)
 fn last_user_text(req: &Request) -> String {

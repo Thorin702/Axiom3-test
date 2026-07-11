@@ -13,7 +13,7 @@ use crate::skills;
 use axiom_providers::message::{ContentBlock, Message, Request};
 use axiom_runtime::litsearch::LitSearch;
 use axiom_runtime::supervisor::{is_retryable_error, retry_async, Cancel, RetryPolicy};
-use axiom_runtime::{complete_with, Provider};
+use axiom_runtime::complete_by_name;
 use sandbox::{Sandbox, SandboxMode};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -98,8 +98,6 @@ impl CodingModel for ProviderModel {
         let user = user.to_string();
         let timeout_s = self.timeout_s;
         async move {
-            let provider = Provider::parse(&provider_s)
-                .ok_or_else(|| anyhow::anyhow!("unknown provider: {provider_s}"))?;
             let req = Request {
                 system: Some(system),
                 messages: vec![Message::user(vec![ContentBlock::text(user)])],
@@ -108,8 +106,10 @@ impl CodingModel for ProviderModel {
                 reasoning_effort: None,
                 tools: Vec::new(),
             };
+            // Dispatch by name: a user-registered connection label routes to its own
+            // OpenAI-compatible endpoint; a built-in provider name uses its env key.
             retry_async(&RetryPolicy::default(), is_retryable_error, || async {
-                tokio::time::timeout(Duration::from_secs(timeout_s), complete_with(provider, &req))
+                tokio::time::timeout(Duration::from_secs(timeout_s), complete_by_name(&provider_s, &req))
                     .await
                     .map_err(|_| anyhow::anyhow!("model timed out after {timeout_s}s"))?
             })
