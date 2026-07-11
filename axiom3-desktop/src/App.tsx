@@ -10,6 +10,7 @@ import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
 import { ReviewerPanel } from "./components/ReviewerPanel";
 import { ArtifactBody } from "./components/artifact/ArtifactBody";
+import { ArtifactPane } from "./components/ArtifactPane";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { ReadingView } from "./components/ReadingView";
@@ -721,6 +722,22 @@ function App() {
   // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
 
   const activeTask = tasks.find((x) => x.id === activeId) ?? null;
+  // A finished workflow/coding session shows its result in the right-side ARTIFACT pane
+  // (Claude-Science-style). Draft-check sessions keep their claim flow in the thread.
+  const showArtifactPane =
+    view === "thread" &&
+    !!activeTask &&
+    (activeTask.type === "workflow" || activeTask.type === "code") &&
+    activeTask.status !== "running" &&
+    (!!activeTask.synthesis || (activeTask.steps?.length ?? 0) > 0);
+  // Auto-open the right column when an artifact becomes available.
+  useEffect(() => {
+    if (showArtifactPane && !railOpen) {
+      setRailOpen(true);
+      localStorage.setItem("axiom3.rail", "1");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showArtifactPane, activeId]);
 
   const paletteItems: PaletteItem[] = [
     ...NAV.map((n) => ({ key: n.key, label: lang === "zh" ? n.zh : n.en, kind: "nav" as const })),
@@ -1341,7 +1358,15 @@ function App() {
                           </div>
                         ))}
 
-                      {tk.synthesis && (
+                      {/* When the artifact pane is open, the result + agents + provenance live
+                          THERE; the thread keeps the conversation (progress + reviewer). */}
+                      {showArtifactPane && (
+                        <button className="ax-artref" onClick={() => setRailOpen(true)}>
+                          {lang === "zh" ? "产物已生成 —— 见右侧「产物」面板 →" : "Artifact ready — see the Artifact panel on the right →"}
+                        </button>
+                      )}
+
+                      {!showArtifactPane && tk.synthesis && (
                         <div className="ax-synth">
                           <p className="ax-block-label">{lang === "zh" ? "汇总结果" : "Synthesized result"}</p>
                           {/* rendered natively: markdown + molecules (SMILES) + diagrams (mermaid) + math */}
@@ -1352,7 +1377,7 @@ function App() {
                       {/* the reviewer agent, inline — like Claude Science's Reviewer panel */}
                       {tk.review && <ReviewerPanel lang={lang} review={tk.review} />}
 
-                      {tk.steps && tk.steps.length > 0 && (
+                      {!showArtifactPane && tk.steps && tk.steps.length > 0 && (
                         <details className="ax-agents" style={{ marginTop: 12 }}>
                           <summary className="ax-block-label" style={{ cursor: "pointer" }}>
                             {lang === "zh" ? `各智能体输出 · ${tk.steps.length}` : `Per-agent output · ${tk.steps.length}`}
@@ -1417,9 +1442,9 @@ function App() {
                         </>
                       )}
 
-                      {/* Every finished artifact states how it was made (Claude-Science-style
-                          auditable history): which agents/models, which audit event, lineage. */}
-                      {tk.status !== "running" && (tk.result || tk.synthesis) && (
+                      {/* Provenance + inspector live in the artifact pane when it's open; for
+                          draft-check sessions (no pane) they stay here, on the artifact. */}
+                      {!showArtifactPane && tk.status !== "running" && (tk.result || tk.synthesis) && (
                         <>
                           <ArtifactProvenance
                             lang={lang}
@@ -1443,15 +1468,28 @@ function App() {
         </div>
         <StatusBar lang={lang} status={status} />
       </main>
-      {railOpen && (
-        <ActivityRail
-          lang={lang}
-          onClose={() => {
-            setRailOpen(false);
-            localStorage.setItem("axiom3.rail", "0");
-          }}
-        />
-      )}
+      {railOpen &&
+        (showArtifactPane && activeTask ? (
+          <ArtifactPane
+            lang={lang}
+            task={activeTask}
+            forkedFromTitle={tasks.find((x) => x.id === activeTask.forkedFrom)?.title}
+            onExport={exportProvenance}
+            onClose={() => {
+              setRailOpen(false);
+              localStorage.setItem("axiom3.rail", "0");
+            }}
+            busy={busy}
+          />
+        ) : (
+          <ActivityRail
+            lang={lang}
+            onClose={() => {
+              setRailOpen(false);
+              localStorage.setItem("axiom3.rail", "0");
+            }}
+          />
+        ))}
       </div>
     </>
   );
