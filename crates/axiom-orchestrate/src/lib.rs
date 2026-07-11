@@ -12,6 +12,7 @@
 pub mod coding;
 pub mod control;
 pub mod events;
+pub mod kernel;
 pub mod model;
 pub mod search;
 pub mod step;

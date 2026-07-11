@@ -25,6 +25,7 @@ use axiom_runtime::plan::{plan_verification, PlanBudget, VerificationDepth};
 use axiom_runtime::supervisor::{run_batch, Cancel};
 use axiom_runtime::Provider;
 use axiom_orchestrate::coding::sandbox::{Sandbox, SandboxMode};
+use axiom_orchestrate::kernel::{CellResult, PyKernel};
 use axiom_orchestrate::coding::{run_coding_agent, CodingBudget, ProviderModel};
 use axiom_orchestrate::events::{EventSink, RunEvent, RunEventBody, SeqEmitter};
 use axiom_orchestrate::model::Run;
@@ -706,6 +707,9 @@ pub struct AppState {
     /// REGISTRATION, closing the TOCTOU window between the `is_busy()` check and the write.
     /// Lock-order invariant: always acquire this BEFORE `runs`/`cancel` (never the reverse).
     key_lock: Mutex<()>,
+    /// The live Python notebook kernel (started lazily on first cell). `Arc` so a cell can
+    /// execute on a blocking thread without holding the state lock.
+    kernel: Mutex<Option<Arc<PyKernel>>>,
 }
 
 impl AppState {
@@ -1217,6 +1221,52 @@ pub async fn export_provenance(
 #[tauri::command]
 pub fn clear_cache(state: tauri::State<'_, AppState>) {
     state.cache_clear();
+}
+
+/// The first interpreter that answers `--version`, or None.
+fn detect_python() -> Option<String> {
+    for p in ["python3", "python"] {
+        if std::process::Command::new(p).arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+            return Some(p.to_string());
+        }
+    }
+    None
+}
+
+/// Run one notebook cell on the live Python kernel (started lazily). State persists across
+/// cells. Returns stdout + the last expression's repr + any matplotlib figures (base64 PNG).
+#[tauri::command]
+pub async fn kernel_exec(app: tauri::AppHandle, state: tauri::State<'_, AppState>, code: String) -> Result<CellResult, String> {
+    let kernel = {
+        let mut guard = state.kernel.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.is_none() {
+            let py = detect_python().ok_or("Python 未安装 — 请安装 Python 3 后重试。 · Python 3 not found.")?;
+            let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let cwd = base.join("notebook");
+            std::fs::create_dir_all(&cwd).ok();
+            let k = PyKernel::start(&py, &cwd).map_err(|e| e.to_string())?;
+            *guard = Some(Arc::new(k));
+        }
+        guard.as_ref().unwrap().clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        kernel.exec(&code, std::time::Duration::from_secs(60)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Restart the kernel (drop it → the process is killed; the next cell starts a fresh one).
+#[tauri::command]
+pub fn kernel_reset(state: tauri::State<'_, AppState>) {
+    *state.kernel.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
+/// Whether the kernel is live + which interpreter.
+#[tauri::command]
+pub fn kernel_status(state: tauri::State<'_, AppState>) -> serde_json::Value {
+    let g = state.kernel.lock().unwrap_or_else(|p| p.into_inner());
+    serde_json::json!({ "running": g.is_some(), "python": g.as_ref().map(|k| k.python().to_string()) })
 }
 
 /// How many works to fetch per claim, how many user-reference passages and retrieved

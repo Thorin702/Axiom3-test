@@ -16,6 +16,7 @@ import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { ReadingView } from "./components/ReadingView";
 import { ProjectsView } from "./components/ProjectsView";
 import { SearchView } from "./components/SearchView";
+import { NotebookView } from "./components/NotebookView";
 import { FleetMonitor } from "./components/FleetMonitor";
 import { MetricsView } from "./components/MetricsView";
 import { NotificationsView } from "./components/NotificationsView";
@@ -26,7 +27,7 @@ import { StatusBar } from "./components/StatusBar";
 import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
-  Sparkles, BookOpen, Search, Boxes, GitBranch, Gauge,
+  Sparkles, BookOpen, Search, Boxes, GitBranch, Gauge, TerminalSquare,
   Command, Bell, PanelRight, FolderOpen, RotateCcw, WrapText, Check, type LucideIcon,
 } from "lucide-react";
 
@@ -74,7 +75,7 @@ const COMMANDS: SlashCmd[] = [
 // Sidebar navigation — the platform's surfaces, grouped 工作 / 信任·证据 / 概览. Each routes
 // to a self-contained surface component. Notifications is reached from the topbar bell.
 type NavKey =
-  | "tasks" | "projects" | "reading" | "search" | "fleet"
+  | "tasks" | "projects" | "reading" | "search" | "notebook" | "fleet"
   | "shield" | "integrity" | "provenance" | "evidence"
   | "metrics" | "notifications";
 type NavGroup = "work" | "trust" | "overview";
@@ -85,6 +86,7 @@ const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGr
   { key: "projects", zh: "项目", en: "Projects", icon: FolderOpen, group: "work" },
   { key: "reading", zh: "材料", en: "Materials", icon: BookOpen, group: "work" },
   { key: "search", zh: "检索", en: "Search", icon: Search, group: "work" },
+  { key: "notebook", zh: "笔记本", en: "Notebook", icon: TerminalSquare, group: "work" },
   { key: "fleet", zh: "舰队", en: "Fleet", icon: Boxes, group: "overview" },
   { key: "metrics", zh: "概览", en: "Overview", icon: Gauge, group: "overview" },
 ];
@@ -1250,6 +1252,7 @@ function App() {
               )}
               {/* 证据 / 护盾 / 溯源 / 完整性 are no longer destinations — they are the
                   artifact's own inspector tabs (see ArtifactInspector in the session view). */}
+              {nav === "notebook" && <NotebookView lang={lang} />}
               {nav === "fleet" && <FleetMonitor lang={lang} agg={fleetAgg} />}
               {nav === "metrics" && <MetricsView lang={lang} tasks={tasks} />}
               {nav === "notifications" && (
