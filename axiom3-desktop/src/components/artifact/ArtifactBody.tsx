@@ -14,15 +14,16 @@ import { Molecule } from "./Molecule";
 import { Diagram } from "./Diagram";
 import { Chart } from "./Chart";
 import { Protein } from "./Protein";
+import { DotPlot } from "./DotPlot";
 
 marked.use({ gfm: true, breaks: true });
 
-type Kind = "smiles" | "mermaid" | "math" | "chart" | "protein";
+type Kind = "smiles" | "mermaid" | "math" | "chart" | "protein" | "dotplot";
 type Seg = { t: "md"; body: string } | { t: Kind; body: string };
 
 // Split the text at native-figure fences; everything else is markdown.
 function segment(text: string): Seg[] {
-  const re = /```(smiles|mermaid|math|chart|protein)[^\n]*\n([\s\S]*?)```/g;
+  const re = /```(smiles|mermaid|math|chart|protein|dotplot)[^\n]*\n([\s\S]*?)```/g;
   const segs: Seg[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -57,6 +58,7 @@ export function ArtifactBody({ text }: { text: string }) {
         if (s.t === "smiles") return <Molecule key={i} smiles={s.body} />;
         if (s.t === "mermaid") return <Diagram key={i} code={s.body} />;
         if (s.t === "chart") return <Chart key={i} spec={s.body} />;
+        if (s.t === "dotplot") return <DotPlot key={i} spec={s.body} />;
         if (s.t === "protein") return <Protein key={i} source={s.body} />;
         if (s.t === "math") return <div key={i} className="ax-md__math" dangerouslySetInnerHTML={{ __html: renderMath(s.body) }} />;
         // katex html is trusted (we generated it); markdown html is sanitized in renderMd.

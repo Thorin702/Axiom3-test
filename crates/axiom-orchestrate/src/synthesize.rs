@@ -74,8 +74,10 @@ pub async fn synthesize(goal: &str, steps: &[StepState], critique: &str, provide
                   ```smiles block (one SMILES string); an architecture/flow diagram as a \
                   ```mermaid block; a key equation as a ```math block (LaTeX); a data figure \
                   as a ```chart block (JSON with type scatter|bar|line, title, xlabel, ylabel, \
-                  and points/data/series); and a 3D protein structure as a ```protein block (a \
-                  4-char PDB id like 1CRN, or inline PDB text). Only use these when genuinely \
+                  and points/data/series); a gene/feature expression matrix as a ```dotplot \
+                  block (JSON with rows, cols, and cells of {r,c,size,color}); and a 3D protein \
+                  structure as a ```protein block (a 4-char PDB id like 1CRN, or inline PDB \
+                  text). Only use these when genuinely \
                   relevant, and only with real values — never fabricate a structure, id, or \
                   dataset. Return only the result.";
     let crit = if critique.trim().is_empty() {
