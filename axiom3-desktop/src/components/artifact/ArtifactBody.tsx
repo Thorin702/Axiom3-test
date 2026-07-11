@@ -15,15 +15,30 @@ import { Diagram } from "./Diagram";
 import { Chart } from "./Chart";
 import { Protein } from "./Protein";
 import { DotPlot } from "./DotPlot";
+import { Forest } from "./Forest";
+import { Heatmap } from "./Heatmap";
+import { Confusion } from "./Confusion";
+import { Distribution } from "./Distribution";
+import { Volcano } from "./Volcano";
+import { Manhattan } from "./Manhattan";
+import { Band } from "./Band";
+import { Alignment } from "./Alignment";
+import { Reaction } from "./Reaction";
+import { Field } from "./Field";
+import { Network } from "./Network";
+import { Track } from "./Track";
 
 marked.use({ gfm: true, breaks: true });
 
-type Kind = "smiles" | "mermaid" | "math" | "chart" | "protein" | "dotplot";
+type Kind =
+  | "smiles" | "mermaid" | "math" | "chart" | "protein" | "dotplot"
+  | "forest" | "heatmap" | "confusion" | "dist" | "volcano" | "manhattan"
+  | "band" | "msa" | "rxn" | "field" | "network" | "track";
 type Seg = { t: "md"; body: string } | { t: Kind; body: string };
 
 // Split the text at native-figure fences; everything else is markdown.
 function segment(text: string): Seg[] {
-  const re = /```(smiles|mermaid|math|chart|protein|dotplot)[^\n]*\n([\s\S]*?)```/g;
+  const re = /```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|field|network|track)[^\n]*\n([\s\S]*?)```/g;
   const segs: Seg[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -59,6 +74,18 @@ export function ArtifactBody({ text }: { text: string }) {
         if (s.t === "mermaid") return <Diagram key={i} code={s.body} />;
         if (s.t === "chart") return <Chart key={i} spec={s.body} />;
         if (s.t === "dotplot") return <DotPlot key={i} spec={s.body} />;
+        if (s.t === "forest") return <Forest key={i} spec={s.body} />;
+        if (s.t === "heatmap") return <Heatmap key={i} spec={s.body} />;
+        if (s.t === "confusion") return <Confusion key={i} spec={s.body} />;
+        if (s.t === "dist") return <Distribution key={i} spec={s.body} />;
+        if (s.t === "volcano") return <Volcano key={i} spec={s.body} />;
+        if (s.t === "manhattan") return <Manhattan key={i} spec={s.body} />;
+        if (s.t === "band") return <Band key={i} spec={s.body} />;
+        if (s.t === "msa") return <Alignment key={i} spec={s.body} />;
+        if (s.t === "rxn") return <Reaction key={i} spec={s.body} />;
+        if (s.t === "field") return <Field key={i} spec={s.body} />;
+        if (s.t === "network") return <Network key={i} spec={s.body} />;
+        if (s.t === "track") return <Track key={i} spec={s.body} />;
         if (s.t === "protein") return <Protein key={i} source={s.body} />;
         if (s.t === "math") return <div key={i} className="ax-md__math" dangerouslySetInnerHTML={{ __html: renderMath(s.body) }} />;
         // katex html is trusted (we generated it); markdown html is sanitized in renderMd.

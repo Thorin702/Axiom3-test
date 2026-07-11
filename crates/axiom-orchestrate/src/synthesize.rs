@@ -77,7 +77,20 @@ pub async fn synthesize(goal: &str, steps: &[StepState], critique: &str, provide
                   and points/data/series); a gene/feature expression matrix as a ```dotplot \
                   block (JSON with rows, cols, and cells of {r,c,size,color}); and a 3D protein \
                   structure as a ```protein block (a 4-char PDB id like 1CRN, or inline PDB \
-                  text). Only use these when genuinely \
+                  text). More native scientific figures, each its own fenced block of JSON: \
+                  ```forest (ranked estimates with CIs — {rows:[{label,estimate,lo,hi}], reference?}); \
+                  ```heatmap (a value matrix — {rows, cols, values:[[..]], scale:\"sequential|diverging\"}); \
+                  ```confusion (a classifier's matrix — {labels, matrix:[[counts]], normalize:\"row|col|none\"}); \
+                  ```dist (distributions to compare — {groups:[{label, values:[..]}], show:[\"box\",\"points\"]}); \
+                  ```volcano (differential expression — {genes:[{gene,lfc,padj}], lfcThreshold, pThreshold}); \
+                  ```manhattan (GWAS — {points:[{chr,pos,p,snp?,gene?}], threshold}); \
+                  ```band (a curve with an uncertainty band — {series:[{name, points:[[x,y] or [x,y,lo,hi] or [x,y,err]]}], xlabel, ylabel}); \
+                  ```msa (a sequence alignment — {type:\"protein|dna\", seqs:[{id,seq}], color:\"clustal|identity\"}); \
+                  ```rxn (a reaction — {reactants:[SMILES], products:[SMILES], above?, below?}); \
+                  ```field (a 2D scalar field — {x:[..], y:[..], z:[[..]], contours?}); \
+                  ```network (a node-link graph — {nodes:[{id,group,value}], edges:[{source,target,weight?,sign?}], directed?}); \
+                  ```track (protein domains + mutations — {length, domains:[{name,from,to}], markers:[{pos,label,count,class}]}). \
+                  Only use these when genuinely \
                   relevant, and only with real values — never fabricate a structure, id, or \
                   dataset. Return only the result.";
     let crit = if critique.trim().is_empty() {
