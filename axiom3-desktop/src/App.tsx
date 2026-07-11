@@ -212,15 +212,16 @@ function App() {
   });
 
   useEffect(() => {
-    // The REAL Claude Science app is light (the dark I'd matched was only its marketing
-    // page). Match the real reference: light default, both themes tuned, user can switch.
-    // v2 migration corrects an earlier forced-dark, then respects the user's choice.
-    if (localStorage.getItem("axiom3.themeMigrated") !== "2") {
-      localStorage.setItem("axiom3.themeMigrated", "2");
-      applyTheme("light");
+    // The user wants the translucent dark-glass look (their reference). Default to dark;
+    // both themes are translucent, user can switch in Settings. v3 migration flips the
+    // earlier light default to dark once, then respects the user's choice.
+    if (localStorage.getItem("axiom3.themeMigrated") !== "3") {
+      localStorage.setItem("axiom3.themeMigrated", "3");
+      localStorage.setItem("axiom3.theme", "dark");
+      applyTheme("dark");
       return;
     }
-    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "light");
+    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "dark");
   }, []);
 
   // Persist the task history (most recent first, ≤50). A task's result carries all its

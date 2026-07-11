@@ -53,9 +53,9 @@
   }
 }
 :root[data-theme="dark"] {
-  --ax-paper: #131312;
-  --ax-surface: #1B1B19;
-  --ax-surface-2: #171716;
+  --ax-paper: rgba(18, 18, 17, 0.42);
+  --ax-surface: rgba(28, 28, 26, 0.62);
+  --ax-surface-2: rgba(22, 22, 21, 0.55);
   --ax-ink: #EDEDEA;
   --ax-ink-soft: #A3A39D;
   --ax-ink-faint: #74746E;
