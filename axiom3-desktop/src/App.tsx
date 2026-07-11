@@ -61,7 +61,7 @@ const COMMANDS: SlashCmd[] = [
   { key: "chart", cat: "生成", zh: "图表", en: "chart", dzh: "数据 → 图表", den: "data → chart", active: false },
   { key: "image", cat: "生成", zh: "图片", en: "image", dzh: "文生图", den: "text-to-image", active: false },
   // 数据与多模态处理 (data / multimodal processing)
-  { key: "analyze", cat: "数据", zh: "分析", en: "analyze", dzh: "数据分析:统计 + 可视化", den: "data analysis: stats + viz", active: false },
+  { key: "analyze", cat: "数据", zh: "分析", en: "analyze", dzh: "智能体真跑 Python:统计 + 计算出图", den: "agent runs Python: real stats + computed figures", active: true },
   { key: "extract", cat: "数据", zh: "解析", en: "extract", dzh: "文档解析:图片 / 表格 / 公式提取", den: "parse a doc: images / tables / formulas", active: false },
   { key: "transcribe", cat: "数据", zh: "转写", en: "transcribe", dzh: "音频转写", den: "audio transcription", active: false },
   // 编程 (coding)
@@ -692,7 +692,8 @@ function App() {
   async function runCoding(goal: string) {
     const g = goal.trim();
     if (!g) return;
-    if (!codeWs && !codeAnalyze) return; // code mode needs a folder; analyze can use a scratch dir
+    const doAnalyze = codeAnalyze || cmd === "analyze";
+    if (!codeWs && !doAnalyze) return; // code mode needs a folder; analyze can use a scratch dir
     const runid = `run-${crypto.randomUUID()}`;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
     setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined }, ...ts]);
@@ -705,7 +706,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: codeAnalyze, attachments: codeAttachments, model: taskModel || undefined })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined })
     );
     setCodeAttachments([]);
     setTasks((ts) =>
@@ -816,7 +817,7 @@ function App() {
     if (!text || text.startsWith("/")) return false;
     const at = tasks.find((x) => x.id === activeId);
     if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → iterate the artifact (v2…)
-    else if (at?.type === "code" && codeWs) runCoding(text);
+    else if (at?.type === "code" && (codeWs || codeAnalyze)) runCoding(text);
     else if (deepSearch) runWorkflow(text); // deep-search mode: run the task as AB-MCTS
     else runCheckDraft(text);
     return true;
@@ -982,11 +983,18 @@ function App() {
                   </button>
                 </div>
               </>
-            ) : cmd === "code" ? (
+            ) : cmd === "code" || cmd === "analyze" ? (
               <>
+                {cmd === "analyze" && (
+                  <p className="ax-hint" style={{ marginBottom: 8 }}>
+                    {lang === "zh"
+                      ? "智能体会写 Python、在常驻内核里真跑,统计与图表由真实数据算出并入报告。附上数据即可,无需选目录。"
+                      : "The agent writes Python, runs it in a live kernel, and computes the stats + figures from real data into the report. Just attach data — no folder needed."}
+                  </p>
+                )}
                 <div className="ax-toolrow">
                   <button className="ax-btn" onClick={pickWorkspace}>
-                    {codeWs ? (lang === "zh" ? "更换目录" : "Change folder") : (lang === "zh" ? "选择工作目录" : "Choose workspace")}
+                    {codeWs ? (lang === "zh" ? "更换目录" : "Change folder") : cmd === "analyze" ? (lang === "zh" ? "选择工作目录(可选)" : "Choose folder (optional)") : (lang === "zh" ? "选择工作目录" : "Choose workspace")}
                   </button>
                   {codeWs && (
                     <span className="ax-hint" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 300 }}>
@@ -999,11 +1007,11 @@ function App() {
                   value={draft}
                   onChange={(e) => setDraft(e.currentTarget.value)}
                   rows={4}
-                  placeholder={codeAnalyze
+                  placeholder={codeAnalyze || cmd === "analyze"
                     ? (lang === "zh" ? "要分析什么(附上数据,智能体会真跑代码并算出图)…" : "What to analyze (attach data — the agent runs code and computes the figures)…")
                     : (lang === "zh" ? "要分析的任务(只读:读取 / 搜索 / 提议改动)…" : "What to analyze (read-only: read / search / propose)…")}
                 />
-                {codeAnalyze && (
+                {(codeAnalyze || cmd === "analyze") && (
                   <div className="ax-toolrow" style={{ flexWrap: "wrap" }}>
                     <button className="ax-btn" onClick={pickDataFiles}>
                       {lang === "zh" ? "＋ 附加数据" : "＋ Attach data"}
@@ -1020,9 +1028,10 @@ function App() {
                   </div>
                 )}
                 <div className="ax-toolrow">
-                  <button className="ax-btn ax-btn--primary" onClick={() => runCoding(draft)} disabled={busy || !draft.trim() || (!codeWs && !codeAnalyze)}>
+                  <button className="ax-btn ax-btn--primary" onClick={() => runCoding(draft)} disabled={busy || !draft.trim() || (!codeWs && !codeAnalyze && cmd !== "analyze")}>
                     {t(lang, "task_run")}
                   </button>
+                  {cmd !== "analyze" && (
                   <button
                     className={`ax-toggle ${codeWritable ? "on" : ""}`}
                     onClick={() => setCodeWritable(!codeWritable)}
@@ -1030,6 +1039,8 @@ function App() {
                   >
                     {codeWritable ? (lang === "zh" ? "写入 · 构建" : "write · build") : (lang === "zh" ? "只读" : "read-only")}
                   </button>
+                  )}
+                  {cmd !== "analyze" && (
                   <button
                     className={`ax-toggle ${codeAnalyze ? "on" : ""}`}
                     onClick={() => setCodeAnalyze(!codeAnalyze)}
@@ -1037,6 +1048,7 @@ function App() {
                   >
                     {lang === "zh" ? "🔬 分析(运行代码)" : "🔬 analyze (run code)"}
                   </button>
+                  )}
                   <select className="ax-select" value={taskModel} onChange={(e) => setTaskModel(e.currentTarget.value)} title={lang === "zh" ? "模型" : "model"}>
                     {MODELS.map((m) => (
                       <option key={m.id} value={m.id}>{m.label}</option>
