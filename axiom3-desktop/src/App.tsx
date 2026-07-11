@@ -27,10 +27,20 @@ import { StatusBar } from "./components/StatusBar";
 import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
-  Sparkles, BookOpen, Search, Boxes, GitBranch, Gauge, TerminalSquare, Paperclip,
+  Sparkles, BookOpen, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
   Command, Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
-  MoreHorizontal, Pencil, Mic, CircleUserRound, type LucideIcon,
+  MoreHorizontal, Pencil, Mic, CircleUserRound, ChevronDown, type LucideIcon,
 } from "lucide-react";
+
+// Composer modes (the icon-button popover, Claude-style). Each maps to backend behaviour:
+// 自动 infers intent + thinking depth; 研究 runs literature/multi-agent research; 分析 spins up
+// the Python kernel. The backend picks thinking vs non-thinking per mode.
+const MODES = [
+  { k: "auto", zh: "自动", en: "Auto", Icon: Sparkles, tzh: "读懂请求,自己选研究/分析/校验与思考深度", ten: "infer intent + thinking depth" },
+  { k: "research", zh: "研究", en: "Research", Icon: Search, tzh: "文献 + 检索 → 带引用综述(多智能体)", ten: "literature + search → cited synthesis" },
+  { k: "analysis", zh: "分析", en: "Analysis", Icon: TerminalSquare, tzh: "Python 内核真跑数据 → 计算图 + 统计", ten: "Python kernel → computed figures + stats" },
+] as const;
+type ModeKey = (typeof MODES)[number]["k"];
 
 // Set during the tasks initializer (first render): how many persisted tasks were left
 // "running" when the app last closed — i.e. interrupted by an abnormal exit (#9).
@@ -43,34 +53,24 @@ let bootInterrupted = 0;
 // dynamic-workflow catch-all. Only check_draft runs today; the rest are visible as 即将,
 // so the platform's shape is complete. Every output is meant to be held to the rigor bar.
 type SlashCmd = { key: string; cat: string; zh: string; en: string; dzh: string; den: string; active: boolean };
+// Claude-style `/` commands — genuine actions/verbs, NOT task categories (write/ppt/… are
+// inferred from what you type). `/技能` picks a specific domain skill to run.
 const COMMANDS: SlashCmd[] = [
-  // 检查与核验 (rigor — the moat)
-  { key: "check_draft", cat: "检查", zh: "校对", en: "check", dzh: "拆成断言,确定性检查 + 证据", den: "claims → deterministic checks + evidence", active: true },
-  { key: "verify", cat: "检查", zh: "核查", en: "verify", dzh: "核查单条主张:文献 + 跨模型 + 溯源", den: "verify one claim: literature + cross-model + provenance", active: false },
-  { key: "cite", cat: "检查", zh: "查引", en: "cite", dzh: "引文 / DOI / 撤稿核验", den: "citation / DOI / retraction check", active: false },
-  // 研究 (research)
-  { key: "research", cat: "研究", zh: "调研", en: "research", dzh: "多智能体检索 + 综述,带证据", den: "multi-agent search + synthesis, with evidence", active: false },
-  { key: "ask", cat: "研究", zh: "答疑", en: "ask", dzh: "带来源的问答", den: "Q&A grounded in sources", active: false },
-  // 写作 (writing)
-  { key: "write", cat: "写作", zh: "写作", en: "write", dzh: "起草文稿 / 邮件 / 报告", den: "draft prose / email / report", active: false },
-  { key: "polish", cat: "写作", zh: "润色", en: "polish", dzh: "改写 / 精炼 / 语法", den: "rewrite / tighten / grammar", active: false },
-  { key: "translate", cat: "写作", zh: "翻译", en: "translate", dzh: "翻译并保术语一致", den: "translate, keep terminology consistent", active: false },
-  { key: "summarize", cat: "写作", zh: "摘要", en: "summarize", dzh: "提炼要点", den: "distil key points", active: false },
-  // 多模态生成 (multimodal generation)
-  { key: "ppt", cat: "生成", zh: "PPT", en: "slides", dzh: "多模态:文本 + 图片 agent 协同", den: "multimodal: text + image agents", active: false },
-  { key: "doc", cat: "生成", zh: "文档", en: "doc", dzh: "生成结构化文档 / 报告", den: "structured document / report", active: false },
-  { key: "chart", cat: "生成", zh: "图表", en: "chart", dzh: "数据 → 图表", den: "data → chart", active: false },
-  { key: "image", cat: "生成", zh: "图片", en: "image", dzh: "文生图", den: "text-to-image", active: false },
-  // 数据与多模态处理 (data / multimodal processing)
-  { key: "analyze", cat: "数据", zh: "分析", en: "analyze", dzh: "智能体真跑 Python:统计 + 计算出图", den: "agent runs Python: real stats + computed figures", active: true },
-  { key: "extract", cat: "数据", zh: "解析", en: "extract", dzh: "文档解析:图片 / 表格 / 公式提取", den: "parse a doc: images / tables / formulas", active: false },
-  { key: "transcribe", cat: "数据", zh: "转写", en: "transcribe", dzh: "音频转写", den: "audio transcription", active: false },
-  // 编程 (coding)
-  { key: "code", cat: "编程", zh: "编程", en: "code", dzh: "只读分析:读取 / 搜索 / 提议(写入即将)", den: "read-only: read / search / propose (writes soon)", active: true },
-  { key: "debug", cat: "编程", zh: "调试", en: "debug", dzh: "定位 + 修复", den: "locate + fix", active: false },
-  { key: "review", cat: "编程", zh: "审查", en: "review", dzh: "代码审查", den: "code review", active: false },
-  // 编排 (orchestration)
-  { key: "workflow", cat: "编排", zh: "工作流", en: "workflow", dzh: "自定义动态多智能体工作流(任意任务)", den: "custom dynamic multi-agent workflow (any task)", active: true },
+  { key: "skills", cat: "命令", zh: "技能", en: "skills", dzh: "选一个领域技能来执行(单细胞 / 系统发育 / 差异表达 …)", den: "run a specific domain skill", active: true },
+  { key: "check_draft", cat: "命令", zh: "校对", en: "check", dzh: "拆成断言,确定性检查 + 证据(校验为中心)", den: "claims → deterministic checks + evidence", active: true },
+  { key: "code", cat: "命令", zh: "编程", en: "code", dzh: "读取 / 搜索 / 精确编辑 / 跑测试", den: "read / search / precise edit / run tests", active: true },
+  { key: "workflow", cat: "命令", zh: "工作流", en: "workflow", dzh: "自定义动态多智能体工作流(任意任务)", den: "custom dynamic multi-agent workflow", active: true },
+];
+
+// Domain skills the `/技能` command offers — mirrors the engine's skill registry. Picking one
+// prefills a directive + switches to 分析 mode; the analysis agent then loads that skill.
+const SKILLS = [
+  { key: "single-cell-rnaseq", zh: "单细胞 RNA-seq", en: "Single-cell RNA-seq", zhh: "QC→归一化→聚类→UMAP→注释", enh: "QC → cluster → UMAP → annotate" },
+  { key: "phylogenetics", zh: "系统发育 / 祖先重建", en: "Phylogenetics", zhh: "比对→建树→追踪残基→祖先重建", enh: "align → tree → ancestral states" },
+  { key: "differential-expression", zh: "差异表达", en: "Differential expression", zhh: "效应量 + BH/FDR → 火山图", enh: "effect size + BH/FDR → volcano" },
+  { key: "crispr-screen", zh: "CRISPR 敲除筛选", en: "CRISPR screen", zhh: "文库/向导/脱靶/构建/测序", enh: "library / guides / off-target" },
+  { key: "protein-engineering", zh: "蛋白工程", en: "Protein engineering", zhh: "PLM/结构打分 → 共识排序", enh: "PLM/structure scoring → rank" },
+  { key: "gwas", zh: "GWAS 关联分析", en: "GWAS", zhh: "关联检验 + 校正 → 曼哈顿图", enh: "assoc test + correction → manhattan" },
 ];
 
 // Sidebar navigation — the platform's surfaces, grouped 工作 / 信任·证据 / 概览. Each routes
@@ -82,13 +82,12 @@ type NavKey =
 type NavGroup = "work" | "trust" | "overview";
 // Rigor is NOT a set of destinations — it lives on the artifact (see the session's
 // inspector tabs: 证据 / 护盾 / 溯源 / 完整性). The sidebar keeps only the places you go.
+// Aggressively trimmed to the four surfaces you actually navigate to. 检索 folds into 材料
+// (search over your materials), 笔记本 lives inside a session, 舰队 into 概览.
 const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGroup }[] = [
   { key: "tasks", zh: "会话", en: "Sessions", icon: Sparkles, group: "work" },
   { key: "projects", zh: "项目", en: "Projects", icon: FolderOpen, group: "work" },
   { key: "reading", zh: "材料", en: "Materials", icon: BookOpen, group: "work" },
-  { key: "search", zh: "检索", en: "Search", icon: Search, group: "work" },
-  { key: "notebook", zh: "笔记本", en: "Notebook", icon: TerminalSquare, group: "work" },
-  { key: "fleet", zh: "舰队", en: "Fleet", icon: Boxes, group: "overview" },
   { key: "metrics", zh: "概览", en: "Overview", icon: Gauge, group: "overview" },
 ];
 // Model choices offered in the task control bar (the connected provider is DeepSeek).
@@ -161,9 +160,9 @@ function App() {
   // Composer mode (next to Send): 自动 infers intent + thinking depth in the backend; 研究 runs a
   // literature/multi-agent research pass; 分析 spins up the Python kernel. Replaces the old
   // deep-search toggle + model dropdown — the backend picks thinking/non-thinking per mode.
-  const [mode, setMode] = useState<"auto" | "research" | "analysis">(
-    () => (localStorage.getItem("axiom3.mode") as "auto" | "research" | "analysis") || "auto",
-  );
+  const [mode, setMode] = useState<ModeKey>(() => (localStorage.getItem("axiom3.mode") as ModeKey) || "auto");
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [skillMenu, setSkillMenu] = useState(false); // /技能 picker open
   // When a session is forked, the next session created inherits this lineage (then clears).
   const [forkOrigin, setForkOrigin] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>(() => {
@@ -925,6 +924,24 @@ function App() {
   // coding step; on the home screen (or a check thread) it's a draft check. Previously it
   // always ran a draft check, silently doing the wrong operation inside a workflow/coding
   // thread. Returns true if it consumed the submit (so the textarea skips the newline).
+  // Selecting a `/` command. `/技能` opens the skill picker instead of a sub-composer.
+  function pickCommand(key: string) {
+    if (key === "skills") {
+      setSkillMenu(true);
+      setSlash("");
+      return;
+    }
+    setCmd(key);
+    setSlash("");
+  }
+  // Picking a skill: prefill a directive and switch to 分析 mode; the analysis agent loads it.
+  function pickSkill(s: (typeof SKILLS)[number]) {
+    setSkillMenu(false);
+    setMode("analysis");
+    const label = lang === "zh" ? s.zh : s.en;
+    setSlash(lang === "zh" ? `用「${label}」技能分析:` : `Analyze with the ${label} skill: `);
+  }
+
   function submitFreeText(): boolean {
     const text = slash.trim();
     if (!text || text.startsWith("/")) return false;
@@ -963,10 +980,7 @@ function App() {
                   } else if (e.key === "Enter") {
                     e.preventDefault();
                     const c = slashMatches[Math.min(slashIdx, slashMatches.length - 1)];
-                    if (c && c.active) {
-                      setCmd(c.key);
-                      setSlash("");
-                    }
+                    if (c && c.active) pickCommand(c.key);
                   } else if (e.key === "Escape") {
                     setSlash("");
                   }
@@ -1012,26 +1026,48 @@ function App() {
                   <Mic size={15} aria-hidden />
                 </button>
               </span>
-              {/* Mode selector sits immediately left of Send. The backend chooses thinking vs
-                  non-thinking (and which tools) per mode — no manual model/thinking picker. */}
+              {/* Mode picker: a compact icon button that expands to choose 自动/研究/分析
+                  (Claude-style). The backend chooses thinking vs non-thinking per mode. */}
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <div className="ax-modeseg" role="tablist" aria-label={lang === "zh" ? "模式" : "Mode"}>
-                  {([
-                    { k: "auto", zh: "自动", en: "Auto", Icon: Sparkles, tip: lang === "zh" ? "自动:读懂请求,自己选研究/分析/校验与思考深度" : "Auto: infer intent + thinking depth" },
-                    { k: "research", zh: "研究", en: "Research", Icon: Search, tip: lang === "zh" ? "研究:文献 + 检索 → 带引用综述(多智能体)" : "Research: literature + search → cited synthesis" },
-                    { k: "analysis", zh: "分析", en: "Analysis", Icon: TerminalSquare, tip: lang === "zh" ? "分析:Python 内核真跑数据 → 计算图 + 统计" : "Analysis: Python kernel → computed figures + stats" },
-                  ] as const).map(({ k, zh, en, Icon, tip }) => (
-                    <button
-                      key={k}
-                      role="tab"
-                      aria-selected={mode === k}
-                      className={`ax-modeseg__opt ${mode === k ? "on" : ""}`}
-                      onClick={() => setMode(k)}
-                      title={tip}
-                    >
-                      <Icon size={13} aria-hidden /> {lang === "zh" ? zh : en}
-                    </button>
-                  ))}
+                <div className="ax-modepick">
+                  {(() => {
+                    const cur = MODES.find((m) => m.k === mode) ?? MODES[0];
+                    return (
+                      <button
+                        className={`ax-modepick__btn ${modeMenuOpen ? "on" : ""}`}
+                        onClick={() => setModeMenuOpen((o) => !o)}
+                        aria-haspopup="listbox"
+                        aria-expanded={modeMenuOpen}
+                        title={lang === "zh" ? "选择模式" : "Choose mode"}
+                      >
+                        <cur.Icon size={14} aria-hidden /> {lang === "zh" ? cur.zh : cur.en}
+                        <ChevronDown size={13} aria-hidden style={{ opacity: 0.6 }} />
+                      </button>
+                    );
+                  })()}
+                  {modeMenuOpen && (
+                    <>
+                      <div className="ax-modepick__scrim" onClick={() => setModeMenuOpen(false)} />
+                      <div className="ax-modepick__menu" role="listbox" aria-label={lang === "zh" ? "模式" : "Mode"}>
+                        {MODES.map((m) => (
+                          <button
+                            key={m.k}
+                            role="option"
+                            aria-selected={mode === m.k}
+                            className={`ax-modepick__opt ${mode === m.k ? "on" : ""}`}
+                            onClick={() => { setMode(m.k); setModeMenuOpen(false); }}
+                          >
+                            <m.Icon size={15} aria-hidden />
+                            <span className="ax-modepick__txt">
+                              <b>{lang === "zh" ? m.zh : m.en}</b>
+                              <span>{lang === "zh" ? m.tzh : m.ten}</span>
+                            </span>
+                            {mode === m.k && <Check size={14} aria-hidden style={{ marginLeft: "auto" }} />}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </div>
                 <button
                   className="ax-send"
@@ -1052,10 +1088,7 @@ function App() {
                     className={`ax-slash-item ${i === Math.min(slashIdx, slashMatches.length - 1) ? "is-active" : ""}`}
                     disabled={!c.active}
                     onMouseEnter={() => setSlashIdx(i)}
-                    onClick={() => {
-                      setCmd(c.key);
-                      setSlash("");
-                    }}
+                    onClick={() => pickCommand(c.key)}
                   >
                     <span className="ax-slash-cmd">/{lang === "zh" ? c.zh : c.en}</span>
                     <span className="ax-slash-desc">
@@ -1064,6 +1097,20 @@ function App() {
                     </span>
                   </button>
                 ))}
+              </div>
+            )}
+            {skillMenu && (
+              <div className="ax-slash-menu">
+                <div className="ax-slash-head">{lang === "zh" ? "选择技能" : "Choose a skill"}</div>
+                {SKILLS.map((s) => (
+                  <button key={s.key} className="ax-slash-item" onClick={() => pickSkill(s)}>
+                    <span className="ax-slash-cmd">{lang === "zh" ? s.zh : s.en}</span>
+                    <span className="ax-slash-desc">{lang === "zh" ? s.zhh : s.enh}</span>
+                  </button>
+                ))}
+                <button className="ax-slash-item" onClick={() => setSkillMenu(false)}>
+                  <span className="ax-slash-desc">{lang === "zh" ? "取消" : "Cancel"}</span>
+                </button>
               </div>
             )}
           </>

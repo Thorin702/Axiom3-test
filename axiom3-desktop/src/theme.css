@@ -386,6 +386,8 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-slash-menu { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 5;
   background: var(--ax-surface); border: 1px solid var(--ax-line); border-radius: var(--ax-radius-lg);
   box-shadow: var(--ax-shadow); padding: 6px; max-height: 280px; overflow-y: auto; }
+.ax-slash-head { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--ax-ink-faint); padding: 4px 10px 6px; }
 .ax-slash-item { display: flex; align-items: baseline; gap: 10px; width: 100%; text-align: left;
   border: none; background: transparent; border-radius: var(--ax-radius); padding: 8px 10px;
   cursor: pointer; font-family: var(--ax-sans); }
@@ -897,15 +899,25 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   color: var(--ax-ink-soft); }
 .ax-select--sm:hover { border-color: var(--ax-line); background: var(--ax-surface); color: var(--ax-ink); }
 
-/* ── mode selector (segmented pill, immediately left of Send) ─────── */
-.ax-modeseg { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 11px;
-  background: var(--ax-paper); border: 0.5px solid var(--ax-line); }
-.ax-modeseg__opt { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 550;
-  line-height: 1; color: var(--ax-ink-soft); background: transparent; border: 0; border-radius: 8px;
-  padding: 5px 11px; cursor: pointer; white-space: nowrap; transition: background .12s ease, color .12s ease; }
-.ax-modeseg__opt:hover { color: var(--ax-ink); }
-.ax-modeseg__opt.on { background: var(--ax-surface); color: var(--ax-accent); box-shadow: 0 1px 2px rgba(0,0,0,.10); }
-.ax-modeseg__opt:focus-visible { outline: 2px solid var(--ax-focus); outline-offset: 1px; }
+/* ── mode picker (icon button + click-to-expand popover, left of Send) ─── */
+.ax-modepick { position: relative; }
+.ax-modepick__btn { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 550;
+  line-height: 1; color: var(--ax-ink-soft); background: var(--ax-paper); border: 0.5px solid var(--ax-line);
+  border-radius: 9px; padding: 6px 10px; cursor: pointer; white-space: nowrap;
+  transition: background .12s ease, color .12s ease, border-color .12s ease; }
+.ax-modepick__btn:hover, .ax-modepick__btn.on { color: var(--ax-ink); background: var(--ax-surface); }
+.ax-modepick__btn:focus-visible { outline: 2px solid var(--ax-focus); outline-offset: 1px; }
+.ax-modepick__scrim { position: fixed; inset: 0; z-index: 40; }
+.ax-modepick__menu { position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 41; min-width: 236px;
+  padding: 5px; background: var(--ax-surface); border: 1px solid var(--ax-line); border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0,0,0,.18); display: flex; flex-direction: column; gap: 2px; }
+.ax-modepick__opt { display: flex; align-items: center; gap: 10px; text-align: left; padding: 8px 10px;
+  border: 0; border-radius: 8px; background: transparent; color: var(--ax-ink); cursor: pointer; }
+.ax-modepick__opt:hover { background: var(--ax-paper); }
+.ax-modepick__opt.on { background: var(--ax-accent-soft); }
+.ax-modepick__txt { display: flex; flex-direction: column; min-width: 0; }
+.ax-modepick__txt b { font-size: 13px; font-weight: 600; line-height: 1.2; }
+.ax-modepick__txt span { font-size: 11px; color: var(--ax-ink-faint); }
 
 /* ── open-tabs bar (multiple sessions open at once) ───────────────── */
 .ax-tabs { display: flex; align-items: stretch; gap: 2px; padding: 4px 10px 0;
