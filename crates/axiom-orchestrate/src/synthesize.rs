@@ -89,7 +89,15 @@ pub async fn synthesize(goal: &str, steps: &[StepState], critique: &str, provide
                   ```rxn (a reaction — {reactants:[SMILES], products:[SMILES], above?, below?}); \
                   ```field (a 2D scalar field — {x:[..], y:[..], z:[[..]], contours?}); \
                   ```network (a node-link graph — {nodes:[{id,group,value}], edges:[{source,target,weight?,sign?}], directed?}); \
-                  ```track (protein domains + mutations — {length, domains:[{name,from,to}], markers:[{pos,label,count,class}]}). \
+                  ```track (protein domains + mutations — {length, domains:[{name,from,to}], markers:[{pos,label,count,class}]}); \
+                  ```roc (classifier ROC/PR curves — {kind:\"roc|pr\", curves:[{name, auc?, points:[[x,y]]}]}); \
+                  ```tree (phylogeny/dendrogram — a Newick string {newick:\"((A:.1,B:.2):.3,C:.4);\"}); \
+                  ```seqlogo (a sequence motif — {type:\"dna|protein\", columns:[{A,C,G,T frequencies}]}); \
+                  ```sankey (flows — {nodes:[..], links:[{source,target,value}]}); \
+                  ```spectrum (MS/NMR/IR — {kind:\"ms|nmr|ir\", peaks:[[x,intensity]], invertX?}); \
+                  ```dose (dose-response — {curves:[{name, points:[[log10dose,resp]], ic50?, hill?, top?, bottom?}]}); \
+                  ```slope (paired before/after — {left, right, rows:[{label, from, to}]}); \
+                  ```quiver (2D vector field — {vectors:[{x,y,u,v}]}). \
                   Only use these when genuinely \
                   relevant, and only with real values — never fabricate a structure, id, or \
                   dataset. Return only the result.";

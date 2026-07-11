@@ -25,8 +25,16 @@ import { Band } from "./Band";
 import { Alignment } from "./Alignment";
 import { Reaction } from "./Reaction";
 import { Field } from "./Field";
+import { Quiver } from "./Quiver";
 import { Network } from "./Network";
 import { Track } from "./Track";
+import { Tree } from "./Tree";
+import { Roc } from "./Roc";
+import { SeqLogo } from "./SeqLogo";
+import { Sankey } from "./Sankey";
+import { Spectrum } from "./Spectrum";
+import { Dose } from "./Dose";
+import { Slope } from "./Slope";
 import { Pyfig } from "./Pyfig";
 
 marked.use({ gfm: true, breaks: true });
@@ -34,12 +42,13 @@ marked.use({ gfm: true, breaks: true });
 type Kind =
   | "smiles" | "mermaid" | "math" | "chart" | "protein" | "dotplot"
   | "forest" | "heatmap" | "confusion" | "dist" | "volcano" | "manhattan"
-  | "band" | "msa" | "rxn" | "field" | "network" | "track" | "pyfig";
+  | "band" | "msa" | "rxn" | "field" | "quiver" | "network" | "track" | "tree"
+  | "roc" | "seqlogo" | "sankey" | "spectrum" | "dose" | "slope" | "pyfig";
 type Seg = { t: "md"; body: string } | { t: Kind; body: string };
 
 // Split the text at native-figure fences; everything else is markdown.
 function segment(text: string): Seg[] {
-  const re = /```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|field|network|track|pyfig)[^\n]*\n([\s\S]*?)```/g;
+  const re = /```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|field|quiver|network|track|tree|roc|seqlogo|sankey|spectrum|dose|slope|pyfig)[^\n]*\n([\s\S]*?)```/g;
   const segs: Seg[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -85,8 +94,16 @@ export function ArtifactBody({ text }: { text: string }) {
         if (s.t === "msa") return <Alignment key={i} spec={s.body} />;
         if (s.t === "rxn") return <Reaction key={i} spec={s.body} />;
         if (s.t === "field") return <Field key={i} spec={s.body} />;
+        if (s.t === "quiver") return <Quiver key={i} spec={s.body} />;
         if (s.t === "network") return <Network key={i} spec={s.body} />;
         if (s.t === "track") return <Track key={i} spec={s.body} />;
+        if (s.t === "tree") return <Tree key={i} spec={s.body} />;
+        if (s.t === "roc") return <Roc key={i} spec={s.body} />;
+        if (s.t === "seqlogo") return <SeqLogo key={i} spec={s.body} />;
+        if (s.t === "sankey") return <Sankey key={i} spec={s.body} />;
+        if (s.t === "spectrum") return <Spectrum key={i} spec={s.body} />;
+        if (s.t === "dose") return <Dose key={i} spec={s.body} />;
+        if (s.t === "slope") return <Slope key={i} spec={s.body} />;
         if (s.t === "pyfig") return <Pyfig key={i} spec={s.body} />;
         if (s.t === "protein") return <Protein key={i} source={s.body} />;
         if (s.t === "math") return <div key={i} className="ax-md__math" dangerouslySetInnerHTML={{ __html: renderMath(s.body) }} />;
