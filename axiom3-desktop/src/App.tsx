@@ -740,6 +740,17 @@ function App() {
       }
     }
   }
+  // Save a self-contained report HTML (built by ArtifactPane from the rendered artifact).
+  async function saveReport(html: string, defaultName: string) {
+    const path = await save({
+      defaultPath: `${defaultName || "report"}.html`,
+      filters: [{ name: "HTML", extensions: ["html"] }],
+    });
+    if (typeof path === "string") {
+      const ok = await run(() => invoke("save_report_html", { path, html }));
+      if (ok !== undefined) note(`${lang === "zh" ? "已导出报告" : "Report exported"}: ${path.split(/[/\\]/).pop()}`);
+    }
+  }
 
   // A clean claim (no deterministic flag, no fleet verdict) is "unchecked" — shown
   // neutral, NOT as an alarming "uncertain". Only flagged / verdicted claims stand out.
@@ -1556,6 +1567,7 @@ function App() {
             task={activeTask}
             forkedFromTitle={tasks.find((x) => x.id === activeTask.forkedFrom)?.title}
             onExport={exportProvenance}
+            onSaveReport={saveReport}
             onClose={() => {
               setRailOpen(false);
               localStorage.setItem("axiom3.rail", "0");

@@ -1241,6 +1241,17 @@ fn atomic_export_write(path: &str, bytes: &[u8]) -> Result<(), String> {
     })
 }
 
+/// Write a self-contained report HTML (built by the frontend from the current artifact) to
+/// the user-selected `path`. Like `export_provenance`, this is a purpose-built sink — the
+/// only content it writes is the report the user asked to export, to the single path they
+/// picked in the save dialog; `atomic_export_write` rejects a non-absolute path.
+#[tauri::command]
+pub async fn save_report_html(path: String, html: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || atomic_export_write(&path, html.as_bytes()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Export the latest draft check's provenance record to `path` (chosen by the OS save
 /// dialog). The record is rebuilt from the hash-chained log and written as JSON — one
 /// purpose-built sink, not a general file-write primitive: the only content it ever

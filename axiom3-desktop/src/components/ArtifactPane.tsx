@@ -3,13 +3,14 @@
 // export — so the conversation stays in the center and the made thing sits beside it,
 // carrying its own rigor. Scoped to workflow / coding sessions (the generated artifacts);
 // draft-check sessions keep their claim-by-claim flow in the thread.
-import { useEffect, useState } from "react";
-import { X, FileDown, ScanSearch, ChevronLeft, ChevronRight } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
 import { ArtifactProvenance } from "./ArtifactProvenance";
 import { ArtifactInspector } from "./ArtifactInspector";
+import { buildReportHtml } from "../lib/exportReport";
 
 type Tab = "artifact" | "messages" | "review" | "provenance";
 
@@ -18,6 +19,7 @@ export function ArtifactPane({
   task,
   forkedFromTitle,
   onExport,
+  onSaveReport,
   onClose,
   busy,
 }: {
@@ -25,10 +27,20 @@ export function ArtifactPane({
   task: Task;
   forkedFromTitle?: string;
   onExport: () => void;
+  onSaveReport?: (html: string, defaultName: string) => void;
   onClose: () => void;
   busy?: boolean;
 }) {
   const zh = lang === "zh";
+  const artifactRef = useRef<HTMLDivElement>(null);
+  function exportReport() {
+    if (!artifactRef.current || !onSaveReport) return;
+    const theme = document.documentElement.dataset.theme || "light";
+    const title = task.title || task.goal || (zh ? "研究报告" : "Report");
+    const html = buildReportHtml(artifactRef.current, title, theme);
+    const name = title.slice(0, 40).replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "report";
+    onSaveReport(html, name);
+  }
 
   // Version history: a follow-up iterates the artifact (v1 → v2 …). Default to the latest.
   const versions = task.versions ?? [{ synthesis: task.synthesis, review: task.review, steps: task.steps, ts: task.ts, goal: task.goal ?? "" }];
@@ -73,7 +85,12 @@ export function ArtifactPane({
           <span className="ax-artpane__ver" title={zh ? "版本" : "version"}>v1</span>
         )}
         <div className="ax-artpane__actions">
-          <button className="ax-iconbtn" onClick={onExport} disabled={busy} title={zh ? "导出溯源" : "Export provenance"} aria-label="export">
+          {onSaveReport && (
+            <button className="ax-iconbtn" onClick={exportReport} disabled={busy} title={zh ? "导出报告(HTML)" : "Export report (HTML)"} aria-label="export report">
+              <FileText size={15} aria-hidden />
+            </button>
+          )}
+          <button className="ax-iconbtn" onClick={onExport} disabled={busy} title={zh ? "导出溯源" : "Export provenance"} aria-label="export provenance">
             <FileDown size={15} aria-hidden />
           </button>
           <button className="ax-iconbtn" onClick={onClose} title={zh ? "关闭" : "Close"} aria-label="close">
@@ -105,7 +122,9 @@ export function ArtifactPane({
                 {zh ? `第 ${vIdx + 1} 版 · 目标:${ver.goal}` : `Version ${vIdx + 1} · goal: ${ver.goal}`}
               </p>
             )}
-            {ver.synthesis ? <ArtifactBody text={ver.synthesis} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>}
+            <div ref={artifactRef}>
+              {ver.synthesis ? <ArtifactBody text={ver.synthesis} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>}
+            </div>
           </>
         )}
 
