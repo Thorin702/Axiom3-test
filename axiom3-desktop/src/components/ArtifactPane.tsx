@@ -41,9 +41,12 @@ export function ArtifactPane({
     ? ver.review.split("\n").map((l) => l.replace(/^\s*[-*•·]\s?/, "").trim()).filter((l) => l.length > 1)
     : [];
 
+  // For code/analysis sessions the steps ARE the execution log (the code the agent ran +
+  // each result), so name the tab accordingly — it's how you independently re-check the work.
+  const isRun = task.type === "code";
   const TABS: { key: Tab; zh: string; en: string; n?: number }[] = [
     { key: "artifact", zh: "产物", en: "Artifact" },
-    { key: "messages", zh: "消息", en: "Messages", n: steps.length || undefined },
+    { key: "messages", zh: isRun ? "执行" : "消息", en: isRun ? "Execution" : "Messages", n: steps.length || undefined },
     { key: "review", zh: "审查", en: "Review", n: reviewFindings.length || undefined },
     { key: "provenance", zh: "溯源", en: "Provenance" },
   ];
@@ -108,7 +111,7 @@ export function ArtifactPane({
 
         {tab === "messages" && (
           steps.length === 0 ? (
-            <p className="ax-hint">{zh ? "此会话没有子智能体消息。" : "No sub-agent messages in this session."}</p>
+            <p className="ax-hint">{zh ? (isRun ? "此会话没有执行步骤。" : "此会话没有子智能体消息。") : (isRun ? "No execution steps in this session." : "No sub-agent messages in this session.")}</p>
           ) : (
             <div className="ax-artpane__msgs">
               {steps.map((s, i) => (

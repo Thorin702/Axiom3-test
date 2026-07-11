@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source, RunEvent } from "./lib/types";
+import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source, RunEvent, AgentStepView } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
@@ -705,7 +705,7 @@ function App() {
     setSlash("");
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
-    const r = await run<{ status: string; synthesis: string }>(() =>
+    const r = await run<{ status: string; synthesis: string; trace?: AgentStepView[] }>(() =>
       invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined })
     );
     setCodeAttachments([]);
@@ -713,7 +713,7 @@ function App() {
       ts.map((x) =>
         x.id === runid
           ? r
-            ? { ...x, status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed", synthesis: r.synthesis }
+            ? { ...x, status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed", synthesis: r.synthesis, steps: r.trace ?? [] }
             : { ...x, status: "failed", error: "failed" }
           : x
       )

@@ -1869,6 +1869,17 @@ pub struct CodingRunResult {
     pub status: String,
     pub synthesis: String,
     pub steps: u32,
+    /// An auditable execution log — one entry per tool step (the code the agent ran + its
+    /// output), rendered as markdown. Shape matches the frontend AgentStepView.
+    pub trace: Vec<CodingStepOut>,
+}
+
+/// One step of the coding/analysis agent, for the artifact's execution log.
+#[derive(Serialize, Clone)]
+pub struct CodingStepOut {
+    pub role: String,   // the tool used (python / run / write_file / …)
+    pub status: String, // "ok" | "failed"
+    pub output: String, // markdown: the code/command + its result
 }
 
 /// Run a READ-ONLY coding agent over a chosen workspace: a bounded tool-use loop that
@@ -1979,6 +1990,7 @@ pub async fn coding_run(
 
     let model = ProviderModel { provider: provider.clone(), model: model_id, timeout_s: 90 };
     let budget = CodingBudget::default();
+    let mut trace: Vec<CodingStepOut> = Vec::new(); // auditable execution log
     let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &pause, &budget, kernel, |step| {
         let think: String = step.reasoning.chars().take(600).collect();
         let mut note = if think.is_empty() {
@@ -1994,6 +2006,21 @@ pub async fn coding_run(
             note.push('\n');
             note.push_str(obs.trim_end());
         }
+        // Build the execution-log entry: show what the agent actually ran + its result, as
+        // markdown (python code in a fenced block so the artifact renders it verbatim).
+        let obs_full = step.observation.trim();
+        let mut out = match step.tool.as_str() {
+            "python" => format!("```python\n{}\n```\n\n```\n{}\n```", step.input.trim(), obs_full),
+            "run" => format!("`$ {}`\n\n```\n{}\n```", step.input, obs_full),
+            "write_file" => format!("✎ wrote `{}`", step.input),
+            "read_file" | "list_dir" | "search" => format!("`{} {}`", step.tool, step.input),
+            _ => format!("**{}** {}\n\n{}", step.tool, step.detail, obs_full),
+        };
+        if !think.trim().is_empty() {
+            out = format!("_{}_\n\n{out}", think.trim());
+        }
+        let status = if obs_full.starts_with("ERROR") || obs_full.contains("Traceback (most recent call last)") { "failed" } else { "ok" };
+        trace.push(CodingStepOut { role: step.tool.clone(), status: status.into(), output: out });
         em.emit(RunEventBody::AgentProgress {
             agent_id: "coder".into(),
             step: step.n,
@@ -2037,7 +2064,7 @@ pub async fn coding_run(
             synthesis.push_str("\n```\n");
         }
     }
-    Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps })
+    Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace })
 }
 
 /// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can

@@ -34,6 +34,9 @@ pub struct CodingStepRec {
     pub tool: String,
     pub detail: String,
     pub observation: String,
+    /// The FULL tool input (complete python source / command / path / query), for an
+    /// auditable execution log — `detail` is only a short label. Empty when not applicable.
+    pub input: String,
     /// The model's free-text reasoning around the action (its "thinking" this turn).
     pub reasoning: String,
     /// Matplotlib figures (base64 PNG) captured from a `python` step this turn — computed
@@ -271,7 +274,14 @@ pub async fn run_coding_agent(
         };
         all_figures.extend(step_figures.iter().cloned());
         let obs = truncate(&observation, 4000);
-        on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone(), reasoning: reasoning.clone(), figures: step_figures });
+        // The full tool input, for the execution log (detail is only a short label).
+        let input = match tool.as_str() {
+            "python" => arg_str(&v, "code").to_string(),
+            "read_file" | "list_dir" | "write_file" => arg_str(&v, "path").to_string(),
+            "search" => arg_str(&v, "query").to_string(),
+            _ => detail.clone(), // "run": the joined argv
+        };
+        on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone(), input, reasoning: reasoning.clone(), figures: step_figures });
         let think = if reasoning.is_empty() { String::new() } else { format!("THINKING: {}\n", truncate(&reasoning, 500)) };
         transcript.push_str(&format!("\n--- step {n}: {tool} {detail} ---\n{think}{obs}\n"));
     }
@@ -451,15 +461,18 @@ mod tests {
             ]),
         };
         let mut obs: Vec<String> = Vec::new();
+        let mut inputs: Vec<String> = Vec::new();
         let res = run_coding_agent(
             "compute", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(),
-            Some(kernel), |s| obs.push(s.observation),
+            Some(kernel), |s| { obs.push(s.observation); inputs.push(s.input); },
         )
         .await;
         assert_eq!(res.status, "done", "summary: {}", res.summary);
         assert!(obs.len() >= 2, "expected two python steps, got {obs:?}");
         assert!(obs[0].contains("42"), "first python step stdout: {}", obs[0]);
         assert!(obs[1].contains("43"), "kernel state must persist across python calls: {}", obs[1]);
+        // The execution log needs the FULL code, not just the first line.
+        assert!(inputs[0].contains("x = 6 * 7") && inputs[0].contains("print(x)"), "input must be the full code, got: {}", inputs[0]);
         let _ = std::fs::remove_dir_all(&root);
     }
 
