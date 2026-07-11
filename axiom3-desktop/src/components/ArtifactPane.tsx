@@ -4,7 +4,7 @@
 // carrying its own rigor. Scoped to workflow / coding sessions (the generated artifacts);
 // draft-check sessions keep their claim-by-claim flow in the thread.
 import { useEffect, useRef, useState } from "react";
-import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight } from "lucide-react";
+import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Check, Maximize2, Minimize2 } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
@@ -21,6 +21,8 @@ export function ArtifactPane({
   onExport,
   onSaveReport,
   onClose,
+  expanded,
+  onToggleExpand,
   busy,
 }: {
   lang: Lang;
@@ -29,10 +31,13 @@ export function ArtifactPane({
   onExport: () => void;
   onSaveReport?: (html: string, defaultName: string) => void;
   onClose: () => void;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
   busy?: boolean;
 }) {
   const zh = lang === "zh";
   const artifactRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
   function exportReport() {
     if (!artifactRef.current || !onSaveReport) return;
     const theme = document.documentElement.dataset.theme || "light";
@@ -47,6 +52,17 @@ export function ArtifactPane({
   const [vIdx, setVIdx] = useState(versions.length - 1);
   useEffect(() => setVIdx(versions.length - 1), [task.id, versions.length]);
   const ver = versions[Math.min(vIdx, versions.length - 1)];
+  async function copyArtifact() {
+    const text = ver.synthesis ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1400);
+    } catch {
+      /* clipboard unavailable */
+    }
+  }
 
   const steps = ver.steps ?? [];
   const reviewFindings = ver.review
@@ -68,7 +84,7 @@ export function ArtifactPane({
   useEffect(() => setTab("artifact"), [task.id]);
 
   return (
-    <aside className="ax-artpane">
+    <aside className={`ax-artpane ${expanded ? "is-expanded" : ""}`}>
       <div className="ax-artpane__head">
         <span className="ax-artpane__name" title={task.title}>{task.title}</span>
         {versions.length > 1 ? (
@@ -85,6 +101,9 @@ export function ArtifactPane({
           <span className="ax-artpane__ver" title={zh ? "版本" : "version"}>v1</span>
         )}
         <div className="ax-artpane__actions">
+          <button className="ax-iconbtn" onClick={copyArtifact} disabled={busy || !ver.synthesis} title={copied ? (zh ? "已复制" : "Copied") : (zh ? "复制产物文本" : "Copy artifact text")} aria-label="copy artifact">
+            {copied ? <Check size={15} aria-hidden /> : <Copy size={15} aria-hidden />}
+          </button>
           {onSaveReport && (
             <button className="ax-iconbtn" onClick={exportReport} disabled={busy} title={zh ? "导出报告(HTML)" : "Export report (HTML)"} aria-label="export report">
               <FileText size={15} aria-hidden />
@@ -93,6 +112,11 @@ export function ArtifactPane({
           <button className="ax-iconbtn" onClick={onExport} disabled={busy} title={zh ? "导出溯源" : "Export provenance"} aria-label="export provenance">
             <FileDown size={15} aria-hidden />
           </button>
+          {onToggleExpand && (
+            <button className="ax-iconbtn" onClick={onToggleExpand} title={expanded ? (zh ? "还原" : "Restore") : (zh ? "展开" : "Expand")} aria-label={expanded ? "restore" : "expand"}>
+              {expanded ? <Minimize2 size={15} aria-hidden /> : <Maximize2 size={15} aria-hidden />}
+            </button>
+          )}
           <button className="ax-iconbtn" onClick={onClose} title={zh ? "关闭" : "Close"} aria-label="close">
             <X size={16} aria-hidden />
           </button>

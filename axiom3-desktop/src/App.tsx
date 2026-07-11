@@ -28,7 +28,8 @@ import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, Boxes, GitBranch, Gauge, TerminalSquare, Paperclip,
-  Command, Bell, PanelRight, FolderOpen, RotateCcw, WrapText, Check, type LucideIcon,
+  Command, Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
+  MoreHorizontal, Pencil, Mic, CircleUserRound, type LucideIcon,
 } from "lucide-react";
 
 // Set during the tasks initializer (first render): how many persisted tasks were left
@@ -200,9 +201,31 @@ function App() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [onboarded, setOnboarded] = useState(localStorage.getItem("axiom3.onboarded") === "1");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsCat, setSettingsCat] = useState<string | undefined>(undefined);
   const [nav, setNav] = useState<NavKey>("tasks");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(localStorage.getItem("axiom3.rail") === "1");
+  // Left sidebar can collapse to a slim icon rail (like Claude). Persisted.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(localStorage.getItem("axiom3.sidebarCollapsed") === "1");
+  function toggleSidebar() {
+    setSidebarCollapsed((c) => {
+      const n = !c;
+      localStorage.setItem("axiom3.sidebarCollapsed", n ? "1" : "0");
+      return n;
+    });
+  }
+  // Multiple sessions can be open at once as tabs (an "Open tabs" bar shows when ≥2).
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
+  // Per-session actions menu (⋯) + inline rename state.
+  const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  // Artifact pane can expand to fill the window; topbar account menu.
+  const [artifactExpanded, setArtifactExpanded] = useState(false);
+  const [accountMenu, setAccountMenu] = useState(false);
+  // Voice dictation into the composer (Web Speech API, when the webview supports it).
+  const [listening, setListening] = useState(false);
+  const recognitionRef = useRef<any>(null);
   const [booting, setBooting] = useState(true);
   const [dropping, setDropping] = useState(false);
   const [fleetAgg, setFleetAgg] = useState({ runs: 0, spawned: 0, finished: 0 });
@@ -308,6 +331,7 @@ function App() {
   // view change, so a fresh failure still shows; only stale errors get wiped).
   useEffect(() => {
     setError("");
+    setArtifactExpanded(false);
   }, [nav, view, activeId]);
 
   // Opening Notifications marks everything currently there as seen (clears the unread badge).
@@ -458,9 +482,74 @@ function App() {
 
   function removeTask(id: string) {
     setTasks((ts) => ts.filter((tk) => tk.id !== id));
-    if (activeId === id) {
-      setActiveId(null);
-      setView("home");
+    dropTab(id);
+  }
+
+  // ── open-tabs bar: several sessions open at once, like Claude's tab strip ──
+  const TAB_CAP = 8;
+  function pushTab(id: string) {
+    setOpenTabs((prev) => (prev.includes(id) ? prev : [...prev, id].slice(-TAB_CAP)));
+  }
+  // Open a session: surface it as a tab and show its thread.
+  function openTask(id: string) {
+    pushTab(id);
+    setNav("tasks");
+    setActiveId(id);
+    setView("thread");
+  }
+  // Remove a tab (and, if it was active, fall back to a neighbour or home).
+  function dropTab(id: string) {
+    setOpenTabs((prev) => {
+      const next = prev.filter((x) => x !== id);
+      if (activeId === id) {
+        const fallback = next[next.length - 1] ?? null;
+        setActiveId(fallback);
+        setView(fallback ? "thread" : "home");
+      }
+      return next;
+    });
+  }
+
+  // ── rename a session (a title override that persists in the task history) ──
+  function startRename(tk: Task) {
+    setRenamingId(tk.id);
+    setRenameValue(tk.title);
+    setMenuFor(null);
+  }
+  function commitRename() {
+    const id = renamingId;
+    if (!id) return;
+    const title = renameValue.trim();
+    if (title) setTasks((ts) => ts.map((x) => (x.id === id ? { ...x, title } : x)));
+    setRenamingId(null);
+  }
+
+  // ── voice dictation into the composer (webkitSpeechRecognition when available) ──
+  const speechSupported = typeof window !== "undefined" &&
+    !!((window as any).webkitSpeechRecognition || (window as any).SpeechRecognition);
+  function toggleDictation() {
+    if (!speechSupported) return;
+    if (listening) {
+      recognitionRef.current?.stop();
+      return;
+    }
+    const Ctor = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
+    const rec = new Ctor();
+    rec.lang = lang === "zh" ? "zh-CN" : "en-US";
+    rec.interimResults = false;
+    rec.continuous = false;
+    rec.onresult = (ev: any) => {
+      const text = Array.from(ev.results).map((r: any) => r[0].transcript).join(" ").trim();
+      if (text) setSlash((s) => (s ? `${s} ${text}` : text));
+    };
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    recognitionRef.current = rec;
+    setListening(true);
+    try {
+      rec.start();
+    } catch {
+      setListening(false);
     }
   }
 
@@ -599,6 +688,7 @@ function App() {
     setTasks((ts) => [{ id, type: "check_draft", title, status: "running", ts: Date.now(), goal: useDraft, forkedFrom: forkOrigin ?? undefined }, ...ts]);
     setForkOrigin(null);
     setActiveId(id);
+    pushTab(id);
     setNav("tasks");
     setView("thread");
     setCmd(null);
@@ -643,10 +733,12 @@ function App() {
     if (appendTo) {
       setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running" } : x)));
       setActiveId(appendTo);
+      pushTab(appendTo);
     } else {
       setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: deepSearch, forkedFrom: forkOrigin ?? undefined }, ...ts]);
       setForkOrigin(null);
       setActiveId(runid);
+      pushTab(runid);
     }
     setNav("tasks");
     setView("thread");
@@ -701,6 +793,7 @@ function App() {
     setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined }, ...ts]);
     setForkOrigin(null);
     setActiveId(runid);
+    pushTab(runid);
     setNav("tasks");
     setView("thread");
     setCmd(null);
@@ -890,9 +983,36 @@ function App() {
               </div>
             )}
             <div className="ax-toolrow" style={{ justifyContent: "space-between" }}>
-              <button className="ax-iconbtn" onClick={pickDataFiles} title={lang === "zh" ? "附加数据 / 文档" : "Attach data / docs"} aria-label="attach">
-                <Paperclip size={15} aria-hidden />
-              </button>
+              <span className="ax-composer__tools">
+                <button className="ax-iconbtn" onClick={pickDataFiles} title={lang === "zh" ? "附加数据 / 文档" : "Attach data / docs"} aria-label="attach">
+                  <Paperclip size={15} aria-hidden />
+                </button>
+                <button
+                  className={`ax-iconbtn ${listening ? "is-active" : ""}`}
+                  onClick={toggleDictation}
+                  disabled={!speechSupported}
+                  title={
+                    !speechSupported
+                      ? (lang === "zh" ? "此环境不支持语音输入" : "Voice input not available here")
+                      : listening
+                      ? (lang === "zh" ? "停止听写" : "Stop dictation")
+                      : (lang === "zh" ? "语音输入" : "Voice input")
+                  }
+                  aria-label={lang === "zh" ? "语音输入" : "Voice input"}
+                >
+                  <Mic size={15} aria-hidden />
+                </button>
+                <select
+                  className="ax-select ax-select--sm"
+                  value={taskModel}
+                  onChange={(e) => setTaskModel(e.currentTarget.value)}
+                  title={lang === "zh" ? "模型" : "Model"}
+                >
+                  {MODELS.map((m) => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+              </span>
               <button
                 className="ax-send"
                 onClick={() => submitFreeText()}
@@ -963,6 +1083,11 @@ function App() {
                   <button className="ax-iconbtn" onClick={() => setDraft(tidyDraft(draft))} disabled={busy || !draft.trim()} title={lang === "zh" ? "整理:去连字符、重接被打断的换行" : "Tidy: de-hyphenate + rejoin broken line breaks"} aria-label="tidy">
                     <WrapText size={16} aria-hidden />
                   </button>
+                  <select className="ax-select ax-select--sm" value={taskModel} onChange={(e) => setTaskModel(e.currentTarget.value)} title={lang === "zh" ? "模型" : "Model"}>
+                    {MODELS.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </select>
                   <span className="ax-hint">{draft.length.toLocaleString()} {t(lang, "chars")}</span>
                 </div>
                 <details style={{ marginTop: 12 }}>
@@ -1119,7 +1244,7 @@ function App() {
     <>
       {booting && <Splash lang={lang} onDone={() => setBooting(false)} />}
       {!onboarded && <OnboardingWizard lang={lang} onDone={() => setOnboarded(true)} />}
-      {settingsOpen && <SettingsModal lang={lang} onLang={setLang} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal lang={lang} onLang={setLang} initialCat={settingsCat} onClose={() => setSettingsOpen(false)} />}
       {paletteOpen && (
         <CommandPalette lang={lang} items={paletteItems} onPick={onPalettePick} onClose={() => setPaletteOpen(false)} />
       )}
@@ -1132,15 +1257,25 @@ function App() {
           </div>
         </div>
       )}
-      <div className={`ax-app ${railOpen ? "has-rail" : ""}`}>
+      <div className={`ax-app ${railOpen ? "has-rail" : ""} ${sidebarCollapsed ? "is-collapsed" : ""}`}>
       <aside className="ax-sidebar">
-        <div className="ax-brand" style={{ fontSize: 19 }}>Axiom3</div>
+        <div className="ax-side-top">
+          {!sidebarCollapsed && <div className="ax-brand" style={{ fontSize: 19 }}>Axiom3</div>}
+          <button
+            className="ax-iconbtn ax-side-collapse"
+            onClick={toggleSidebar}
+            title={sidebarCollapsed ? (lang === "zh" ? "展开侧栏" : "Expand sidebar") : (lang === "zh" ? "折叠侧栏" : "Collapse sidebar")}
+            aria-label={sidebarCollapsed ? (lang === "zh" ? "展开侧栏" : "Expand sidebar") : (lang === "zh" ? "折叠侧栏" : "Collapse sidebar")}
+          >
+            <PanelLeft size={16} aria-hidden />
+          </button>
+        </div>
 
-        <button className="ax-side-new" onClick={newTask}>
-          <Plus size={16} aria-hidden /> {lang === "zh" ? "新建研究会话" : "New session"}
+        <button className="ax-side-new" onClick={newTask} title={lang === "zh" ? "新建研究会话" : "New session"}>
+          <Plus size={16} aria-hidden /> {!sidebarCollapsed && (lang === "zh" ? "新建研究会话" : "New session")}
         </button>
 
-        {tasks.length > 4 && (
+        {!sidebarCollapsed && tasks.length > 4 && (
           <select
             className="ax-select"
             style={{ width: "100%", fontSize: 12 }}
@@ -1155,7 +1290,7 @@ function App() {
         )}
 
         <div className="ax-side-scroll">
-          {tasks.length === 0 ? (
+          {sidebarCollapsed ? null : tasks.length === 0 ? (
             <p className="ax-hint" style={{ padding: "6px 9px" }}>
               {lang === "zh" ? "还没有研究会话。在中间的输入框开始第一个。" : "No sessions yet. Start your first in the box in the center."}
             </p>
@@ -1171,40 +1306,59 @@ function App() {
                       key={tk.id}
                       className={`ax-recent ${nav === "tasks" && activeId === tk.id ? "is-active" : ""}`}
                     >
-                      <button
-                        className="ax-recent__main"
-                        title={`${tk.title} · ${t(lang, `st_${tk.status}`)}`}
-                        onClick={() => {
-                          setNav("tasks");
-                          setActiveId(tk.id);
-                          setView("thread");
-                        }}
-                      >
-                        <span className="ax-recent__title">
-                          <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
-                          {tk.forkedFrom && <span className="ax-fork-mark" title={lang === "zh" ? "由其他会话分叉" : "forked from another session"}>↳</span>}
-                          <b>{tk.title}</b>
-                          {tk.deep && <span className="ax-recent__deep" title={lang === "zh" ? "深度搜索(AB-MCTS)" : "deep search (AB-MCTS)"}>深</span>}
-                        </span>
-                      </button>
-                      {tk.goal && (
+                      {renamingId === tk.id ? (
+                        <input
+                          className="ax-recent__rename"
+                          autoFocus
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.currentTarget.value)}
+                          onBlur={commitRename}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); commitRename(); }
+                            else if (e.key === "Escape") { e.preventDefault(); setRenamingId(null); }
+                          }}
+                        />
+                      ) : (
                         <button
-                          className="ax-recent__del"
-                          title={lang === "zh" ? "分叉此会话(对比另一种做法)" : "Fork this session (compare another approach)"}
-                          aria-label={lang === "zh" ? "分叉会话" : "Fork session"}
-                          onClick={() => forkSession(tk)}
+                          className="ax-recent__main"
+                          title={`${tk.title} · ${t(lang, `st_${tk.status}`)}`}
+                          onClick={() => openTask(tk.id)}
+                          onDoubleClick={() => startRename(tk)}
                         >
-                          <GitBranch size={13} aria-hidden />
+                          <span className="ax-recent__title">
+                            <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
+                            {tk.forkedFrom && <span className="ax-fork-mark" title={lang === "zh" ? "由其他会话分叉" : "forked from another session"}>↳</span>}
+                            <b>{tk.title}</b>
+                            {tk.deep && <span className="ax-recent__deep" title={lang === "zh" ? "深度搜索(AB-MCTS)" : "deep search (AB-MCTS)"}>深</span>}
+                          </span>
                         </button>
                       )}
                       <button
                         className="ax-recent__del"
-                        title={lang === "zh" ? "删除任务" : "Delete task"}
-                        aria-label={lang === "zh" ? "删除任务" : "Delete task"}
-                        onClick={() => removeTask(tk.id)}
+                        title={lang === "zh" ? "会话操作" : "Session actions"}
+                        aria-label={lang === "zh" ? "会话操作" : "Session actions"}
+                        onClick={() => setMenuFor((m) => (m === tk.id ? null : tk.id))}
                       >
-                        <X size={13} aria-hidden />
+                        <MoreHorizontal size={14} aria-hidden />
                       </button>
+                      {menuFor === tk.id && (
+                        <>
+                          <div className="ax-menu-scrim" onClick={() => setMenuFor(null)} />
+                          <div className="ax-menu" role="menu">
+                            <button className="ax-menu__item" role="menuitem" onClick={() => startRename(tk)}>
+                              <Pencil size={13} aria-hidden /> {lang === "zh" ? "重命名" : "Rename"}
+                            </button>
+                            {tk.goal && (
+                              <button className="ax-menu__item" role="menuitem" onClick={() => { forkSession(tk); setMenuFor(null); }}>
+                                <GitBranch size={13} aria-hidden /> {lang === "zh" ? "分叉会话" : "Fork session"}
+                              </button>
+                            )}
+                            <button className="ax-menu__item is-danger" role="menuitem" onClick={() => { removeTask(tk.id); setMenuFor(null); }}>
+                              <X size={13} aria-hidden /> {lang === "zh" ? "删除" : "Delete"}
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -1214,21 +1368,22 @@ function App() {
         </div>
 
         <div className="ax-side-tools">
-          <p className="ax-nav__label">{lang === "zh" ? "工具" : "Tools"}</p>
+          {!sidebarCollapsed && <p className="ax-nav__label">{lang === "zh" ? "工具" : "Tools"}</p>}
           {NAV.filter((n) => n.key !== "tasks").map((n) => (
             <button
               key={n.key}
               className={`ax-nav__item ${nav === n.key ? "is-active" : ""}`}
               onClick={() => setNav(n.key)}
+              title={lang === "zh" ? n.zh : n.en}
             >
               <n.icon size={16} aria-hidden />
-              {lang === "zh" ? n.zh : n.en}
+              {!sidebarCollapsed && (lang === "zh" ? n.zh : n.en)}
             </button>
           ))}
         </div>
 
         <div className="ax-side-foot">
-          {status && (
+          {status && !sidebarCollapsed && (
             <span className="ax-proj" style={{ marginTop: 0, flex: 1, minWidth: 0 }}>
               <span className={`ax-lamp ${status.chain_ok ? "is-green" : "is-amber"}`} />
               <span className="ax-proj__name">{status.project_id}</span>
@@ -1326,8 +1481,71 @@ function App() {
             >
               <PanelRight size={16} aria-hidden />
             </button>
+            <div className="ax-acct">
+              <button
+                className={`ax-iconbtn ${accountMenu ? "is-active" : ""}`}
+                onClick={() => setAccountMenu((o) => !o)}
+                title={lang === "zh" ? "账户" : "Account"}
+                aria-label={lang === "zh" ? "账户" : "Account"}
+              >
+                <CircleUserRound size={18} aria-hidden />
+              </button>
+              {accountMenu && (
+                <>
+                  <div className="ax-menu-scrim" onClick={() => setAccountMenu(false)} />
+                  <div className="ax-menu ax-menu--acct" role="menu">
+                    <div className="ax-menu__head">
+                      <CircleUserRound size={22} aria-hidden />
+                      <div>
+                        <div className="ax-menu__name">{lang === "zh" ? "本地版" : "Local"}</div>
+                        <div className="ax-menu__sub">axiom3 · {lang === "zh" ? "本机数据" : "on-device"}</div>
+                      </div>
+                    </div>
+                    <button className="ax-menu__item" role="menuitem" onClick={() => { setSettingsCat("account"); setSettingsOpen(true); setAccountMenu(false); }}>
+                      <CircleUserRound size={13} aria-hidden /> {lang === "zh" ? "账户设置" : "Account settings"}
+                    </button>
+                    <button className="ax-menu__item" role="menuitem" onClick={() => { setSettingsCat(undefined); setSettingsOpen(true); setAccountMenu(false); }}>
+                      <Settings size={13} aria-hidden /> {t(lang, "settings")}
+                    </button>
+                    <button className="ax-menu__item" role="menuitem" onClick={() => { setLang(lang === "zh" ? "en" : "zh"); setAccountMenu(false); }}>
+                      <Languages size={13} aria-hidden /> {lang === "zh" ? "切换到 English" : "切换到 中文"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </header>
+
+        {(() => {
+          // Open-tabs bar (like Claude): several sessions open at once. Shown only when ≥2
+          // live tabs exist, on the Sessions surface — a single session keeps the clean header.
+          const liveTabs = openTabs.filter((id) => tasks.some((tk) => tk.id === id));
+          if (nav !== "tasks" || liveTabs.length < 2) return null;
+          return (
+            <div className="ax-tabs" role="tablist">
+              {liveTabs.map((id) => {
+                const tk = tasks.find((x) => x.id === id)!;
+                const on = activeId === id && view === "thread";
+                return (
+                  <div key={id} className={`ax-tab ${on ? "is-active" : ""}`} role="tab" aria-selected={on}>
+                    <button
+                      className="ax-tab__main"
+                      title={tk.title}
+                      onClick={() => { setNav("tasks"); setActiveId(id); setView("thread"); }}
+                    >
+                      <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
+                      <span className="ax-tab__title">{tk.title}</span>
+                    </button>
+                    <button className="ax-tab__x" onClick={() => dropTab(id)} title={t(lang, "close")} aria-label={t(lang, "close")}>
+                      <X size={12} aria-hidden />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
 
         <div className="ax-content">
 
@@ -1342,11 +1560,7 @@ function App() {
                 <SearchView
                   lang={lang}
                   tasks={tasks}
-                  onOpenTask={(id) => {
-                    setNav("tasks");
-                    setActiveId(id);
-                    setView("thread");
-                  }}
+                  onOpenTask={openTask}
                 />
               )}
               {/* 证据 / 护盾 / 溯源 / 完整性 are no longer destinations — they are the
@@ -1358,11 +1572,7 @@ function App() {
                 <NotificationsView
                   lang={lang}
                   tasks={tasks}
-                  onOpen={(id) => {
-                    setNav("tasks");
-                    setActiveId(id);
-                    setView("thread");
-                  }}
+                  onOpen={openTask}
                 />
               )}
             </div>
@@ -1570,8 +1780,11 @@ function App() {
             forkedFromTitle={tasks.find((x) => x.id === activeTask.forkedFrom)?.title}
             onExport={exportProvenance}
             onSaveReport={saveReport}
+            expanded={artifactExpanded}
+            onToggleExpand={() => setArtifactExpanded((e) => !e)}
             onClose={() => {
               setRailOpen(false);
+              setArtifactExpanded(false);
               localStorage.setItem("axiom3.rail", "0");
             }}
             busy={busy}

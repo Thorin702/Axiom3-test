@@ -23,8 +23,8 @@ const S = {
     running: "运行中…", empty: "还没有单元格。",
     warn: "内核执行任意 Python,不是安全沙箱;凭据已从环境剔除。仅运行你信任的代码。",
     tip: "试试:import matplotlib.pyplot as plt; plt.plot([1,4,9,16]); 会内联出图。",
-    envMissing: "科学环境(numpy · pandas · matplotlib)尚未就绪 —— 绘图需要它。",
-    envReady: "科学环境就绪", prepare: "准备环境", preparing: "正在安装 numpy · pandas · matplotlib…(约一分钟)",
+    envMissing: "科学环境(numpy · pandas · scipy · matplotlib · statsmodels · scikit-learn)尚未就绪 —— 绘图与统计需要它。",
+    envReady: "科学环境就绪", prepare: "准备环境", preparing: "正在安装 numpy · pandas · scipy · matplotlib · statsmodels · scikit-learn…(约一两分钟)",
     prepFail: "环境准备失败",
   },
   en: {
@@ -35,8 +35,8 @@ const S = {
     running: "running…", empty: "No cells yet.",
     warn: "The kernel runs arbitrary Python — it is not a security sandbox; credentials are scrubbed from its env. Run only code you trust.",
     tip: "Try: import matplotlib.pyplot as plt; plt.plot([1,4,9,16]) — it renders inline.",
-    envMissing: "The scientific stack (numpy · pandas · matplotlib) isn't ready yet — plotting needs it.",
-    envReady: "scientific stack ready", prepare: "Prepare environment", preparing: "Installing numpy · pandas · matplotlib… (~a minute)",
+    envMissing: "The scientific stack (numpy · pandas · scipy · matplotlib · statsmodels · scikit-learn) isn't ready yet — plotting and statistics need it.",
+    envReady: "scientific stack ready", prepare: "Prepare environment", preparing: "Installing numpy · pandas · scipy · matplotlib · statsmodels · scikit-learn… (~a minute or two)",
     prepFail: "Environment setup failed",
   },
 };
@@ -137,7 +137,7 @@ export function NotebookView({ lang }: { lang: Lang }) {
           </span>
           {sci && (
             <span className="ax-badge" title={s.envReady}>
-              <span className="ax-lamp is-green" /> numpy · pandas · matplotlib
+              <span className="ax-lamp is-green" /> numpy · pandas · scipy · matplotlib · statsmodels · scikit-learn
             </span>
           )}
           <button className="ax-btn" onClick={resetKernel} title={s.reset}><RotateCcw size={14} /> {s.reset}</button>

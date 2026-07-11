@@ -43,8 +43,8 @@ const CATS: { key: Cat; icon: LucideIcon; zh: string; en: string }[] = [
   { key: "about", icon: Info, zh: "关于", en: "About" },
 ];
 
-export function Settings({ lang, onLang, onClose }: { lang: Lang; onLang: (l: Lang) => void; onClose: () => void }) {
-  const [cat, setCat] = useState<Cat>("general");
+export function Settings({ lang, onLang, initialCat, onClose }: { lang: Lang; onLang: (l: Lang) => void; initialCat?: string; onClose: () => void }) {
+  const [cat, setCat] = useState<Cat>((CATS.some((c) => c.key === initialCat) ? initialCat : "general") as Cat);
   const [theme, setTheme] = useState<Theme>((localStorage.getItem("axiom3.theme") as Theme) || "system");
   const [lit, setLit] = useState(localStorage.getItem("axiom3.lit") !== "off");
   const [fleetMax, setFleetMax] = useState(localStorage.getItem("axiom3.fleetmax") || "");
