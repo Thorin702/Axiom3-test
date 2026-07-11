@@ -41,6 +41,7 @@ async fn main() {
         &cancel,
         &pause,
         &budget,
+        None,
         |step| {
             let obs1: String = step.observation.lines().next().unwrap_or("").chars().take(90).collect();
             println!("  [step {}] {} {} → {}", step.n, step.tool, step.detail, obs1);

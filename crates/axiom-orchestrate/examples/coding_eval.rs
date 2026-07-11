@@ -71,7 +71,7 @@ async fn main() {
 
         let sb = Sandbox::with_mode(&dir, SandboxMode::ReadWrite).unwrap();
         let goal = format!("{} Then run `python3 check.py` and iterate until it prints PASS.", t.goal);
-        let res = run_coding_agent(&goal, &sb, &model, &Cancel::new(), &Pause::new(), &budget, |_| {}).await;
+        let res = run_coding_agent(&goal, &sb, &model, &Cancel::new(), &Pause::new(), &budget, None, |_| {}).await;
 
         let out = std::process::Command::new("python3").arg("check.py").current_dir(&dir).output();
         let ok = out

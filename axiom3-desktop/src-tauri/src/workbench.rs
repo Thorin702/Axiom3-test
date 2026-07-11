@@ -1885,6 +1885,7 @@ pub async fn coding_run(
     runid: String,
     workspace: String,
     writable: Option<bool>,
+    analyze: Option<bool>,
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<CodingRunResult, String> {
@@ -1903,6 +1904,17 @@ pub async fn coding_run(
     // build/test are enabled ONLY when the user explicitly opted in (writable).
     let mode = if writable.unwrap_or(false) { SandboxMode::ReadWrite } else { SandboxMode::ReadOnly };
     let sandbox = Sandbox::with_mode(&workspace, mode).map_err(|e| e.to_string())?;
+    // Analysis mode: give the agent a PERSISTENT Python kernel (numpy/pandas/matplotlib
+    // from the managed venv), cwd = the workspace so files it writes and code it runs
+    // agree. Figures it computes are captured into the artifact. A dedicated kernel per
+    // run keeps it isolated from the user's notebook.
+    let kernel = if analyze.unwrap_or(false) {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let py = ensure_kernel_env(&base)?;
+        Some(Arc::new(PyKernel::start(&py.to_string_lossy(), sandbox.root()).map_err(|e| e.to_string())?))
+    } else {
+        None
+    };
     let cancel = Cancel::new();
     let pause = Pause::new();
     let _guard = state
@@ -1929,7 +1941,7 @@ pub async fn coding_run(
 
     let model = ProviderModel { provider: provider.clone(), model: model_id, timeout_s: 90 };
     let budget = CodingBudget::default();
-    let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &pause, &budget, |step| {
+    let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &pause, &budget, kernel, |step| {
         let think: String = step.reasoning.chars().take(600).collect();
         let mut note = if think.is_empty() {
             format!("{} {}", step.tool, step.detail)
@@ -1976,7 +1988,18 @@ pub async fn coding_run(
         error: None,
     });
 
-    Ok(CodingRunResult { status: result.status, synthesis: result.summary, steps: result.steps })
+    // Attach the figures the agent COMPUTED (base64 PNG) to the artifact as native
+    // ```pyfig blocks, so the report shows results drawn from real data, not asserted.
+    let mut synthesis = result.summary;
+    if !result.figures.is_empty() {
+        synthesis.push_str("\n\n## 计算得到的图 · Computed figures\n");
+        for f in &result.figures {
+            synthesis.push_str("\n```pyfig\n");
+            synthesis.push_str(f);
+            synthesis.push_str("\n```\n");
+        }
+    }
+    Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps })
 }
 
 /// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can

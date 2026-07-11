@@ -27,18 +27,19 @@ import { Reaction } from "./Reaction";
 import { Field } from "./Field";
 import { Network } from "./Network";
 import { Track } from "./Track";
+import { Pyfig } from "./Pyfig";
 
 marked.use({ gfm: true, breaks: true });
 
 type Kind =
   | "smiles" | "mermaid" | "math" | "chart" | "protein" | "dotplot"
   | "forest" | "heatmap" | "confusion" | "dist" | "volcano" | "manhattan"
-  | "band" | "msa" | "rxn" | "field" | "network" | "track";
+  | "band" | "msa" | "rxn" | "field" | "network" | "track" | "pyfig";
 type Seg = { t: "md"; body: string } | { t: Kind; body: string };
 
 // Split the text at native-figure fences; everything else is markdown.
 function segment(text: string): Seg[] {
-  const re = /```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|field|network|track)[^\n]*\n([\s\S]*?)```/g;
+  const re = /```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|field|network|track|pyfig)[^\n]*\n([\s\S]*?)```/g;
   const segs: Seg[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -86,6 +87,7 @@ export function ArtifactBody({ text }: { text: string }) {
         if (s.t === "field") return <Field key={i} spec={s.body} />;
         if (s.t === "network") return <Network key={i} spec={s.body} />;
         if (s.t === "track") return <Track key={i} spec={s.body} />;
+        if (s.t === "pyfig") return <Pyfig key={i} spec={s.body} />;
         if (s.t === "protein") return <Protein key={i} source={s.body} />;
         if (s.t === "math") return <div key={i} className="ax-md__math" dangerouslySetInnerHTML={{ __html: renderMath(s.body) }} />;
         // katex html is trusted (we generated it); markdown html is sanitized in renderMd.

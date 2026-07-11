@@ -8,11 +8,13 @@
 pub mod sandbox;
 
 use crate::control::Pause;
+use crate::kernel::PyKernel;
 use axiom_providers::message::{ContentBlock, Message, Request};
 use axiom_runtime::supervisor::{is_retryable_error, retry_async, Cancel, RetryPolicy};
 use axiom_runtime::{complete_with, Provider};
 use sandbox::{Sandbox, SandboxMode};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
 
 pub struct CodingBudget {
@@ -34,12 +36,17 @@ pub struct CodingStepRec {
     pub observation: String,
     /// The model's free-text reasoning around the action (its "thinking" this turn).
     pub reasoning: String,
+    /// Matplotlib figures (base64 PNG) captured from a `python` step this turn — computed
+    /// from real data, never asserted. Empty for non-python steps.
+    pub figures: Vec<String>,
 }
 
 pub struct CodingResult {
     pub status: String, // "done" | "failed" | "cancelled"
     pub summary: String,
     pub steps: u32,
+    /// All figures the agent computed across the run, in order — surfaced into the artifact.
+    pub figures: Vec<String>,
 }
 
 /// The model seam for the loop — abstracted so the loop is testable offline.
@@ -92,7 +99,7 @@ impl CodingModel for ProviderModel {
     }
 }
 
-fn system_prompt(mode: SandboxMode) -> String {
+fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
     let mut s = String::from(
         "You are a coding agent working inside a sandboxed workspace. Each turn respond with \
          EXACTLY ONE JSON object and nothing else — one of:\n\
@@ -116,6 +123,18 @@ fn system_prompt(mode: SandboxMode) -> String {
              You CANNOT write files or run build/test commands here — describe any changes in your final answer.",
         );
     }
+    if has_kernel {
+        s.push_str(
+            "\n{\"tool\":\"python\",\"code\":\"<python source>\"}   (a PERSISTENT Python kernel: \
+             variables/dataframes/models stay in memory across python calls, so build up an analysis \
+             step by step. stdout and the last expression's value come back to you; any matplotlib \
+             figure you create is CAPTURED into the report — do `import matplotlib.pyplot as plt` and \
+             draw with it. numpy/pandas/matplotlib are available.)\n\
+             Use python to COMPUTE results and figures from real data — never state a number, table, \
+             or trend you did not actually compute. In your final answer, describe what the computed \
+             results and figures show; the figures themselves are attached automatically.",
+        );
+    }
     s.push_str(" Be efficient; do not repeat a read you already did.");
     s
 }
@@ -130,24 +149,26 @@ pub async fn run_coding_agent(
     cancel: &Cancel,
     pause: &Pause,
     budget: &CodingBudget,
+    kernel: Option<Arc<PyKernel>>,
     mut on_step: impl FnMut(CodingStepRec),
 ) -> CodingResult {
-    let sys = system_prompt(sandbox.mode());
+    let sys = system_prompt(sandbox.mode(), kernel.is_some());
     let mut transcript = format!("GOAL:\n{goal}\n\nWorkspace root: {}\n", sandbox.root().display());
     let mut ran_command = false; // did the agent run a build/test command this run?
     let mut nudged = false; // pushed back once for finishing without verifying
+    let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
     for n in 1..=budget.max_steps {
         // Cooperative pause: wait here between turns while paused (cancel still wins).
         while pause.is_paused() && !cancel.is_cancelled() {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         if cancel.is_cancelled() {
-            return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1 };
+            return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1, figures: all_figures };
         }
         let user = format!("{transcript}\nNext action (one JSON object only):");
         let reply = match model.complete(&sys, &user, cancel).await {
             Ok(r) => r,
-            Err(e) => return CodingResult { status: "failed".into(), summary: format!("model error: {e}"), steps: n - 1 },
+            Err(e) => return CodingResult { status: "failed".into(), summary: format!("model error: {e}"), steps: n - 1, figures: all_figures },
         };
         let json = extract_json(&reply);
         // The model's reasoning = its reply minus the JSON action it chose this turn.
@@ -158,7 +179,7 @@ pub async fn run_coding_agent(
         let action = json.unwrap_or_else(|| reply.trim().to_string());
         let v: Value = match serde_json::from_str(&action) {
             Ok(v) => v,
-            Err(_) => return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n },
+            Err(_) => return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures },
         };
         if let Some(f) = v.get("final").and_then(|x| x.as_str()) {
             // In write mode, don't accept "done" until the agent has actually RUN a
@@ -172,9 +193,10 @@ pub async fn run_coding_agent(
                 );
                 continue;
             }
-            return CodingResult { status: "done".into(), summary: f.to_string(), steps: n };
+            return CodingResult { status: "done".into(), summary: f.to_string(), steps: n, figures: all_figures };
         }
         let tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let mut step_figures: Vec<String> = Vec::new(); // figures this turn (python only)
         let (detail, observation) = match tool.as_str() {
             "read_file" => {
                 let p = arg_str(&v, "path");
@@ -216,10 +238,40 @@ pub async fn run_coding_agent(
                 };
                 (label, obs)
             }
+            "python" => match &kernel {
+                Some(k) => {
+                    ran_command = true; // executing code counts as "ran something" (nudge)
+                    let code = arg_str(&v, "code").to_string();
+                    let label: String = code.lines().next().unwrap_or("").chars().take(60).collect();
+                    let k = k.clone();
+                    // Blocking kernel call off the async worker; generous timeout for analysis.
+                    let timeout = Duration::from_secs(budget.cmd_timeout_s.max(60));
+                    let obs = match tokio::task::spawn_blocking(move || k.exec(&code, timeout)).await {
+                        Ok(Ok(cell)) => {
+                            step_figures = cell.figures;
+                            let mut o = cell.stdout;
+                            if let Some(err) = cell.error {
+                                if !o.is_empty() && !o.ends_with('\n') { o.push('\n'); }
+                                o.push_str(&err);
+                            }
+                            if !step_figures.is_empty() {
+                                o.push_str(&format!("\n[{} figure(s) captured into the report]", step_figures.len()));
+                            }
+                            if o.trim().is_empty() { o = "(ran; no output)".into(); }
+                            o
+                        }
+                        Ok(Err(e)) => format!("ERROR: {e}"),
+                        Err(e) => format!("ERROR: python kernel task failed: {e}"),
+                    };
+                    (label, obs)
+                }
+                None => ("python".to_string(), "ERROR: python tool not available in this run".to_string()),
+            },
             other => (other.to_string(), format!("ERROR: unknown tool '{other}'")),
         };
+        all_figures.extend(step_figures.iter().cloned());
         let obs = truncate(&observation, 4000);
-        on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone(), reasoning: reasoning.clone() });
+        on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone(), reasoning: reasoning.clone(), figures: step_figures });
         let think = if reasoning.is_empty() { String::new() } else { format!("THINKING: {}\n", truncate(&reasoning, 500)) };
         transcript.push_str(&format!("\n--- step {n}: {tool} {detail} ---\n{think}{obs}\n"));
     }
@@ -227,6 +279,7 @@ pub async fn run_coding_agent(
         status: "done".into(),
         summary: format!("Reached the {}-step budget without finishing. Latest context:\n{}", budget.max_steps, truncate(&transcript, 2000)),
         steps: budget.max_steps,
+        figures: all_figures,
     }
 }
 
@@ -326,7 +379,7 @@ mod tests {
             ]),
         };
         let mut steps = 0;
-        let res = run_coding_agent("review main.rs", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), |_| steps += 1).await;
+        let res = run_coding_agent("review main.rs", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| steps += 1).await;
         assert_eq!(res.status, "done");
         assert!(res.summary.contains("prints hi"));
         assert_eq!(steps, 2); // list_dir + read_file (final isn't a tool step)
@@ -344,7 +397,7 @@ mod tests {
                 r#"{"final":"created hello.txt"}"#.into(),
             ]),
         };
-        let res = run_coding_agent("make hello.txt", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), |_| {}).await;
+        let res = run_coding_agent("make hello.txt", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| {}).await;
         assert_eq!(res.status, "done");
         assert_eq!(std::fs::read_to_string(root.join("hello.txt")).unwrap(), "hi there");
         let _ = std::fs::remove_dir_all(&root);
@@ -360,7 +413,7 @@ mod tests {
                 r#"{"final":"could not write"}"#.into(),
             ]),
         };
-        let res = run_coding_agent("try to write", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), |_| {}).await;
+        let res = run_coding_agent("try to write", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| {}).await;
         assert_eq!(res.status, "done");
         assert!(!root.join("x.txt").exists(), "read-only sandbox must not create files");
         let _ = std::fs::remove_dir_all(&root);
@@ -373,8 +426,40 @@ mod tests {
         let model = ScriptModel { replies: Mutex::new(vec![r#"{"tool":"list_dir","path":"."}"#.into()]) };
         let cancel = Cancel::new();
         cancel.cancel();
-        let res = run_coding_agent("x", &sb, &model, &cancel, &Pause::new(), &CodingBudget::default(), |_| {}).await;
+        let res = run_coding_agent("x", &sb, &model, &cancel, &Pause::new(), &CodingBudget::default(), None, |_| {}).await;
         assert_eq!(res.status, "cancelled");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn python_tool_runs_in_persistent_kernel() {
+        // Needs a real python3; skip cleanly where absent (CI images without it).
+        let py = match ["python3", "python"].iter().find(|p| {
+            std::process::Command::new(p).arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+        }) {
+            Some(p) => p.to_string(),
+            None => return,
+        };
+        let root = tmp("py");
+        let sb = Sandbox::with_mode(&root, SandboxMode::ReadWrite).unwrap();
+        let kernel = Arc::new(crate::kernel::PyKernel::start(&py, &root).unwrap());
+        let model = ScriptModel {
+            replies: Mutex::new(vec![
+                r#"{"tool":"python","code":"x = 6 * 7\nprint(x)"}"#.into(),
+                r#"{"tool":"python","code":"print(x + 1)"}"#.into(), // x persists across calls
+                r#"{"final":"computed 42 then 43"}"#.into(),
+            ]),
+        };
+        let mut obs: Vec<String> = Vec::new();
+        let res = run_coding_agent(
+            "compute", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(),
+            Some(kernel), |s| obs.push(s.observation),
+        )
+        .await;
+        assert_eq!(res.status, "done", "summary: {}", res.summary);
+        assert!(obs.len() >= 2, "expected two python steps, got {obs:?}");
+        assert!(obs[0].contains("42"), "first python step stdout: {}", obs[0]);
+        assert!(obs[1].contains("43"), "kernel state must persist across python calls: {}", obs[1]);
         let _ = std::fs::remove_dir_all(&root);
     }
 

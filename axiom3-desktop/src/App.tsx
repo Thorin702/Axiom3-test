@@ -140,6 +140,7 @@ function App() {
   const [references, setReferences] = useState(() => localStorage.getItem("axiom3.references") ?? "");
   const [codeWs, setCodeWs] = useState<string | null>(null);
   const [codeWritable, setCodeWritable] = useState(false);
+  const [codeAnalyze, setCodeAnalyze] = useState(false); // give the agent a live Python kernel
   const [sources, setSources] = useState<Source[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("axiom3.sources") || "[]");
@@ -694,7 +695,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs, writable: codeWritable, model: taskModel || undefined })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs, writable: codeWritable, analyze: codeAnalyze, model: taskModel || undefined })
     );
     setTasks((ts) =>
       ts.map((x) =>
@@ -999,6 +1000,13 @@ function App() {
                     title={codeWritable ? (lang === "zh" ? "可写入文件并运行构建/测试" : "can write files + run build/test") : (lang === "zh" ? "只读分析" : "read-only")}
                   >
                     {codeWritable ? (lang === "zh" ? "写入 · 构建" : "write · build") : (lang === "zh" ? "只读" : "read-only")}
+                  </button>
+                  <button
+                    className={`ax-toggle ${codeAnalyze ? "on" : ""}`}
+                    onClick={() => setCodeAnalyze(!codeAnalyze)}
+                    title={lang === "zh" ? "给智能体一个常驻 Python 内核:它写代码→内核真跑→图由真实数据算出并入报告" : "give the agent a live Python kernel: it writes code, the kernel runs it, figures are computed from real data into the report"}
+                  >
+                    {lang === "zh" ? "🔬 分析(运行代码)" : "🔬 analyze (run code)"}
                   </button>
                   <select className="ax-select" value={taskModel} onChange={(e) => setTaskModel(e.currentTarget.value)} title={lang === "zh" ? "模型" : "model"}>
                     {MODELS.map((m) => (
