@@ -13,20 +13,18 @@ async fn main() {
     let dir = std::env::temp_dir().join(format!("axiom-coding-live-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    // Seed a fib with a one-line BUG (a,b start at 1,1 instead of 0,1) so the agent should
-    // LOCATE + fix it with a precise `edit`, not rewrite the whole file.
+    // Multi-step: fib has a one-line BUG (start 1,1 not 0,1) AND factorial is unimplemented.
+    // The agent should PLAN, then precisely edit fib and implement factorial.
     std::fs::write(
         dir.join("solution.py"),
-        "def fib(n):\n    a, b = 1, 1  # start values\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n",
+        "def fib(n):\n    a, b = 1, 1  # start values\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n\n\ndef factorial(n):\n    pass  # TODO\n",
     )
     .unwrap();
     std::fs::write(
         dir.join("check.py"),
-        "from solution import fib\n\
-         assert fib(0) == 0, fib(0)\n\
-         assert fib(1) == 1, fib(1)\n\
-         assert fib(10) == 55, fib(10)\n\
-         assert fib(20) == 6765, fib(20)\n\
+        "from solution import fib, factorial\n\
+         assert fib(0) == 0 and fib(10) == 55, 'fib'\n\
+         assert factorial(0) == 1 and factorial(5) == 120, 'factorial'\n\
          print('ALL TESTS PASSED')\n",
     )
     .unwrap();
@@ -40,10 +38,11 @@ async fn main() {
 
     println!("=== coding agent (model={model_id}) on {} ===", dir.display());
     let mut used_edit = false;
+    let mut used_plan = false;
     let res = run_coding_agent(
-        "solution.py has a fib(n) with a BUG (check.py fails). Locate it, fix it with a precise \
-         `edit` (do not rewrite the whole file), then run `python3 check.py` until it prints \
-         ALL TESTS PASSED.",
+        "solution.py has TWO issues: fib(n) has a bug, and factorial(n) is unimplemented. Make a \
+         plan, then fix both (edit fib precisely, implement factorial), and run `python3 check.py` \
+         until it prints ALL TESTS PASSED.",
         &sb,
         &model,
         &cancel,
@@ -52,12 +51,13 @@ async fn main() {
         None,
         |step| {
             if step.tool == "edit" { used_edit = true; }
+            if step.tool == "plan" { used_plan = true; }
             let obs1: String = step.observation.lines().next().unwrap_or("").chars().take(90).collect();
             println!("  [step {}] {} {} → {}", step.n, step.tool, step.detail, obs1);
         },
     )
     .await;
-    println!("=== used `edit` tool: {} ===", if used_edit { "YES ✓" } else { "no" });
+    println!("=== used `plan`: {} · used `edit`: {} ===", if used_plan { "YES ✓" } else { "no" }, if used_edit { "YES ✓" } else { "no" });
 
     println!("\n=== status: {} ({} steps) ===", res.status, res.steps);
     println!("SUMMARY:\n{}\n", res.summary.chars().take(800).collect::<String>());

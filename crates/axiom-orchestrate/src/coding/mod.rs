@@ -106,6 +106,9 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
     let mut s = String::from(
         "You are a coding agent working inside a sandboxed workspace. Each turn respond with \
          EXACTLY ONE JSON object and nothing else — one of:\n\
+         {\"tool\":\"plan\",\"todos\":[\"[ ] first step\",\"[ ] second step\"]}   (for a multi-step \
+         task, list 3-7 TODOs; RE-SEND the whole list each time you update it, marking finished items \
+         [x], so the plan stays current)\n\
          {\"tool\":\"read_file\",\"path\":\"<relative path>\"}\n\
          {\"tool\":\"list_dir\",\"path\":\"<relative path>\"}\n\
          {\"tool\":\"glob\",\"pattern\":\"<glob, e.g. src/**/*.rs>\"}   (find files by name/pattern)\n\
@@ -153,7 +156,11 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              never fabricated ones, and match the shapes exactly.",
         );
     }
-    s.push_str(" Be efficient; do not repeat a read you already did.");
+    s.push_str(
+        " For any task beyond a couple of steps, START by writing a plan (the plan tool), then work \
+         through it, re-sending the updated list as you check items off. Be efficient; do not repeat a \
+         read you already did.",
+    );
     s
 }
 
@@ -216,6 +223,35 @@ pub async fn run_coding_agent(
         let tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let mut step_figures: Vec<String> = Vec::new(); // figures this turn (python only)
         let (detail, observation) = match tool.as_str() {
+            "plan" => {
+                // The agent's TODO snapshot (checklist). It re-submits the full list each time
+                // with items marked [x]/[ ]; we just normalize + surface it (no state kept).
+                let todos: Vec<String> = v
+                    .get("todos")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                let done = todos.iter().filter(|t| {
+                    let s = t.trim_start().trim_start_matches("- ");
+                    s.starts_with("[x]") || s.starts_with("[X]")
+                }).count();
+                let rendered: String = todos
+                    .iter()
+                    .map(|t| {
+                        let s = t.trim().trim_start_matches("- ").trim_start();
+                        if let Some(r) = s.strip_prefix("[x]").or_else(|| s.strip_prefix("[X]")) {
+                            format!("- [x] {}", r.trim())
+                        } else if let Some(r) = s.strip_prefix("[ ]") {
+                            format!("- [ ] {}", r.trim())
+                        } else {
+                            format!("- [ ] {s}")
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let detail = if todos.is_empty() { "plan".into() } else { format!("{done}/{} done", todos.len()) };
+                (detail, if rendered.is_empty() { "(empty plan)".to_string() } else { rendered })
+            }
             "read_file" => {
                 let p = arg_str(&v, "path");
                 (p.to_string(), sandbox.read_file(p).unwrap_or_else(|e| format!("ERROR: {e}")))

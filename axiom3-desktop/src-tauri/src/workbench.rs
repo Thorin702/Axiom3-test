@@ -2147,9 +2147,12 @@ pub async fn coding_run(
         // markdown (python code in a fenced block so the artifact renders it verbatim).
         let obs_full = step.observation.trim();
         let mut out = match step.tool.as_str() {
+            "plan" => format!("**📋 计划 · {}**\n\n{}", step.detail, obs_full),
             "python" => format!("```python\n{}\n```\n\n```\n{}\n```", step.input.trim(), obs_full),
             "run" => format!("`$ {}`\n\n```\n{}\n```", step.input, obs_full),
             "write_file" => format!("✎ wrote `{}`", step.input),
+            "edit" => format!("✎ edited `{}` — {}", step.input, obs_full),
+            "glob" => format!("`glob {}`\n\n```\n{}\n```", step.input, obs_full),
             "read_file" | "list_dir" | "search" => format!("`{} {}`", step.tool, step.input),
             _ => format!("**{}** {}\n\n{}", step.tool, step.detail, obs_full),
         };
