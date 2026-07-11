@@ -916,6 +916,23 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-menu__name { font-size: 13px; color: var(--ax-ink); font-weight: 600; }
 .ax-menu__sub { font-size: 11px; color: var(--ax-ink-faint); margin-top: 1px; }
 
+/* ── bottom-left account button + upward menu (Claude-style) ───────── */
+.ax-side-foot { display: block; }
+.ax-acct--foot { position: relative; display: block; }
+.ax-acct__btn { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 7px 8px; border: 0; border-radius: 10px; background: transparent; color: var(--ax-ink);
+  cursor: pointer; transition: background .12s ease; }
+.ax-acct__btn:hover, .ax-acct__btn.is-active { background: var(--ax-surface-2); }
+.ax-acct__avatar { flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid;
+  place-items: center; background: var(--ax-accent); color: #fff; font-size: 13px; font-weight: 700; }
+.ax-acct__avatar--sm { width: 20px; height: 20px; border-radius: 6px; font-size: 11px; }
+.ax-acct__label { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.ax-acct__label b { font-size: 13px; font-weight: 600; color: var(--ax-ink); }
+.ax-acct__label span { font-size: 11px; color: var(--ax-ink-faint); }
+.ax-menu--acct-foot { top: auto; right: auto; bottom: calc(100% + 6px); left: 0; min-width: 216px; }
+.ax-menu__foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 9px 9px 3px;
+  border-top: 0.5px solid var(--ax-line-soft); font-size: 12px; color: var(--ax-ink-soft); }
+
 /* ── composer: left tool cluster + inline model select ────────────── */
 .ax-composer__tools { display: inline-flex; align-items: center; gap: 4px; }
 .ax-select--sm { font-size: 11.5px; padding: 4px 7px; border-color: transparent; background: transparent;

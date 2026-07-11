@@ -29,7 +29,7 @@ import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
   Command, Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
-  MoreHorizontal, Pencil, Mic, CircleUserRound, ChevronDown, type LucideIcon,
+  MoreHorizontal, Pencil, Mic, ChevronDown, Info, type LucideIcon,
 } from "lucide-react";
 
 // Composer modes (the icon-button popover, Claude-style). Each maps to backend behaviour:
@@ -1481,26 +1481,40 @@ function App() {
           ))}
         </div>
 
+        {/* Bottom-left account menu (Claude-style): the single home for Settings / Language /
+            Help — no duplicate settings/account buttons elsewhere. Opens upward. */}
         <div className="ax-side-foot">
-          {status && !sidebarCollapsed && (
-            <span className="ax-proj" style={{ marginTop: 0, flex: 1, minWidth: 0 }}>
-              <span className={`ax-lamp ${status.chain_ok ? "is-green" : "is-amber"}`} />
-              <span className="ax-proj__name">{status.project_id}</span>
-            </span>
-          )}
-          <button
-            className="ax-iconbtn"
-            onClick={() => setLang(lang === "zh" ? "en" : "zh")}
-            title={lang === "zh" ? "English" : "中文"}
-            aria-label={t(lang, "switch_language")}
-            style={{ marginLeft: status ? 0 : "auto" }}
-          >
-            <Languages size={16} aria-hidden />
-            <span style={{ fontSize: 12 }}>{lang === "zh" ? "EN" : "中"}</span>
-          </button>
-          <button className="ax-iconbtn" onClick={() => setSettingsOpen(true)} title={t(lang, "settings")} aria-label={t(lang, "settings")}>
-            <Settings size={16} aria-hidden />
-          </button>
+          <div className="ax-acct ax-acct--foot">
+            <button className={`ax-acct__btn ${accountMenu ? "is-active" : ""}`} onClick={() => setAccountMenu((o) => !o)} aria-haspopup="menu" aria-expanded={accountMenu}>
+              <span className="ax-acct__avatar">A</span>
+              {!sidebarCollapsed && (
+                <span className="ax-acct__label">
+                  <b>{lang === "zh" ? "本地版" : "Local"}</b>
+                  <span>{lang === "zh" ? "本机数据" : "on-device"}</span>
+                </span>
+              )}
+            </button>
+            {accountMenu && (
+              <>
+                <div className="ax-menu-scrim" onClick={() => setAccountMenu(false)} />
+                <div className="ax-menu ax-menu--acct-foot" role="menu">
+                  <button className="ax-menu__item" role="menuitem" onClick={() => { setSettingsCat(undefined); setSettingsOpen(true); setAccountMenu(false); }}>
+                    <Settings size={14} aria-hidden /> {t(lang, "settings")}
+                  </button>
+                  <button className="ax-menu__item" role="menuitem" onClick={() => { setLang(lang === "zh" ? "en" : "zh"); setAccountMenu(false); }}>
+                    <Languages size={14} aria-hidden /> {lang === "zh" ? "切换到 English" : "切换到 中文"}
+                  </button>
+                  <button className="ax-menu__item" role="menuitem" onClick={() => { setSettingsCat("about"); setSettingsOpen(true); setAccountMenu(false); }}>
+                    <Info size={14} aria-hidden /> {lang === "zh" ? "帮助与关于" : "Help & about"}
+                  </button>
+                  <div className="ax-menu__foot">
+                    <span className="ax-acct__avatar ax-acct__avatar--sm">A</span>
+                    {lang === "zh" ? "本地版 · 本机数据" : "Local · on-device"}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </aside>
 
@@ -1580,39 +1594,6 @@ function App() {
             >
               <PanelRight size={16} aria-hidden />
             </button>
-            <div className="ax-acct">
-              <button
-                className={`ax-iconbtn ${accountMenu ? "is-active" : ""}`}
-                onClick={() => setAccountMenu((o) => !o)}
-                title={lang === "zh" ? "账户" : "Account"}
-                aria-label={lang === "zh" ? "账户" : "Account"}
-              >
-                <CircleUserRound size={18} aria-hidden />
-              </button>
-              {accountMenu && (
-                <>
-                  <div className="ax-menu-scrim" onClick={() => setAccountMenu(false)} />
-                  <div className="ax-menu ax-menu--acct" role="menu">
-                    <div className="ax-menu__head">
-                      <CircleUserRound size={22} aria-hidden />
-                      <div>
-                        <div className="ax-menu__name">{lang === "zh" ? "本地版" : "Local"}</div>
-                        <div className="ax-menu__sub">axiom3 · {lang === "zh" ? "本机数据" : "on-device"}</div>
-                      </div>
-                    </div>
-                    <button className="ax-menu__item" role="menuitem" onClick={() => { setSettingsCat("account"); setSettingsOpen(true); setAccountMenu(false); }}>
-                      <CircleUserRound size={13} aria-hidden /> {lang === "zh" ? "账户设置" : "Account settings"}
-                    </button>
-                    <button className="ax-menu__item" role="menuitem" onClick={() => { setSettingsCat(undefined); setSettingsOpen(true); setAccountMenu(false); }}>
-                      <Settings size={13} aria-hidden /> {t(lang, "settings")}
-                    </button>
-                    <button className="ax-menu__item" role="menuitem" onClick={() => { setLang(lang === "zh" ? "en" : "zh"); setAccountMenu(false); }}>
-                      <Languages size={13} aria-hidden /> {lang === "zh" ? "切换到 English" : "切换到 中文"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
           </div>
         </header>
 
