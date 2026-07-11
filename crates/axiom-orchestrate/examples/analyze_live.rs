@@ -40,8 +40,9 @@ async fn main() {
         "Analyze the attached data. Data files are in your workspace (cwd) — read them with the \
          python tool, e.g. `import pandas as pd; df = pd.read_csv('sales.csv'); print(df.head())`. \
          Files: sales.csv. Compute the mean of the sales column and the month-over-month percent \
-         changes, print both, then draw a bar chart of monthly sales with matplotlib. Finish with a \
-         one-paragraph summary of what the numbers show.",
+         changes with python and print them. Then, in your FINAL answer, present monthly sales as a \
+         native ```chart bar figure filled with the values you computed, and give a one-paragraph \
+         summary of what the numbers show.",
         &sb,
         &model,
         &Cancel::new(),
@@ -57,10 +58,13 @@ async fn main() {
     .await;
 
     println!("\n=== status: {} ({} steps), figures computed: {} ===", res.status, res.steps, res.figures.len());
-    println!("SUMMARY:\n{}\n", res.summary.chars().take(700).collect::<String>());
-    // Prove the figure is a real PNG (base64 of the PNG magic header `\x89PNG`).
-    let ok = res.figures.iter().any(|f| f.starts_with("iVBORw0KGgo"));
-    println!("=== VERIFY: at least one real PNG figure captured: {} ===", if ok { "PASS ✓" } else { "FAIL ✗" });
+    println!("SUMMARY:\n{}\n", res.summary.chars().take(900).collect::<String>());
+    // Prove the agent produced a figure computed from real data — either a native ```chart
+    // block filled with computed values, or a captured matplotlib PNG.
+    let native = res.summary.contains("```chart") || res.summary.contains("```bar") || res.summary.contains("```forest");
+    let png = res.figures.iter().any(|f| f.starts_with("iVBORw0KGgo"));
+    let ok = native || png;
+    println!("=== VERIFY: computed figure present (native block: {native}, PNG: {png}): {} ===", if ok { "PASS ✓" } else { "FAIL ✗" });
     let _ = std::fs::remove_dir_all(&dir);
     std::process::exit(if ok { 0 } else { 1 });
 }

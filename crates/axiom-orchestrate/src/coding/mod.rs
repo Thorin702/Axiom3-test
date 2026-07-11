@@ -135,7 +135,16 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              draw with it. numpy/pandas/matplotlib are available.)\n\
              Use python to COMPUTE results and figures from real data — never state a number, table, \
              or trend you did not actually compute. In your final answer, describe what the computed \
-             results and figures show; the figures themselves are attached automatically.",
+             results and figures show; the figures themselves are attached automatically.\n\
+             For a crisp, interactive figure in the report, you may instead emit a NATIVE figure block \
+             in your final answer, filled with values you computed in python. Use these EXACT shapes: \
+             ```chart bar = {\"type\":\"bar\",\"title\":..,\"xlabel\":..,\"ylabel\":..,\"data\":[{\"label\":\"Jan\",\"value\":12}, …]}; \
+             ```chart scatter = {\"type\":\"scatter\",...,\"points\":[{\"x\":1,\"y\":2,\"group\":?}, …]}; \
+             ```chart line = {\"type\":\"line\",...,\"series\":[{\"name\":..,\"points\":[[x,y], …]}]}. \
+             Other blocks: ```forest {\"rows\":[{\"label\":..,\"estimate\":..,\"lo\":..,\"hi\":..}]}, \
+             ```heatmap {\"rows\":[..],\"cols\":[..],\"values\":[[..]],\"scale\":\"sequential|diverging\"}, \
+             ```dist {\"groups\":[{\"label\":..,\"values\":[..]}]}. Use real computed numbers only — \
+             never fabricated ones, and match the shapes exactly.",
         );
     }
     s.push_str(" Be efficient; do not repeat a read you already did.");

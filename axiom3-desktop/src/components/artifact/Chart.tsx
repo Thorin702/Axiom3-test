@@ -37,9 +37,31 @@ type Spec = {
   xlabel?: string;
   ylabel?: string;
   points?: { x: number; y: number; group?: string }[];
-  data?: { label: string; value: number; group?: string }[];
+  // canonical bar shape; agents also emit {x:[],y:[]} / {labels:[],values:[]} — normalized below.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  data?: any;
   series?: { name: string; points: [number, number][] }[];
+  labels?: (string | number)[];
+  values?: number[];
+  x?: (string | number)[];
+  y?: number[];
 };
+
+// Coerce the various bar shapes agents emit into the canonical [{label, value}].
+function barRows(spec: Spec): { label: string; value: number }[] {
+  const d = spec.data;
+  if (Array.isArray(d) && d.length && typeof d[0] === "object" && d[0] !== null && "value" in d[0]) {
+    return d.map((r: { label?: unknown; value: number }) => ({ label: String(r.label ?? ""), value: Number(r.value) }));
+  }
+  // {x:[...],y:[...]} or {labels:[...],values:[...]} — at the top level or nested under data.
+  const src = (d && typeof d === "object" && !Array.isArray(d)) ? d : spec;
+  const labels = src.labels ?? src.x ?? [];
+  const vals = src.values ?? src.y ?? [];
+  if (Array.isArray(labels) && Array.isArray(vals) && vals.length) {
+    return vals.map((v: number, i: number) => ({ label: String(labels[i] ?? i + 1), value: Number(v) }));
+  }
+  return [];
+}
 
 function build(spec: Spec, tk: ReturnType<typeof tokens>) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -72,7 +94,7 @@ function build(spec: Spec, tk: ReturnType<typeof tokens>) {
   }
 
   if (spec.type === "bar") {
-    const rows = spec.data ?? [];
+    const rows = barRows(spec);
     return {
       type: "bar",
       data: {
