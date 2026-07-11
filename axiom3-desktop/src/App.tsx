@@ -658,7 +658,8 @@ function App() {
       synthesis: string | null;
       review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
-    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch }));
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch, analyze: codeAnalyze, attachments: codeAttachments }));
+    if (!appendTo) setCodeAttachments([]);
     const steps = r?.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model }));
     setTasks((ts) =>
       ts.map((x) => {
@@ -981,7 +982,28 @@ function App() {
                   >
                     {deepSearch ? (lang === "zh" ? "深度搜索" : "deep search") : (lang === "zh" ? "标准" : "standard")}
                   </button>
+                  <button
+                    className={`ax-toggle ${codeAnalyze ? "on" : ""}`}
+                    onClick={() => setCodeAnalyze(!codeAnalyze)}
+                    title={lang === "zh" ? "综合后追加一个计算阶段:分析智能体在常驻内核里真跑代码,把关键图由真实数据算出并入报告" : "After synthesis, add a compute phase: the analysis agent runs code in a live kernel and computes the key figures from real data into the report"}
+                  >
+                    🔬 {lang === "zh" ? "计算图" : "compute figures"}
+                  </button>
                 </div>
+                {codeAnalyze && (
+                  <div className="ax-toolrow" style={{ flexWrap: "wrap", marginTop: 6 }}>
+                    <button className="ax-btn" onClick={pickDataFiles}>{lang === "zh" ? "＋ 附加数据" : "＋ Attach data"}</button>
+                    {codeAttachments.map((p) => {
+                      const name = p.split("/").pop() || p;
+                      return (
+                        <span key={p} className="ax-chip" title={p}>
+                          {name}
+                          <button className="ax-chip__x" onClick={() => setCodeAttachments((a) => a.filter((x) => x !== p))} aria-label="remove">×</button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
               </>
             ) : cmd === "code" || cmd === "analyze" ? (
               <>

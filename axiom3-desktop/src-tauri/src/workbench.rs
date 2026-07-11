@@ -1785,6 +1785,8 @@ pub async fn run_workflow(
     model: Option<String>,
     agents: Option<usize>,
     search: Option<bool>,
+    analyze: Option<bool>,
+    attachments: Option<Vec<String>>,
 ) -> Result<Run, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
@@ -1843,7 +1845,104 @@ pub async fn run_workflow(
         let decomposer = LlmDecomposer { provider: provider.clone(), model: model_id.clone(), target };
         orchestrate(&goal, &opts, &decomposer, &ProviderStep, sink, &cancel).await
     };
+
+    // ── compute phase (optional): run the AI-Scientist loop over the produced report so a
+    // multi-agent run also yields figures COMPUTED from real data, not just prose. Failures
+    // here never fail the run — the report already stands on its own.
+    let mut run = run;
+    if analyze.unwrap_or(false) && !cancel.is_cancelled() {
+        if let Some(report) = run.synthesis.clone().filter(|s| !s.trim().is_empty()) {
+            let em2 = SeqEmitter::new(Arc::new(TauriSink { app: app.clone() }), runid.clone());
+            match compute_figures_for_report(&app, &provider, &model_id, &runid, &report, &attachments, &em2, &cancel).await {
+                Ok(md) if !md.trim().is_empty() => run.synthesis = Some(format!("{report}{md}")),
+                _ => {}
+            }
+        }
+    }
     Ok(run)
+}
+
+/// Run the AI-Scientist analysis loop as a final phase over a produced report: compute the
+/// key figures (from attached data and/or the report's own numbers) in a live Python kernel
+/// and return markdown (native figure blocks + captured matplotlib PNGs) to append to the
+/// artifact. Best-effort — the caller ignores errors so the report still ships.
+#[allow(clippy::too_many_arguments)]
+async fn compute_figures_for_report(
+    app: &tauri::AppHandle,
+    provider: &str,
+    model_id: &str,
+    runid: &str,
+    report: &str,
+    attachments: &Option<Vec<String>>,
+    em: &SeqEmitter,
+    cancel: &Cancel,
+) -> Result<String, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let ws = base.join("analysis").join(runid);
+    std::fs::create_dir_all(&ws).map_err(|e| e.to_string())?;
+    let sandbox = Sandbox::with_mode(&ws, SandboxMode::ReadWrite).map_err(|e| e.to_string())?;
+    // copy any attached data files into the workspace (the kernel's cwd)
+    let mut names: Vec<String> = Vec::new();
+    if let Some(atts) = attachments.as_ref() {
+        for a in atts {
+            let src = std::path::Path::new(a);
+            if let Some(f) = src.file_name() {
+                if std::fs::copy(src, sandbox.root().join(f)).is_ok() {
+                    names.push(f.to_string_lossy().into_owned());
+                }
+            }
+        }
+    }
+    let py = ensure_kernel_env(&base)?;
+    let kernel = Arc::new(PyKernel::start(&py.to_string_lossy(), sandbox.root()).map_err(|e| e.to_string())?);
+    let data_note = if names.is_empty() {
+        String::new()
+    } else {
+        format!(" Data files are in your workspace (cwd), read with pandas: {}.", names.join(", "))
+    };
+    let goal = format!(
+        "You are the analysis step of a research workflow. Using the python tool, COMPUTE the key \
+         quantitative figures the report below discusses (from the data files and/or the numbers in \
+         the report) and present them as native figure blocks (```chart / forest / heatmap / dist / \
+         band) filled with computed values, or as matplotlib figures. Do NOT restate the report — \
+         output only the figures, each with a one-line caption.{data_note}\n\nREPORT:\n{report}"
+    );
+    em.emit(RunEventBody::AgentSpawned {
+        agent_id: "analyst".into(),
+        role: "analyst".into(),
+        model: model_id.into(),
+        vendor: provider.into(),
+        phase: "computing".into(),
+    });
+    let model = ProviderModel { provider: provider.into(), model: model_id.into(), timeout_s: 90 };
+    let budget = CodingBudget::default();
+    let pause = Pause::new();
+    let result = run_coding_agent(&goal, &sandbox, &model, cancel, &pause, &budget, Some(kernel), |step| {
+        let note = format!("{} {}", step.tool, step.detail);
+        em.emit(RunEventBody::AgentProgress { agent_id: "analyst".into(), step: step.n, tokens_in: 0, tokens_out: 0, note: Some(note) });
+    })
+    .await;
+    let outcome = if result.status == "done" { "ok" } else { "err" };
+    em.emit(RunEventBody::AgentFinished {
+        agent_id: "analyst".into(),
+        outcome: outcome.into(),
+        tokens_in: 0,
+        tokens_out: 0,
+        error: None,
+        summary: Some(result.summary.chars().take(120).collect()),
+    });
+    let mut md = String::new();
+    let body = result.summary.trim();
+    if !body.is_empty() {
+        md.push_str("\n\n---\n\n## 计算得到的图 · Computed figures\n\n");
+        md.push_str(body);
+    }
+    for f in &result.figures {
+        md.push_str("\n\n```pyfig\n");
+        md.push_str(f);
+        md.push_str("\n```\n");
+    }
+    Ok(md)
 }
 
 /// Cancel one orchestration run by id (cooperative — stops scheduling new agents; an
