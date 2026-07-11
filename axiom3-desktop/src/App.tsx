@@ -27,7 +27,7 @@ import { StatusBar } from "./components/StatusBar";
 import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
-  Sparkles, BookOpen, Search, Boxes, GitBranch, Gauge, TerminalSquare,
+  Sparkles, BookOpen, Search, Boxes, GitBranch, Gauge, TerminalSquare, Paperclip,
   Command, Bell, PanelRight, FolderOpen, RotateCcw, WrapText, Check, type LucideIcon,
 } from "lucide-react";
 
@@ -659,7 +659,7 @@ function App() {
       synthesis: string | null;
       review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
-    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch, analyze: codeAnalyze, attachments: codeAttachments }));
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch, analyze: codeAnalyze || codeAttachments.length > 0, attachments: codeAttachments }));
     if (!appendTo) setCodeAttachments([]);
     const steps = r?.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model }));
     setTasks((ts) =>
@@ -686,7 +686,7 @@ function App() {
   async function pickDataFiles() {
     const sel = await open({
       multiple: true,
-      filters: [{ name: lang === "zh" ? "数据文件" : "Data", extensions: ["csv", "tsv", "json", "txt", "xlsx", "xls", "parquet", "npy", "npz"] }],
+      filters: [{ name: lang === "zh" ? "数据 / 文档" : "Data / docs", extensions: ["csv", "tsv", "json", "txt", "md", "xlsx", "xls", "parquet", "npy", "npz", "pdf", "docx"] }],
     });
     const paths = Array.isArray(sel) ? sel : typeof sel === "string" ? [sel] : [];
     if (paths.length) setCodeAttachments((a) => [...new Set([...a, ...paths])]);
@@ -831,7 +831,7 @@ function App() {
     const at = tasks.find((x) => x.id === activeId);
     if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → iterate the artifact (v2…)
     else if (at?.type === "code" && (codeWs || codeAnalyze)) runCoding(text);
-    else if (deepSearch) runWorkflow(text); // deep-search mode: run the task as AB-MCTS
+    else if (deepSearch || codeAttachments.length > 0) runWorkflow(text); // deep-search or attached data → multi-agent run (attachments feed the analysis)
     else runCheckDraft(text);
     return true;
   }
@@ -876,7 +876,23 @@ function App() {
               rows={3}
               placeholder={t(lang, "composer_ph")}
             />
-            <div className="ax-toolrow" style={{ justifyContent: "flex-end" }}>
+            {codeAttachments.length > 0 && (
+              <div className="ax-toolrow" style={{ flexWrap: "wrap", padding: "2px 6px 0" }}>
+                {codeAttachments.map((p) => {
+                  const name = p.split(/[/\\]/).pop() || p;
+                  return (
+                    <span key={p} className="ax-chip" title={p}>
+                      {name}
+                      <button className="ax-chip__x" onClick={() => setCodeAttachments((a) => a.filter((x) => x !== p))} aria-label="remove">×</button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            <div className="ax-toolrow" style={{ justifyContent: "space-between" }}>
+              <button className="ax-iconbtn" onClick={pickDataFiles} title={lang === "zh" ? "附加数据 / 文档" : "Attach data / docs"} aria-label="attach">
+                <Paperclip size={15} aria-hidden />
+              </button>
               <button
                 className="ax-send"
                 onClick={() => submitFreeText()}
@@ -1354,23 +1370,9 @@ function App() {
             <div className="ax-home">
               <h1 className="ax-home__greeting">{greeting()}</h1>
               <p className="ax-home__sub">
-                {lang === "zh"
-                  ? "输入一个任务,或从下面选择一种能力。开启「深度搜索」让多智能体自适应择优。"
-                  : "Type a task, or pick a capability below. Turn on deep search for an adaptive multi-agent run."}
+                {lang === "zh" ? "输入任务开始,或用 / 唤出能力" : "Type a task, or use / for capabilities"}
               </p>
               {composerBlock()}
-              <div className="ax-chips">
-                {["check_draft", "verify", "research", "write", "ppt", "code"].map((k) => {
-                  const c = COMMANDS.find((x) => x.key === k);
-                  if (!c) return null;
-                  return (
-                    <button key={k} className={`ax-chip ${c.active ? "" : "is-soon"}`} onClick={() => { setCmd(c.key); setSlash(""); }}>
-                      /{lang === "zh" ? c.zh : c.en}
-                      {!c.active && <span className="ax-chip__d"> · {t(lang, "coming_soon")}</span>}
-                    </button>
-                  );
-                })}
-              </div>
 
               <details className="ax-dev" style={{ maxWidth: 700, margin: "26px auto 0" }}>
                 <summary>{t(lang, "dev_tools")}</summary>
