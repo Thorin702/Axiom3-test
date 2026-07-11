@@ -102,6 +102,17 @@ impl PyKernel {
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         scrub_env(&mut cmd);
+        // The python.org macOS build ships no usable trust store, so in-cell HTTPS
+        // (fetching datasets, PDB files) fails with CERTIFICATE_VERIFY_FAILED. Point it
+        // at the system CA bundle unless the caller already set one.
+        if std::env::var_os("SSL_CERT_FILE").is_none() {
+            for p in ["/etc/ssl/cert.pem", "/etc/ssl/certs/ca-certificates.crt", "/etc/pki/tls/certs/ca-bundle.crt"] {
+                if Path::new(p).exists() {
+                    cmd.env("SSL_CERT_FILE", p);
+                    break;
+                }
+            }
+        }
         let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("could not start {python}: {e}"))?;

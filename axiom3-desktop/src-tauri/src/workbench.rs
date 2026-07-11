@@ -1233,6 +1233,50 @@ fn detect_python() -> Option<String> {
     None
 }
 
+/// The notebook runs in a DEDICATED virtualenv under the app data dir — an isolated
+/// environment we manage (Claude-Science-style), never the user's system Python. This
+/// returns that interpreter, creating the venv on first use. The scientific stack
+/// (numpy/pandas/matplotlib) is seeded separately by `kernel_prepare`.
+fn ensure_kernel_env(base: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let venv = base.join("notebook").join(".venv");
+    let py = venv.join(if cfg!(windows) { "Scripts\\python.exe" } else { "bin/python" });
+    if py.exists() {
+        return Ok(py);
+    }
+    let sys = detect_python().ok_or("Python 3 未安装 — 请先安装 Python 3。 · Python 3 not found.")?;
+    std::fs::create_dir_all(&venv).ok();
+    let out = std::process::Command::new(&sys)
+        .args(["-m", "venv"])
+        .arg(&venv)
+        .output()
+        .map_err(|e| format!("无法创建虚拟环境 · venv failed: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("创建虚拟环境失败 · venv creation failed: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(py)
+}
+
+/// Whether the managed venv has the scientific stack (marker written by `kernel_prepare`).
+fn sci_ready(base: &std::path::Path) -> bool {
+    base.join("notebook").join(".venv").join(".sci_ready").exists()
+}
+
+/// A CA bundle for pip/HTTPS. The python.org macOS framework build ships without a
+/// usable trust store (pip fails with CERTIFICATE_VERIFY_FAILED), so we point it at
+/// the system bundle. Returns the first that exists, or None (then pip uses its default).
+fn ca_bundle() -> Option<&'static str> {
+    for p in [
+        "/etc/ssl/cert.pem",                        // macOS / LibreSSL, BSD
+        "/etc/ssl/certs/ca-certificates.crt",       // Debian/Ubuntu
+        "/etc/pki/tls/certs/ca-bundle.crt",         // Fedora/RHEL
+    ] {
+        if std::path::Path::new(p).exists() {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// Run one notebook cell on the live Python kernel (started lazily). State persists across
 /// cells. Returns stdout + the last expression's repr + any matplotlib figures (base64 PNG).
 #[tauri::command]
@@ -1240,11 +1284,11 @@ pub async fn kernel_exec(app: tauri::AppHandle, state: tauri::State<'_, AppState
     let kernel = {
         let mut guard = state.kernel.lock().unwrap_or_else(|p| p.into_inner());
         if guard.is_none() {
-            let py = detect_python().ok_or("Python 未安装 — 请安装 Python 3 后重试。 · Python 3 not found.")?;
             let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+            let py = ensure_kernel_env(&base)?;
             let cwd = base.join("notebook");
             std::fs::create_dir_all(&cwd).ok();
-            let k = PyKernel::start(&py, &cwd).map_err(|e| e.to_string())?;
+            let k = PyKernel::start(&py.to_string_lossy(), &cwd).map_err(|e| e.to_string())?;
             *guard = Some(Arc::new(k));
         }
         guard.as_ref().unwrap().clone()
@@ -1262,11 +1306,55 @@ pub fn kernel_reset(state: tauri::State<'_, AppState>) {
     *state.kernel.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
-/// Whether the kernel is live + which interpreter.
+/// One-time (idempotent) setup of the notebook's scientific stack — numpy, pandas,
+/// matplotlib — into the managed venv, so figures are COMPUTED from data. Blocking +
+/// networked; the UI calls it behind a visible "preparing…" state. Writes a
+/// `.sci_ready` marker on success so we don't reinstall every launch.
 #[tauri::command]
-pub fn kernel_status(state: tauri::State<'_, AppState>) -> serde_json::Value {
+pub async fn kernel_prepare(app: tauri::AppHandle) -> Result<String, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let py = ensure_kernel_env(&base)?;
+        let cert = ca_bundle();
+        let pip = |args: &[&str]| -> Result<(), String> {
+            let mut cmd = std::process::Command::new(&py);
+            cmd.args(["-m", "pip"]).args(args);
+            // Only set a trust store if the environment hasn't already; the python.org
+            // macOS build otherwise fails HTTPS to PyPI (CERTIFICATE_VERIFY_FAILED).
+            if std::env::var_os("SSL_CERT_FILE").is_none() {
+                if let Some(c) = cert {
+                    cmd.env("SSL_CERT_FILE", c);
+                }
+            }
+            let out = cmd
+                .output()
+                .map_err(|e| format!("pip 无法启动 · pip failed to spawn: {e}"))?;
+            if out.status.success() {
+                Ok(())
+            } else {
+                Err(String::from_utf8_lossy(&out.stderr).into_owned())
+            }
+        };
+        pip(&["install", "--upgrade", "pip", "--quiet", "--disable-pip-version-check"])?;
+        pip(&["install", "--quiet", "--disable-pip-version-check", "numpy", "pandas", "matplotlib"])?;
+        std::fs::write(base.join("notebook").join(".venv").join(".sci_ready"), b"1").ok();
+        Ok::<String, String>("科学环境已就绪 · numpy · pandas · matplotlib".into())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Whether the kernel is live, and whether the scientific stack is installed.
+#[tauri::command]
+pub fn kernel_status(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> serde_json::Value {
     let g = state.kernel.lock().unwrap_or_else(|p| p.into_inner());
-    serde_json::json!({ "running": g.is_some(), "python": g.as_ref().map(|k| k.python().to_string()) })
+    let ready = app.path().app_data_dir().map(|b| sci_ready(&b)).unwrap_or(false);
+    let has_python = g.is_some() || detect_python().is_some();
+    serde_json::json!({
+        "running": g.is_some(),
+        "python": if has_python { Some("python3") } else { None },
+        "sci_ready": ready,
+    })
 }
 
 /// How many works to fetch per claim, how many user-reference passages and retrieved

@@ -775,6 +775,11 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   line-height: 1.5; color: var(--ax-lamp-red); white-space: pre-wrap; word-break: break-word; }
 .ax-nbcell__fig { display: block; max-width: 100%; height: auto; margin: 4px 0; border: 0.5px solid var(--ax-line-soft);
   border-radius: 8px; background: #fff; }
+.ax-nb__env { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 10px 13px;
+  border: 0.5px solid var(--ax-line); border-radius: 10px; background: var(--ax-surface-2); }
+.ax-nb__envmsg { flex: 1; min-width: 0; font-size: 12.5px; color: var(--ax-ink-soft); }
+.ax-nb__env .ax-btn { flex: none; }
+.ax-nb__enverr { margin: -4px 0 12px; font-size: 12px; color: var(--ax-lamp-red); white-space: pre-wrap; word-break: break-word; }
 
 /* thread pointer to the artifact pane */
 .ax-artref { margin-top: 12px; width: 100%; text-align: left; padding: 11px 13px; cursor: pointer;

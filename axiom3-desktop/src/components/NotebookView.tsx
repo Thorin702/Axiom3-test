@@ -12,6 +12,7 @@ import type { Lang } from "../i18n";
 
 type CellResult = { ok: boolean; stdout: string; error: string | null; figures: string[] };
 type Cell = { id: string; code: string; result?: CellResult; running: boolean };
+type KStatus = { running: boolean; python: string | null; sci_ready: boolean };
 
 const S = {
   zh: {
@@ -22,6 +23,9 @@ const S = {
     running: "运行中…", empty: "还没有单元格。",
     warn: "内核执行任意 Python,不是安全沙箱;凭据已从环境剔除。仅运行你信任的代码。",
     tip: "试试:import matplotlib.pyplot as plt; plt.plot([1,4,9,16]); 会内联出图。",
+    envMissing: "科学环境(numpy · pandas · matplotlib)尚未就绪 —— 绘图需要它。",
+    envReady: "科学环境就绪", prepare: "准备环境", preparing: "正在安装 numpy · pandas · matplotlib…(约一分钟)",
+    prepFail: "环境准备失败",
   },
   en: {
     title: "Notebook", sub: "A persistent Python kernel — variables and data stay in memory across cells, so figures are COMPUTED from real data, not asserted.",
@@ -31,6 +35,9 @@ const S = {
     running: "running…", empty: "No cells yet.",
     warn: "The kernel runs arbitrary Python — it is not a security sandbox; credentials are scrubbed from its env. Run only code you trust.",
     tip: "Try: import matplotlib.pyplot as plt; plt.plot([1,4,9,16]) — it renders inline.",
+    envMissing: "The scientific stack (numpy · pandas · matplotlib) isn't ready yet — plotting needs it.",
+    envReady: "scientific stack ready", prepare: "Prepare environment", preparing: "Installing numpy · pandas · matplotlib… (~a minute)",
+    prepFail: "Environment setup failed",
   },
 };
 
@@ -47,11 +54,33 @@ export function NotebookView({ lang }: { lang: Lang }) {
     return [{ id: uid(), code: "", running: false }];
   });
   const [py, setPy] = useState<string | null | undefined>(undefined);
+  const [sci, setSci] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [prepErr, setPrepErr] = useState<string | null>(null);
   const busy = useRef(false);
 
   useEffect(() => {
-    invoke<{ running: boolean; python: string | null }>("kernel_status").then((st) => setPy(st.python)).catch(() => setPy(null));
+    invoke<KStatus>("kernel_status")
+      .then((st) => { setPy(st.python); setSci(!!st.sci_ready); })
+      .catch(() => setPy(null));
   }, []);
+
+  async function prepareEnv() {
+    if (preparing) return;
+    setPreparing(true);
+    setPrepErr(null);
+    try {
+      await invoke<string>("kernel_prepare");
+      await invoke("kernel_reset").catch(() => {}); // fresh kernel picks up the new packages
+      setCells((cs) => cs.map((c) => ({ ...c, result: undefined })));
+      const st = await invoke<KStatus>("kernel_status");
+      setPy(st.python); setSci(!!st.sci_ready);
+    } catch (e) {
+      setPrepErr(String(e));
+    } finally {
+      setPreparing(false);
+    }
+  }
   useEffect(() => {
     localStorage.setItem("axiom3.nbcells", JSON.stringify(cells.map((c) => c.code)));
   }, [cells]);
@@ -69,7 +98,7 @@ export function NotebookView({ lang }: { lang: Lang }) {
       setCells((cs) => cs.map((c) => (c.id === id ? { ...c, result: { ok: false, stdout: "", error: String(e), figures: [] }, running: false } : c)));
     } finally {
       busy.current = false;
-      invoke<{ python: string | null }>("kernel_status").then((st) => setPy(st.python)).catch(() => {});
+      invoke<KStatus>("kernel_status").then((st) => { setPy(st.python); setSci(!!st.sci_ready); }).catch(() => {});
     }
   }
 
@@ -91,7 +120,7 @@ export function NotebookView({ lang }: { lang: Lang }) {
     await invoke("kernel_reset").catch(() => {});
     setCells((cs) => cs.map((c) => ({ ...c, result: undefined })));
     setPy(undefined);
-    invoke<{ python: string | null }>("kernel_status").then((st) => setPy(st.python)).catch(() => {});
+    invoke<KStatus>("kernel_status").then((st) => { setPy(st.python); setSci(!!st.sci_ready); }).catch(() => {});
   }
 
   return (
@@ -104,11 +133,27 @@ export function NotebookView({ lang }: { lang: Lang }) {
         <div className="ax-surface__actions">
           <span className="ax-badge">
             <span className={`ax-lamp ${py ? "is-green" : "is-neutral"}`} />
-            {py ? `${s.live} · ${py}` : py === null ? s.noPy : s.idle}
+            {py ? s.live : py === null ? s.noPy : s.idle}
           </span>
+          {sci && (
+            <span className="ax-badge" title={s.envReady}>
+              <span className="ax-lamp is-green" /> numpy · pandas · matplotlib
+            </span>
+          )}
           <button className="ax-btn" onClick={resetKernel} title={s.reset}><RotateCcw size={14} /> {s.reset}</button>
         </div>
       </div>
+
+      {py !== null && !sci && (
+        <div className="ax-nb__env">
+          <span className="ax-lamp is-neutral" />
+          <span className="ax-nb__envmsg">{preparing ? s.preparing : s.envMissing}</span>
+          <button className="ax-btn ax-btn--primary" onClick={prepareEnv} disabled={preparing}>
+            {preparing ? s.preparing : s.prepare}
+          </button>
+        </div>
+      )}
+      {prepErr && <p className="ax-nb__enverr">{s.prepFail}: {prepErr}</p>}
 
       <p className="ax-hint" style={{ marginBottom: 12 }}>{s.warn}</p>
 
