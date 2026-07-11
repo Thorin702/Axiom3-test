@@ -71,10 +71,13 @@ pub async fn synthesize(goal: &str, steps: &[StepState], critique: &str, provide
                   provided — address its valid points (fix gaps, drop unsupported claims) while \
                   staying faithful to the work. Write in Markdown. When the content calls for \
                   it, emit science figures that render natively: a chemical structure as a \
-                  ```smiles code block (one SMILES string), an architecture/flow diagram as a \
-                  ```mermaid block, and a key equation as a ```math block (LaTeX). Only use \
-                  these when genuinely relevant — never fabricate a structure or diagram. \
-                  Return only the result.";
+                  ```smiles block (one SMILES string); an architecture/flow diagram as a \
+                  ```mermaid block; a key equation as a ```math block (LaTeX); a data figure \
+                  as a ```chart block (JSON with type scatter|bar|line, title, xlabel, ylabel, \
+                  and points/data/series); and a 3D protein structure as a ```protein block (a \
+                  4-char PDB id like 1CRN, or inline PDB text). Only use these when genuinely \
+                  relevant, and only with real values — never fabricate a structure, id, or \
+                  dataset. Return only the result.";
     let crit = if critique.trim().is_empty() {
         String::new()
     } else {

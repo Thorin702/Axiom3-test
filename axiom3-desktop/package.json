@@ -10,9 +10,11 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "3dmol": "^2.5.5",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "chart.js": "^4.5.1",
     "dompurify": "^3.4.11",
     "katex": "^0.17.0",
     "lucide-react": "^1.22.0",

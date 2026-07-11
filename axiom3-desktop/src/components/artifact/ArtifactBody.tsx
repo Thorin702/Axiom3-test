@@ -12,24 +12,23 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Molecule } from "./Molecule";
 import { Diagram } from "./Diagram";
+import { Chart } from "./Chart";
+import { Protein } from "./Protein";
 
 marked.use({ gfm: true, breaks: true });
 
-type Seg =
-  | { t: "md"; body: string }
-  | { t: "smiles"; body: string }
-  | { t: "mermaid"; body: string }
-  | { t: "math"; body: string };
+type Kind = "smiles" | "mermaid" | "math" | "chart" | "protein";
+type Seg = { t: "md"; body: string } | { t: Kind; body: string };
 
-// Split the text at ```smiles / ```mermaid / ```math fences; everything else is markdown.
+// Split the text at native-figure fences; everything else is markdown.
 function segment(text: string): Seg[] {
-  const re = /```(smiles|mermaid|math)[^\n]*\n([\s\S]*?)```/g;
+  const re = /```(smiles|mermaid|math|chart|protein)[^\n]*\n([\s\S]*?)```/g;
   const segs: Seg[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
     if (m.index > last) segs.push({ t: "md", body: text.slice(last, m.index) });
-    segs.push({ t: m[1] as "smiles" | "mermaid" | "math", body: m[2].trim() });
+    segs.push({ t: m[1] as Kind, body: m[2].trim() });
     last = re.lastIndex;
   }
   if (last < text.length) segs.push({ t: "md", body: text.slice(last) });
@@ -57,6 +56,8 @@ export function ArtifactBody({ text }: { text: string }) {
       {segs.map((s, i) => {
         if (s.t === "smiles") return <Molecule key={i} smiles={s.body} />;
         if (s.t === "mermaid") return <Diagram key={i} code={s.body} />;
+        if (s.t === "chart") return <Chart key={i} spec={s.body} />;
+        if (s.t === "protein") return <Protein key={i} source={s.body} />;
         if (s.t === "math") return <div key={i} className="ax-md__math" dangerouslySetInnerHTML={{ __html: renderMath(s.body) }} />;
         // katex html is trusted (we generated it); markdown html is sanitized in renderMd.
         return <div key={i} dangerouslySetInnerHTML={{ __html: renderMd(s.body) }} />;
