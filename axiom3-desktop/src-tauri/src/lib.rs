@@ -77,25 +77,7 @@ pub fn run() {
             // secret store — is resolvable.
             workbench::load_provider_keys_into_env(app.handle());
             #[cfg(target_os = "macos")]
-            {
-                setup_menu(app)?;
-                // Frosted-glass backdrop so both themes read as translucent. Log the result
-                // so we can tell whether the native material actually applied.
-                use tauri::Manager;
-                if let Some(w) = app.get_webview_window("main") {
-                    match window_vibrancy::apply_vibrancy(
-                        &w,
-                        window_vibrancy::NSVisualEffectMaterial::Sidebar,
-                        None,
-                        None,
-                    ) {
-                        Ok(()) => eprintln!("[axiom3] vibrancy applied OK (Sidebar)"),
-                        Err(e) => eprintln!("[axiom3] vibrancy FAILED: {e}"),
-                    }
-                } else {
-                    eprintln!("[axiom3] no 'main' window to apply vibrancy");
-                }
-            }
+            setup_menu(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

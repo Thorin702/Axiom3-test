@@ -18,14 +18,12 @@
         "minWidth": 920,
         "minHeight": 600,
         "resizable": true,
-        "center": true,
-        "transparent": true
+        "center": true
       }
     ],
     "security": {
       "csp": null
-    },
-    "macOSPrivateApi": true
+    }
   },
   "bundle": {
     "active": true,

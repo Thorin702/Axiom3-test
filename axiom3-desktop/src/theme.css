@@ -2,24 +2,22 @@
    Cold-paper deep-ink + oxidized-copper-green accent; serif "voice" for claims.
    Light by default; auto-adapts to dark (a Settings theme override comes later). */
 :root {
-  /* light — translucent frosted-glass field over the macOS vibrancy backdrop; cards stay
-     readable at higher opacity while the page base lets the blur show through. */
-  --ax-paper: rgba(247, 247, 245, 0.52);
-  --ax-surface: rgba(255, 255, 255, 0.74);
-  --ax-surface-2: rgba(244, 244, 241, 0.66);
-  --ax-glass: rgba(250, 250, 248, 0.28); /* subtle tint over the vibrancy glass */
-  --ax-ink: #1A1D1C;
-  --ax-ink-soft: #5B6360;
-  --ax-ink-faint: #909793;
-  --ax-line: #E4E3DD;
-  --ax-line-soft: #EFEEE9;
-  --ax-accent: #0E8C6E;
-  --ax-accent-soft: #E2F1EB;
-  --ax-lamp-green: #2EA66F;
-  --ax-lamp-amber: #D69A2E;
-  --ax-lamp-neutral: #9AA29E;
+  /* light — Claude desktop palette: warm cream field, white raised cards, clay accent. */
+  --ax-paper: #FAF9F5;
+  --ax-surface: #FFFFFF;
+  --ax-surface-2: #F0EEE6;
+  --ax-ink: #292827;
+  --ax-ink-soft: #6C6B63;
+  --ax-ink-faint: #9E9C90;
+  --ax-line: #E3E1D6;
+  --ax-line-soft: #EDEBE2;
+  --ax-accent: #C96442;
+  --ax-accent-soft: #F4E7E0;
+  --ax-lamp-green: #4B9E6F;
+  --ax-lamp-amber: #C98A3C;
+  --ax-lamp-neutral: #A6A499;
   --ax-lamp-violet: #8A6FC4;
-  --ax-lamp-red: #D2584C;
+  --ax-lamp-red: #C15B4C;
   --ax-radius-sm: 6px;
   --ax-radius: 10px;
   --ax-radius-lg: 14px;
@@ -35,42 +33,40 @@
    accent (Codex-family). Forced by [data-theme="dark"]; follows the OS otherwise. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ax-paper: rgba(20, 20, 19, 0.24);
-    --ax-surface: rgba(30, 30, 28, 0.48);
-    --ax-surface-2: rgba(24, 24, 22, 0.34);
-    --ax-glass: rgba(16, 16, 15, 0.30);
-    --ax-ink: #EDEDEA;
-    --ax-ink-soft: #A3A39D;
-    --ax-ink-faint: #74746E;
-    --ax-line: #2B2B28;
-    --ax-line-soft: #201F1D;
-    --ax-accent: #48B394;
-    --ax-accent-soft: #182E28;
-    --ax-lamp-green: #4FB393;
-    --ax-lamp-amber: #D9A552;
-    --ax-lamp-neutral: #74746E;
+    --ax-paper: #262624;
+    --ax-surface: #30302E;
+    --ax-surface-2: #1F1E1D;
+    --ax-ink: #F2F1EB;
+    --ax-ink-soft: #B0AEA3;
+    --ax-ink-faint: #78766D;
+    --ax-line: #3A3937;
+    --ax-line-soft: #2C2B29;
+    --ax-accent: #D97757;
+    --ax-accent-soft: #3A2A22;
+    --ax-lamp-green: #6BAE86;
+    --ax-lamp-amber: #D2A45C;
+    --ax-lamp-neutral: #78766D;
     --ax-lamp-violet: #9B81C4;
-    --ax-lamp-red: #D46C60;
+    --ax-lamp-red: #D9776A;
     --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.55);
   }
 }
 :root[data-theme="dark"] {
-  --ax-paper: rgba(20, 20, 19, 0.24);
-  --ax-surface: rgba(30, 30, 28, 0.48);
-  --ax-surface-2: rgba(24, 24, 22, 0.34);
-  --ax-glass: rgba(16, 16, 15, 0.30);
-  --ax-ink: #EDEDEA;
-  --ax-ink-soft: #A3A39D;
-  --ax-ink-faint: #74746E;
-  --ax-line: #2B2B28;
-  --ax-line-soft: #201F1D;
-  --ax-accent: #48B394;
-  --ax-accent-soft: #182E28;
-  --ax-lamp-green: #4FB393;
-  --ax-lamp-amber: #D9A552;
-  --ax-lamp-neutral: #74746E;
+  --ax-paper: #262624;
+  --ax-surface: #30302E;
+  --ax-surface-2: #1F1E1D;
+  --ax-ink: #F2F1EB;
+  --ax-ink-soft: #B0AEA3;
+  --ax-ink-faint: #78766D;
+  --ax-line: #3A3937;
+  --ax-line-soft: #2C2B29;
+  --ax-accent: #D97757;
+  --ax-accent-soft: #3A2A22;
+  --ax-lamp-green: #6BAE86;
+  --ax-lamp-amber: #D2A45C;
+  --ax-lamp-neutral: #78766D;
   --ax-lamp-violet: #9B81C4;
-  --ax-lamp-red: #D46C60;
+  --ax-lamp-red: #D9776A;
   --ax-shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 12px 32px rgba(0, 0, 0, 0.55);
 }
 
@@ -224,16 +220,10 @@
 
 /* ── base + app shell ─────────────────────────────────────────────── */
 html, body, #root { height: 100%; margin: 0; }
-/* Transparent so the whole window is glass — the frosted blur lives on the panels below. */
-html, body, #root { background: transparent !important; }
-body { color: var(--ax-ink); font-family: var(--ax-sans); -webkit-font-smoothing: antialiased; }
+body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-sans);
+  -webkit-font-smoothing: antialiased; }
 
-/* The macOS vibrancy (NSVisualEffectView, applied in Rust) IS the frosted glass — it shows
-   uniformly behind the whole transparent webview. So the app just sits on it with a light
-   theme-tint for depth; NO extra CSS blur (that double-frosts and muddies), and every panel
-   is transparent, so the translucency is global and identical everywhere. */
-.ax-app { display: grid; grid-template-columns: 258px 1fr; height: 100vh; overflow: hidden;
-  background: var(--ax-glass); }
+.ax-app { display: grid; grid-template-columns: 258px 1fr; height: 100vh; overflow: hidden; }
 .ax-app.has-rail { grid-template-columns: 258px 1fr 360px; }
 
 /* ── boot splash ───────────────────────────────────────────────────── */
@@ -268,7 +258,7 @@ body { color: var(--ax-ink); font-family: var(--ax-sans); -webkit-font-smoothing
   display: flex; flex-direction: column; gap: 16px;
   padding: 16px 14px;
   border-right: 0.5px solid var(--ax-line);
-  background: transparent;
+  background: var(--ax-surface-2);
 }
 .ax-brand { font-family: var(--ax-serif); font-size: 21px; color: var(--ax-ink); }
 .ax-brand small { display: block; margin-top: 3px; font-family: var(--ax-sans); font-size: 11px; color: var(--ax-ink-faint); line-height: 1.4; }
@@ -276,7 +266,7 @@ body { color: var(--ax-ink); font-family: var(--ax-sans); -webkit-font-smoothing
 .ax-proj { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ax-ink); margin-top: 10px; }
 .ax-proj__name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.ax-main { display: flex; flex-direction: column; overflow: hidden; background: transparent; }
+.ax-main { display: flex; flex-direction: column; overflow: hidden; }
 .ax-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 20px; border-bottom: 0.5px solid var(--ax-line); }
 .ax-crumb { font-size: 13px; color: var(--ax-ink-soft); display: flex; align-items: center; gap: 8px; }
 .ax-content { flex: 1; overflow-y: auto; padding: 22px 24px 40px; }
@@ -515,7 +505,7 @@ body { color: var(--ax-ink); font-family: var(--ax-sans); -webkit-font-smoothing
 
 /* ── right activity rail (live multi-agent runs) ───────────────────── */
 .ax-rail { display: flex; flex-direction: column; border-left: 0.5px solid var(--ax-line);
-  background: transparent; overflow: hidden; }
+  background: var(--ax-surface-2); overflow: hidden; }
 .ax-rail__head { display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; border-bottom: 0.5px solid var(--ax-line); }
 .ax-rail__title { font-size: 13px; font-weight: 600; color: var(--ax-ink); letter-spacing: 0.02em; }
