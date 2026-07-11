@@ -32,7 +32,7 @@ use axiom_orchestrate::model::Run;
 use axiom_orchestrate::step::ProviderStep;
 use axiom_orchestrate::supervisor::LlmDecomposer;
 use axiom_orchestrate::{orchestrate, orchestrate_deep, orchestrate_search, ModelArm, OrchestrateOptions, Pause, SearchConfig};
-use axiom_secrets::{get_or_create_db_key, KeyringSecretStore, SecretStore};
+use axiom_secrets::{get_or_create_db_key, FileSecretStore, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
 use axiom_vector::LanceStore;
 use serde::Serialize;
@@ -41,6 +41,49 @@ use tauri::Manager;
 
 /// Keychain service name under which all Axiom3 secrets live.
 const KEYCHAIN_SERVICE: &str = "axiom3";
+
+/// Whether to keep secrets in a local file instead of the OS keychain.
+///
+/// File mode avoids the macOS per-launch keychain authorization prompt that
+/// unsigned / ad-hoc-signed dev builds trigger: the keychain ACL never matches a
+/// binary whose hash changes every rebuild, so macOS re-asks on every launch.
+///
+/// Overridable via `AXIOM3_KEYCHAIN` (`1`/`on` → force keychain, `0`/`off` → force
+/// file); otherwise defaults to file for debug builds and keychain for release, so a
+/// shipped signed build keeps the stronger OS-credential-store protection.
+fn use_file_secrets() -> bool {
+    match std::env::var("AXIOM3_KEYCHAIN").ok().as_deref().map(|s| s.trim().to_ascii_lowercase()) {
+        Some(ref s) if s == "1" || s == "on" || s == "true" || s == "yes" => false,
+        Some(ref s) if s == "0" || s == "off" || s == "false" || s == "no" => true,
+        _ => cfg!(debug_assertions),
+    }
+}
+
+/// Path to the file-backed secret store under the app data dir.
+fn secrets_file(base: &std::path::Path) -> std::path::PathBuf {
+    base.join("secrets.local")
+}
+
+/// The secret backend for this build/config. In file mode the store read-migrates from
+/// the keychain on a miss, so a project already sealed with a keychain-held DB key keeps
+/// opening (one last prompt) then never prompts again.
+fn secret_store(base: &std::path::Path) -> Box<dyn SecretStore> {
+    if use_file_secrets() {
+        let keychain = Box::new(KeyringSecretStore::new(KEYCHAIN_SERVICE)) as Box<dyn SecretStore>;
+        Box::new(FileSecretStore::open(secrets_file(base)).migrating_from(keychain))
+    } else {
+        Box::new(KeyringSecretStore::new(KEYCHAIN_SERVICE))
+    }
+}
+
+/// The configured secret store, resolved from the app data dir; falls back to the
+/// keychain only if the data dir can't be resolved (so secrets still work).
+fn secret_store_for(app: &tauri::AppHandle) -> Box<dyn SecretStore> {
+    match app.path().app_data_dir() {
+        Ok(base) => secret_store(&base),
+        Err(_) => Box::new(KeyringSecretStore::new(KEYCHAIN_SERVICE)),
+    }
+}
 
 /// Dimension for the vector self-test only. The project's *persistent* vector
 /// store is opened once the embedding model fixes the real dimension (deferred) —
@@ -909,10 +952,10 @@ pub async fn open_project(
     }
     let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let root = base.join("projects").join(&project_id);
+    let secrets = secret_store(&base);
     let (wb, status) = tauri::async_runtime::spawn_blocking(
         move || -> Result<(Arc<Workbench>, ProjectStatus), String> {
-            let secrets = KeyringSecretStore::new(KEYCHAIN_SERVICE);
-            let wb = Workbench::open(root, project_id, &secrets).map_err(|e| e.to_string())?;
+            let wb = Workbench::open(root, project_id, secrets.as_ref()).map_err(|e| e.to_string())?;
             let status = wb.status().map_err(|e| e.to_string())?;
             Ok((Arc::new(wb), status))
         },
@@ -1055,10 +1098,11 @@ pub struct SystemCheck {
 /// Detect the local environment (OS, keychain access, Python/Node runtimes, a local
 /// Ollama). Pure detection — no installs, no network beyond a localhost probe.
 #[tauri::command]
-pub async fn system_check() -> SystemCheck {
-    tauri::async_runtime::spawn_blocking(|| {
-        // Keychain probe: round-trip a throwaway entry.
-        let store = KeyringSecretStore::new(KEYCHAIN_SERVICE);
+pub async fn system_check(app: tauri::AppHandle) -> SystemCheck {
+    let store = secret_store_for(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        // Secret-store probe: round-trip a throwaway entry (keychain or local file,
+        // per config). Confirms secrets can be persisted without prompting.
         let keychain = store
             .set("probe:onboarding", "1")
             .and_then(|_| store.get("probe:onboarding"))
@@ -1097,8 +1141,8 @@ pub struct ProviderState {
 /// Which cloud families currently have a usable key — from the keychain OR the process
 /// env (the latter covers `KEY=… pnpm tauri dev`). Drives the "已连接 N 家" UI.
 #[tauri::command]
-pub fn provider_status() -> Vec<ProviderState> {
-    let store = KeyringSecretStore::new(KEYCHAIN_SERVICE);
+pub fn provider_status(app: tauri::AppHandle) -> Vec<ProviderState> {
+    let store = secret_store_for(&app);
     CLOUD_PROVIDERS
         .iter()
         .map(|p| {
@@ -1115,14 +1159,15 @@ pub fn provider_status() -> Vec<ProviderState> {
 /// live `set_var` would data-race those reads. (The deeper fix — passing keys explicitly
 /// into the Rig backend instead of via env — is a follow-up.)
 #[tauri::command]
-pub fn set_provider_key(state: tauri::State<'_, AppState>, provider: String, key: String) -> Result<(), String> {
+pub fn set_provider_key(app: tauri::AppHandle, state: tauri::State<'_, AppState>, provider: String, key: String) -> Result<(), String> {
     let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
     let key = key.trim().to_string();
     if key.is_empty() {
         return Err("empty key".into());
     }
+    let store = secret_store_for(&app);
     state.mutate_keys_locked(|| {
-        KeyringSecretStore::new(KEYCHAIN_SERVICE)
+        store
             .set(&provider_key_name(p.family()), &key)
             .map_err(|e| e.to_string())?;
         std::env::set_var(p.env_var(), &key);
@@ -1133,10 +1178,11 @@ pub fn set_provider_key(state: tauri::State<'_, AppState>, provider: String, key
 /// Forget a provider's stored key (keychain + this session's env). Refused mid-check
 /// for the same data-race reason as [`set_provider_key`].
 #[tauri::command]
-pub fn delete_provider_key(state: tauri::State<'_, AppState>, provider: String) -> Result<(), String> {
+pub fn delete_provider_key(app: tauri::AppHandle, state: tauri::State<'_, AppState>, provider: String) -> Result<(), String> {
     let p = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
+    let store = secret_store_for(&app);
     state.mutate_keys_locked(|| {
-        KeyringSecretStore::new(KEYCHAIN_SERVICE)
+        store
             .delete(&provider_key_name(p.family()))
             .map_err(|e| e.to_string())?;
         std::env::remove_var(p.env_var());
@@ -1146,8 +1192,8 @@ pub fn delete_provider_key(state: tauri::State<'_, AppState>, provider: String) 
 
 /// At startup, hydrate the process env from any keychain-stored provider keys so the
 /// fleet (which reads env) uses the user's BYO keys without re-entry.
-pub fn load_provider_keys_into_env() {
-    let store = KeyringSecretStore::new(KEYCHAIN_SERVICE);
+pub fn load_provider_keys_into_env(app: &tauri::AppHandle) {
+    let store = secret_store_for(app);
     for p in CLOUD_PROVIDERS {
         if std::env::var(p.env_var()).is_err() {
             if let Ok(Some(k)) = store.get(&provider_key_name(p.family())) {

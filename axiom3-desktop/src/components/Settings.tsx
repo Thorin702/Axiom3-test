@@ -214,7 +214,7 @@ export function Settings({ lang, onLang, onClose }: { lang: Lang; onLang: (l: La
                   <input className="ax-input" type="password" value={keyInput} onChange={(e) => setKeyInput(e.currentTarget.value)} placeholder={t(lang, "set_provider_ph")} style={{ flex: 1, minWidth: 180 }} />
                   <button className="ax-btn" onClick={addKey} disabled={!keyInput.trim()}>{t(lang, "prov_save")}</button>
                 </div>
-                <p className="ax-hint" style={{ marginTop: 8 }}>{zh ? "密钥保存在系统钥匙串,绝不写入磁盘或日志。" : "Keys are stored in the OS keychain — never written to disk or logs."}</p>
+                <p className="ax-hint" style={{ marginTop: 8 }}>{zh ? "密钥存于系统凭据库,或(开发构建下)本地仅属主可读的密钥文件;绝不写入日志、产物或代码库。" : "Keys are held in your OS credential store — or, in dev builds, a local owner-only key file; never in logs, artifacts, or the repo."}</p>
               </div>
             )}
 

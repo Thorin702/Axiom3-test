@@ -48,10 +48,6 @@ fn setup_menu(app: &mut tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // Hydrate the process env from any keychain-stored BYO provider keys so the fleet
-    // uses them without re-entry (env still wins, so `KEY=… pnpm tauri dev` overrides).
-    workbench::load_provider_keys_into_env();
-
     let mut builder = tauri::Builder::default();
 
     // Single-instance must be registered first (desktop only): a second launch
@@ -75,6 +71,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
+            // Hydrate the process env from any stored BYO provider keys so the fleet uses
+            // them without re-entry (env still wins, so `KEY=… pnpm tauri dev` overrides).
+            // Done here (not before the builder) so the app data dir — hence the configured
+            // secret store — is resolvable.
+            workbench::load_provider_keys_into_env(app.handle());
             #[cfg(target_os = "macos")]
             setup_menu(app)?;
             Ok(())
