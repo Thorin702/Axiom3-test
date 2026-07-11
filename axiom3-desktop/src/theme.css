@@ -2,11 +2,11 @@
    Cold-paper deep-ink + oxidized-copper-green accent; serif "voice" for claims.
    Light by default; auto-adapts to dark (a Settings theme override comes later). */
 :root {
-  /* light — crisp near-white field with pure-white cards that lift (Codex-clean,
-     editorial-warm). */
-  --ax-paper: #F7F7F5;
-  --ax-surface: #FFFFFF;
-  --ax-surface-2: #F1F1EE;
+  /* light — translucent frosted-glass field over the macOS vibrancy backdrop; cards stay
+     readable at higher opacity while the page base lets the blur show through. */
+  --ax-paper: rgba(247, 247, 245, 0.52);
+  --ax-surface: rgba(255, 255, 255, 0.74);
+  --ax-surface-2: rgba(244, 244, 241, 0.66);
   --ax-ink: #1A1D1C;
   --ax-ink-soft: #5B6360;
   --ax-ink-faint: #909793;
@@ -34,9 +34,9 @@
    accent (Codex-family). Forced by [data-theme="dark"]; follows the OS otherwise. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ax-paper: #131312;
-    --ax-surface: #1B1B19;
-    --ax-surface-2: #171716;
+    --ax-paper: rgba(18, 18, 17, 0.42);
+    --ax-surface: rgba(28, 28, 26, 0.62);
+    --ax-surface-2: rgba(22, 22, 21, 0.55);
     --ax-ink: #EDEDEA;
     --ax-ink-soft: #A3A39D;
     --ax-ink-faint: #74746E;
@@ -584,6 +584,42 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 
 .ax-rail__legend { display: flex; gap: 12px; padding: 0 2px 8px; font-size: 10px; color: var(--ax-ink-faint); }
 .ax-rail__legend span { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ── Background-tasks card (Claude-Code-style): name · kind+dur · agents+tokens ·
+      Phases · per-agent table (Agent|Tokens|Tools|Time) · Finished/Clear foot ── */
+.ax-runcard__top { display: flex; align-items: center; gap: 8px; }
+.ax-runcard__name { font-size: 13px; color: var(--ax-ink); font-weight: 600; flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ax-runcard__ctl { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.ax-runcard__line { display: flex; align-items: center; justify-content: space-between;
+  font-size: 11.5px; color: var(--ax-ink-soft); margin-top: -2px; }
+.ax-runcard__kind { color: var(--ax-ink-soft); }
+.ax-runcard__dur { color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
+.ax-runcard__stat { font-size: 11.5px; color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; margin-top: -4px; }
+.ax-runcard__sep { padding: 0 6px; opacity: 0.6; }
+.ax-runcard__phlabel { font-size: 10.5px; color: var(--ax-ink-faint); font-weight: 600; letter-spacing: 0.04em;
+  margin-top: 4px; padding-top: 8px; border-top: 0.5px solid var(--ax-line-soft); }
+
+/* phase head: chevron LEFT, name fills; current phase reads amber like the reference */
+.ax-phaselist { display: flex; flex-direction: column; gap: 1px; margin-top: 2px; border-top: none; padding-top: 0; }
+.ax-ph__head { justify-content: flex-start; }
+.ax-ph__gap { width: 12px; flex: none; }
+.ax-ph.is-now > .ax-ph__head .ax-ph__name { color: var(--ax-lamp-amber); font-weight: 600; }
+
+.ax-agtable { display: flex; flex-direction: column; gap: 1px; padding: 2px 2px 6px 4px; max-height: 320px; overflow-y: auto; }
+.ax-agtable__hdr, .ax-agtable__row { display: grid; grid-template-columns: 1fr 44px 32px 54px; gap: 6px; align-items: center; }
+.ax-agtable__hdr { font-size: 9.5px; color: var(--ax-ink-faint); letter-spacing: 0.03em; padding: 2px 0 3px; border-bottom: 0.5px solid var(--ax-line-soft); }
+.ax-agtable__hdr span:not(:first-child), .ax-agtable__num { text-align: right; }
+.ax-agtable__row { font-size: 11px; color: var(--ax-ink-soft); padding: 2.5px 0; }
+.ax-agtable__row:hover { background: var(--ax-surface-2); border-radius: 4px; }
+.ax-agtable__name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.ax-agtable__rolename { color: var(--ax-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--ax-mono, ui-monospace, Menlo, monospace); font-size: 10.5px; }
+.ax-agtable__num { color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
+
+.ax-rail__foot { display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px; border-top: 0.5px solid var(--ax-line); font-size: 11.5px; color: var(--ax-ink-faint); }
+.ax-rail__finished { font-variant-numeric: tabular-nums; }
 .ax-tr__step { font-size: 11px; line-height: 1.5; color: var(--ax-ink-soft); white-space: pre-wrap; word-break: break-word;
   border-left: 1.5px solid var(--ax-line); padding-left: 8px; }
 .ax-tr__sum { font-size: 11.5px; line-height: 1.55; color: var(--ax-ink); white-space: pre-wrap; word-break: break-word;

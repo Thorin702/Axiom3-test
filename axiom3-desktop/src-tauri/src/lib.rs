@@ -77,7 +77,20 @@ pub fn run() {
             // secret store — is resolvable.
             workbench::load_provider_keys_into_env(app.handle());
             #[cfg(target_os = "macos")]
-            setup_menu(app)?;
+            {
+                setup_menu(app)?;
+                // Frosted-glass backdrop so both themes read as translucent. Best-effort:
+                // if it can't apply (older macOS), the window just stays its solid color.
+                use tauri::Manager;
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = window_vibrancy::apply_vibrancy(
+                        &w,
+                        window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,
+                        Some(window_vibrancy::NSVisualEffectState::Active),
+                        None,
+                    );
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

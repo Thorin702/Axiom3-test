@@ -79,6 +79,8 @@ export type AgentView = {
   summary?: string;
   error?: string;
   steps: string[]; // live per-step notes (reasoning + tool action) — the streamed transcript
+  startedMs?: number; // spawn time — for the per-agent Time column
+  finishedMs?: number;
 };
 export type RunView = {
   id: string;
