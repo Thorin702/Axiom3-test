@@ -64,13 +64,13 @@ fn secrets_file(base: &std::path::Path) -> std::path::PathBuf {
     base.join("secrets.local")
 }
 
-/// The secret backend for this build/config. In file mode the store read-migrates from
-/// the keychain on a miss, so a project already sealed with a keychain-held DB key keeps
-/// opening (one last prompt) then never prompts again.
+/// The secret backend for this build/config. File mode is a pure local-file store that
+/// NEVER touches the OS keychain — so dev launches raise zero keychain prompts. (Dev
+/// projects get their own `durable.dev.db` sealed with the file key, so no keychain-held
+/// key is ever needed; see `Workbench::open`.) Release mode uses the OS keychain.
 fn secret_store(base: &std::path::Path) -> Box<dyn SecretStore> {
     if use_file_secrets() {
-        let keychain = Box::new(KeyringSecretStore::new(KEYCHAIN_SERVICE)) as Box<dyn SecretStore>;
-        Box::new(FileSecretStore::open(secrets_file(base)).migrating_from(keychain))
+        Box::new(FileSecretStore::open(secrets_file(base)))
     } else {
         Box::new(KeyringSecretStore::new(KEYCHAIN_SERVICE))
     }
@@ -354,12 +354,19 @@ pub struct CheckPlan {
 }
 
 impl Workbench {
-    /// Open (creating if needed) the project at `root`, sealing `durable.db` with
-    /// the project's keychain-managed SQLCipher key from `secrets`.
+    /// Open (creating if needed) the project at `root`, sealing the durable store with
+    /// the project's SQLCipher key from `secrets`.
+    ///
+    /// In file-secrets (dev) mode we open a SEPARATE `durable.dev.db` sealed with the
+    /// local file key, and never touch the keychain-encrypted `durable.db`. That keeps
+    /// dev launches prompt-free while leaving the real, keychain-sealed database exactly
+    /// as-is — it reopens untouched the moment keychain mode returns (release, or
+    /// AXIOM3_KEYCHAIN=1). The two never share a file, so neither can corrupt the other.
     pub fn open(root: PathBuf, project_id: String, secrets: &dyn SecretStore) -> anyhow::Result<Self> {
         std::fs::create_dir_all(&root)?;
         let key = get_or_create_db_key(secrets, &project_id)?;
-        let durable = SqliteStore::open(root.join("durable.db"), &key)?;
+        let db_file = if use_file_secrets() { "durable.dev.db" } else { "durable.db" };
+        let durable = SqliteStore::open(root.join(db_file), &key)?;
         Ok(Self { project_id, root, durable })
     }
 
