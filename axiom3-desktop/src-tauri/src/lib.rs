@@ -79,16 +79,21 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             {
                 setup_menu(app)?;
-                // Frosted-glass backdrop so both themes read as translucent. Best-effort:
-                // if it can't apply (older macOS), the window just stays its solid color.
+                // Frosted-glass backdrop so both themes read as translucent. Log the result
+                // so we can tell whether the native material actually applied.
                 use tauri::Manager;
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = window_vibrancy::apply_vibrancy(
+                    match window_vibrancy::apply_vibrancy(
                         &w,
-                        window_vibrancy::NSVisualEffectMaterial::UnderWindowBackground,
-                        Some(window_vibrancy::NSVisualEffectState::Active),
+                        window_vibrancy::NSVisualEffectMaterial::Sidebar,
                         None,
-                    );
+                        None,
+                    ) {
+                        Ok(()) => eprintln!("[axiom3] vibrancy applied OK (Sidebar)"),
+                        Err(e) => eprintln!("[axiom3] vibrancy FAILED: {e}"),
+                    }
+                } else {
+                    eprintln!("[axiom3] no 'main' window to apply vibrancy");
                 }
             }
             Ok(())
