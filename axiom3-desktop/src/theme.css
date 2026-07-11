@@ -788,6 +788,9 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-artref:hover { color: var(--ax-accent); border-color: var(--ax-accent); }
 .ax-chip.is-soon:hover { opacity: 0.7; }
 .ax-chip__d { color: var(--ax-ink-faint); }
+.ax-chip__x { border: none; background: none; color: var(--ax-ink-faint); cursor: pointer; font-size: 14px;
+  line-height: 1; padding: 0 0 0 2px; margin-left: 2px; }
+.ax-chip__x:hover { color: var(--ax-lamp-red); }
 
 /* pinned tools group (kept out of the recents scroll) */
 .ax-side-tools { display: flex; flex-direction: column; gap: 1px; padding-top: 6px; margin-top: 2px; border-top: 0.5px solid var(--ax-line-soft); }

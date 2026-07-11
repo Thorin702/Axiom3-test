@@ -1886,6 +1886,7 @@ pub async fn coding_run(
     workspace: String,
     writable: Option<bool>,
     analyze: Option<bool>,
+    attachments: Option<Vec<String>>,
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<CodingRunResult, String> {
@@ -1900,10 +1901,47 @@ pub async fn coding_run(
         ));
     }
     let model_id = model.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| workflow_model_for(&provider));
+    let is_analyze = analyze.unwrap_or(false);
+    // Analysis with no chosen folder gets a private scratch workspace, so a user can just
+    // attach data and ask — no need to pick a code directory.
+    let workspace = if workspace.trim().is_empty() && is_analyze {
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let dir = base.join("analysis").join(&runid);
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        dir.to_string_lossy().into_owned()
+    } else {
+        workspace
+    };
     // Fail-closed: validate + canonicalize the workspace before anything runs. Write +
     // build/test are enabled ONLY when the user explicitly opted in (writable).
     let mode = if writable.unwrap_or(false) { SandboxMode::ReadWrite } else { SandboxMode::ReadOnly };
     let sandbox = Sandbox::with_mode(&workspace, mode).map_err(|e| e.to_string())?;
+    // Copy any attached data files into the workspace so the analysis kernel (cwd = the
+    // workspace) can read them directly, and tell the agent what's available.
+    let mut data_note = String::new();
+    if is_analyze {
+        if let Some(atts) = attachments.as_ref().filter(|a| !a.is_empty()) {
+            let root = sandbox.root().to_path_buf();
+            let mut names: Vec<String> = Vec::new();
+            for a in atts {
+                let src = std::path::Path::new(a);
+                if let Some(fname) = src.file_name() {
+                    if std::fs::copy(src, root.join(fname)).is_ok() {
+                        names.push(fname.to_string_lossy().into_owned());
+                    }
+                }
+            }
+            if let Some(first) = names.first() {
+                data_note = format!(
+                    "\n\nData files are in your workspace (cwd) — read them with the python tool, \
+                     e.g. `import pandas as pd; df = pd.read_csv('{first}'); print(df.head())`. \
+                     Files: {}.",
+                    names.join(", ")
+                );
+            }
+        }
+    }
+    let goal = format!("{goal}{data_note}");
     // Analysis mode: give the agent a PERSISTENT Python kernel (numpy/pandas/matplotlib
     // from the managed venv), cwd = the workspace so files it writes and code it runs
     // agree. Figures it computes are captured into the artifact. A dedicated kernel per

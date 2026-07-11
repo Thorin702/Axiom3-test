@@ -22,6 +22,12 @@ async fn main() {
     let dir = std::env::temp_dir().join(format!("axiom-analyze-live-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    // Simulate an ATTACHED data file sitting in the workspace (what coding_run copies in).
+    std::fs::write(
+        dir.join("sales.csv"),
+        "month,sales\nJan,12\nFeb,19\nMar,15\nApr,27\nMay,34\nJun,30\n",
+    )
+    .unwrap();
 
     let sb = Sandbox::with_mode(&dir, SandboxMode::ReadWrite).unwrap();
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("start kernel"));
@@ -31,10 +37,11 @@ async fn main() {
 
     println!("=== analysis agent (model={model_id}) ===");
     let res = run_coding_agent(
-        "Using the python tool: the monthly sales are [12, 19, 15, 27, 34, 30]. Compute their \
-         mean and the month-over-month percent changes, print both, then draw a bar chart of the \
-         six monthly values with matplotlib. Finish with a one-paragraph summary of what the \
-         numbers show.",
+        "Analyze the attached data. Data files are in your workspace (cwd) — read them with the \
+         python tool, e.g. `import pandas as pd; df = pd.read_csv('sales.csv'); print(df.head())`. \
+         Files: sales.csv. Compute the mean of the sales column and the month-over-month percent \
+         changes, print both, then draw a bar chart of monthly sales with matplotlib. Finish with a \
+         one-paragraph summary of what the numbers show.",
         &sb,
         &model,
         &Cancel::new(),

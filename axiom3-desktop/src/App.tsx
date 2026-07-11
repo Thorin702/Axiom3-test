@@ -141,6 +141,7 @@ function App() {
   const [codeWs, setCodeWs] = useState<string | null>(null);
   const [codeWritable, setCodeWritable] = useState(false);
   const [codeAnalyze, setCodeAnalyze] = useState(false); // give the agent a live Python kernel
+  const [codeAttachments, setCodeAttachments] = useState<string[]>([]); // data files for analysis
   const [sources, setSources] = useState<Source[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("axiom3.sources") || "[]");
@@ -680,9 +681,18 @@ function App() {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir === "string") setCodeWs(dir);
   }
+  async function pickDataFiles() {
+    const sel = await open({
+      multiple: true,
+      filters: [{ name: lang === "zh" ? "数据文件" : "Data", extensions: ["csv", "tsv", "json", "txt", "xlsx", "xls", "parquet", "npy", "npz"] }],
+    });
+    const paths = Array.isArray(sel) ? sel : typeof sel === "string" ? [sel] : [];
+    if (paths.length) setCodeAttachments((a) => [...new Set([...a, ...paths])]);
+  }
   async function runCoding(goal: string) {
     const g = goal.trim();
-    if (!g || !codeWs) return;
+    if (!g) return;
+    if (!codeWs && !codeAnalyze) return; // code mode needs a folder; analyze can use a scratch dir
     const runid = `run-${crypto.randomUUID()}`;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
     setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined }, ...ts]);
@@ -695,8 +705,9 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs, writable: codeWritable, analyze: codeAnalyze, model: taskModel || undefined })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: codeAnalyze, attachments: codeAttachments, model: taskModel || undefined })
     );
+    setCodeAttachments([]);
     setTasks((ts) =>
       ts.map((x) =>
         x.id === runid
@@ -988,10 +999,28 @@ function App() {
                   value={draft}
                   onChange={(e) => setDraft(e.currentTarget.value)}
                   rows={4}
-                  placeholder={lang === "zh" ? "要分析的任务(只读:读取 / 搜索 / 提议改动)…" : "What to analyze (read-only: read / search / propose)…"}
+                  placeholder={codeAnalyze
+                    ? (lang === "zh" ? "要分析什么(附上数据,智能体会真跑代码并算出图)…" : "What to analyze (attach data — the agent runs code and computes the figures)…")
+                    : (lang === "zh" ? "要分析的任务(只读:读取 / 搜索 / 提议改动)…" : "What to analyze (read-only: read / search / propose)…")}
                 />
+                {codeAnalyze && (
+                  <div className="ax-toolrow" style={{ flexWrap: "wrap" }}>
+                    <button className="ax-btn" onClick={pickDataFiles}>
+                      {lang === "zh" ? "＋ 附加数据" : "＋ Attach data"}
+                    </button>
+                    {codeAttachments.map((p) => {
+                      const name = p.split("/").pop() || p;
+                      return (
+                        <span key={p} className="ax-chip" title={p}>
+                          {name}
+                          <button className="ax-chip__x" onClick={() => setCodeAttachments((a) => a.filter((x) => x !== p))} aria-label="remove">×</button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
                 <div className="ax-toolrow">
-                  <button className="ax-btn ax-btn--primary" onClick={() => runCoding(draft)} disabled={busy || !draft.trim() || !codeWs}>
+                  <button className="ax-btn ax-btn--primary" onClick={() => runCoding(draft)} disabled={busy || !draft.trim() || (!codeWs && !codeAnalyze)}>
                     {t(lang, "task_run")}
                   </button>
                   <button
