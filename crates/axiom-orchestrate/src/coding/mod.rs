@@ -169,6 +169,16 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              dendropy, scikit-bio, umap-learn, statsmodels extras, etc. They become importable in the \
              SAME kernel right after. Prefer the pre-installed stack when it suffices; reach for this \
              when a task genuinely needs a domain library. Heavy builds may be slow.)\n\
+             {\"tool\":\"job_start\",\"code\":\"<python>\",\"label\":\"<what it does>\"}   (run a LONG \
+             computation as a DETACHED background job that keeps going while you do other work — good \
+             for a big download, a long fit, or a genome-scale scan. It runs in a FRESH process, so \
+             read inputs from and write results to FILES in the workspace, not the kernel's memory. \
+             Returns a job id.)\n\
+             {\"tool\":\"job_status\",\"id\":\"<job id>\"}   (check a background job: RUNNING / DONE / \
+             FAILED plus the tail of its log. Poll it between other steps; when DONE, read its output files.)\n\
+             {\"tool\":\"checkpoint\"}   (snapshot the kernel's variables to disk before a risky or huge \
+             step, so you can recover them.)  {\"tool\":\"restore\"}   (reload them after a kernel restart \
+             or crash — in-memory state is otherwise lost when the kernel restarts.)\n\
              {\"tool\":\"litsearch\",\"query\":\"<search terms>\"}   (search the peer-reviewed \
              literature via OpenAlex — returns real titles, years, authors, DOIs and abstracts. Use \
              it to FRAME an analysis around a real published study, to find the canonical dataset/method \
@@ -509,6 +519,80 @@ pub async fn run_coding_agent(
                 }
                 None => ("python".to_string(), "ERROR: python tool not available in this run".to_string()),
             },
+            "job_start" => match &kernel {
+                // Launch a long-running computation as a DETACHED process (from inside the kernel,
+                // so it inherits the interpreter + SSL env) that keeps running while the agent does
+                // other work. Status/output are file-based, so they survive a kernel restart.
+                Some(k) => {
+                    ran_command = true;
+                    let code = arg_str(&v, "code").to_string();
+                    let label = arg_str(&v, "label");
+                    let id = format!("job{n}");
+                    let indented: String = code.lines().map(|l| format!("    {l}")).collect::<Vec<_>>().join("\n");
+                    let wrapped = format!(
+                        "import sys, traceback\ntry:\n{indented}\n    open('.axiom_jobs/{id}.status','w').write('done')\nexcept Exception:\n    traceback.print_exc()\n    open('.axiom_jobs/{id}.status','w').write('failed')\n"
+                    );
+                    let launcher = format!(
+                        "import os, subprocess, sys\nos.makedirs('.axiom_jobs', exist_ok=True)\n\
+                         open('.axiom_jobs/{id}.py','w').write({wrapped:?})\n\
+                         try: os.remove('.axiom_jobs/{id}.status')\nexcept OSError: pass\n\
+                         _p = subprocess.Popen([sys.executable, '.axiom_jobs/{id}.py'], \
+                         stdout=open('.axiom_jobs/{id}.log','w'), stderr=subprocess.STDOUT, start_new_session=True)\n\
+                         print('started {id} (pid', _p.pid, ')')\n"
+                    );
+                    let k = k.clone();
+                    let obs = match tokio::task::spawn_blocking(move || k.exec(&launcher, Duration::from_secs(30))).await {
+                        Ok(Ok(cell)) => format!("{}\n[background job {id} running — poll it with job_status id={id}]", cell.stdout.trim()),
+                        Ok(Err(e)) => format!("ERROR: {e}"),
+                        Err(e) => format!("ERROR: job launch failed: {e}"),
+                    };
+                    (format!("{id} {label}").trim().to_string(), obs)
+                }
+                None => ("job_start".to_string(), "ERROR: job_start needs the analysis kernel".to_string()),
+            },
+            "job_status" => {
+                // Pure file read — doesn't touch the kernel, so you can poll a job while other
+                // kernel work proceeds.
+                let id = arg_str(&v, "id");
+                let jobdir = sandbox.root().join(".axiom_jobs");
+                let log = std::fs::read_to_string(jobdir.join(format!("{id}.log"))).unwrap_or_default();
+                let tail: String = {
+                    let lines: Vec<&str> = log.lines().collect();
+                    let start = lines.len().saturating_sub(40);
+                    lines[start..].join("\n")
+                };
+                let status = std::fs::read_to_string(jobdir.join(format!("{id}.status"))).unwrap_or_default();
+                let state = if status.contains("done") { "DONE ✓" } else if status.contains("failed") { "FAILED ✗" } else { "RUNNING…" };
+                (id.to_string(), format!("{state}\n--- log tail ---\n{tail}"))
+            }
+            "checkpoint" => match &kernel {
+                // Snapshot the kernel's picklable globals to disk, so a later restart (or crash) can
+                // reload them with `restore` instead of losing all in-memory state.
+                Some(k) => {
+                    let code = "import pickle as _pk\n_ck = {}\nfor _k, _v in list(globals().items()):\n    if _k.startswith('_'): continue\n    try:\n        _pk.dumps(_v)\n        _ck[_k] = _v\n    except Exception:\n        pass\n_pk.dump(_ck, open('.axiom_ckpt.pkl', 'wb'))\nprint('checkpointed', len(_ck), 'objects:', sorted(_ck.keys()))\n";
+                    let k = k.clone();
+                    let obs = match tokio::task::spawn_blocking(move || k.exec(code, Duration::from_secs(60))).await {
+                        Ok(Ok(cell)) => { let mut o = cell.stdout; if let Some(e) = cell.error { o.push_str(&e); } o }
+                        Ok(Err(e)) => format!("ERROR: {e}"),
+                        Err(e) => format!("ERROR: {e}"),
+                    };
+                    ("checkpoint".to_string(), obs)
+                }
+                None => ("checkpoint".to_string(), "ERROR: checkpoint needs the analysis kernel".to_string()),
+            },
+            "restore" => match &kernel {
+                Some(k) => {
+                    let code = "import pickle as _pk, os\nif os.path.exists('.axiom_ckpt.pkl'):\n    _ck = _pk.load(open('.axiom_ckpt.pkl', 'rb'))\n    globals().update(_ck)\n    print('restored', len(_ck), 'objects:', sorted(_ck.keys()))\nelse:\n    print('no checkpoint found (.axiom_ckpt.pkl missing)')\n";
+                    let k = k.clone();
+                    let obs = match tokio::task::spawn_blocking(move || k.exec(code, Duration::from_secs(60))).await {
+                        Ok(Ok(cell)) => { let mut o = cell.stdout; if let Some(e) = cell.error { o.push_str(&e); } o }
+                        Ok(Err(e)) => format!("ERROR: {e}"),
+                        Err(e) => format!("ERROR: {e}"),
+                    };
+                    ("restore".to_string(), obs)
+                }
+                None => ("restore".to_string(), "ERROR: restore needs the analysis kernel".to_string()),
+            },
             other => (other.to_string(), format!("ERROR: unknown tool '{other}'")),
         };
         all_figures.extend(step_figures.iter().cloned());
@@ -519,6 +603,8 @@ pub async fn run_coding_agent(
             "read_file" | "list_dir" | "write_file" | "edit" => arg_str(&v, "path").to_string(),
             "search" | "litsearch" => arg_str(&v, "query").to_string(),
             "glob" => arg_str(&v, "pattern").to_string(),
+            "job_start" => arg_str(&v, "code").to_string(),
+            "job_status" => arg_str(&v, "id").to_string(),
             "pip_install" => detail.clone(), // the joined package list
             _ => detail.clone(), // "run": the joined argv
         };

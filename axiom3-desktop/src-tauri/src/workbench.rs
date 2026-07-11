@@ -2180,6 +2180,10 @@ pub async fn coding_run(
             "glob" => format!("`glob {}`\n\n```\n{}\n```", step.input, obs_full),
             "litsearch" => format!("**📚 文献检索 · {}**\n\n{}", step.input, obs_full),
             "pip_install" => format!("**📦 安装依赖 · {}**\n\n```\n{}\n```", step.input, obs_full),
+            "job_start" => format!("**🚀 后台作业**\n\n```python\n{}\n```\n\n{}", step.input.trim(), obs_full),
+            "job_status" => format!("**⏳ 作业状态 · {}**\n\n```\n{}\n```", step.input, obs_full),
+            "checkpoint" => format!("**💾 检查点** · {}", obs_full),
+            "restore" => format!("**♻️ 恢复检查点** · {}", obs_full),
             "read_file" | "list_dir" | "search" => format!("`{} {}`", step.tool, step.input),
             _ => format!("**{}** {}\n\n{}", step.tool, step.detail, obs_full),
         };
