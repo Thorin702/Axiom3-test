@@ -9,6 +9,7 @@ import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
 import { ReviewerPanel } from "./components/ReviewerPanel";
+import { ArtifactBody } from "./components/artifact/ArtifactBody";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { ReadingView } from "./components/ReadingView";
@@ -1343,7 +1344,8 @@ function App() {
                       {tk.synthesis && (
                         <div className="ax-synth">
                           <p className="ax-block-label">{lang === "zh" ? "汇总结果" : "Synthesized result"}</p>
-                          <div className="ax-synth__body">{tk.synthesis}</div>
+                          {/* rendered natively: markdown + molecules (SMILES) + diagrams (mermaid) + math */}
+                          <ArtifactBody text={tk.synthesis} />
                         </div>
                       )}
 

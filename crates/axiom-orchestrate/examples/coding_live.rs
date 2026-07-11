@@ -25,7 +25,7 @@ async fn main() {
     )
     .unwrap();
 
-    let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
+    let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let sb = Sandbox::with_mode(&dir, SandboxMode::ReadWrite).unwrap();
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 90 };
     let budget = CodingBudget { max_steps: 14, per_call_timeout_s: 90, cmd_timeout_s: 30 };

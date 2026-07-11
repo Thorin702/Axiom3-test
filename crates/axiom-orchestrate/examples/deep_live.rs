@@ -48,7 +48,7 @@ async fn main() {
     } else {
         arg
     };
-    let model = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
+    let model = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let top: usize = std::env::var("AXIOM_TOP").ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     let sub: usize = std::env::var("AXIOM_SUB").ok().and_then(|s| s.parse().ok()).unwrap_or(3);
     let opts = OrchestrateOptions { run_id: "deep".into(), provider: "deepseek".into(), model: model.clone(), concurrency: 3 };

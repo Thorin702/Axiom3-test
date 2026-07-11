@@ -69,7 +69,12 @@ pub async fn synthesize(goal: &str, steps: &[StepState], critique: &str, provide
     let system = "You fold sub-agent outputs into one coherent result for the user's goal. Be \
                   concise and faithful to the parts; do not invent. A reviewer's critique is \
                   provided — address its valid points (fix gaps, drop unsupported claims) while \
-                  staying faithful to the work. Return only the result.";
+                  staying faithful to the work. Write in Markdown. When the content calls for \
+                  it, emit science figures that render natively: a chemical structure as a \
+                  ```smiles code block (one SMILES string), an architecture/flow diagram as a \
+                  ```mermaid block, and a key equation as a ```math block (LaTeX). Only use \
+                  these when genuinely relevant — never fabricate a structure or diagram. \
+                  Return only the result.";
     let crit = if critique.trim().is_empty() {
         String::new()
     } else {
