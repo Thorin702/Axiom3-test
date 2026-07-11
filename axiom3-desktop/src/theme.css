@@ -34,9 +34,9 @@
    accent (Codex-family). Forced by [data-theme="dark"]; follows the OS otherwise. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ax-paper: rgba(18, 18, 17, 0.42);
-    --ax-surface: rgba(28, 28, 26, 0.62);
-    --ax-surface-2: rgba(22, 22, 21, 0.55);
+    --ax-paper: rgba(20, 20, 19, 0.24);
+    --ax-surface: rgba(30, 30, 28, 0.48);
+    --ax-surface-2: rgba(24, 24, 22, 0.34);
     --ax-ink: #EDEDEA;
     --ax-ink-soft: #A3A39D;
     --ax-ink-faint: #74746E;
@@ -53,9 +53,9 @@
   }
 }
 :root[data-theme="dark"] {
-  --ax-paper: rgba(18, 18, 17, 0.42);
-  --ax-surface: rgba(28, 28, 26, 0.62);
-  --ax-surface-2: rgba(22, 22, 21, 0.55);
+  --ax-paper: rgba(20, 20, 19, 0.24);
+  --ax-surface: rgba(30, 30, 28, 0.48);
+  --ax-surface-2: rgba(24, 24, 22, 0.34);
   --ax-ink: #EDEDEA;
   --ax-ink-soft: #A3A39D;
   --ax-ink-faint: #74746E;
@@ -221,8 +221,9 @@
 
 /* ── base + app shell ─────────────────────────────────────────────── */
 html, body, #root { height: 100%; margin: 0; }
-body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-sans);
-  -webkit-font-smoothing: antialiased; }
+/* Transparent so the whole window is glass — the frosted blur lives on the panels below. */
+html, body, #root { background: transparent !important; }
+body { color: var(--ax-ink); font-family: var(--ax-sans); -webkit-font-smoothing: antialiased; }
 
 .ax-app { display: grid; grid-template-columns: 258px 1fr; height: 100vh; overflow: hidden; }
 .ax-app.has-rail { grid-template-columns: 258px 1fr 360px; }
@@ -260,6 +261,8 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   padding: 16px 14px;
   border-right: 0.5px solid var(--ax-line);
   background: var(--ax-surface-2);
+  backdrop-filter: blur(30px) saturate(1.7);
+  -webkit-backdrop-filter: blur(30px) saturate(1.7);
 }
 .ax-brand { font-family: var(--ax-serif); font-size: 21px; color: var(--ax-ink); }
 .ax-brand small { display: block; margin-top: 3px; font-family: var(--ax-sans); font-size: 11px; color: var(--ax-ink-faint); line-height: 1.4; }
@@ -267,7 +270,8 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-proj { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ax-ink); margin-top: 10px; }
 .ax-proj__name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.ax-main { display: flex; flex-direction: column; overflow: hidden; }
+.ax-main { display: flex; flex-direction: column; overflow: hidden; background: var(--ax-paper);
+  backdrop-filter: blur(30px) saturate(1.7); -webkit-backdrop-filter: blur(30px) saturate(1.7); }
 .ax-topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 20px; border-bottom: 0.5px solid var(--ax-line); }
 .ax-crumb { font-size: 13px; color: var(--ax-ink-soft); display: flex; align-items: center; gap: 8px; }
 .ax-content { flex: 1; overflow-y: auto; padding: 22px 24px 40px; }
@@ -506,7 +510,8 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 
 /* ── right activity rail (live multi-agent runs) ───────────────────── */
 .ax-rail { display: flex; flex-direction: column; border-left: 0.5px solid var(--ax-line);
-  background: var(--ax-surface-2); overflow: hidden; }
+  background: var(--ax-surface-2); overflow: hidden;
+  backdrop-filter: blur(30px) saturate(1.7); -webkit-backdrop-filter: blur(30px) saturate(1.7); }
 .ax-rail__head { display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; border-bottom: 0.5px solid var(--ax-line); }
 .ax-rail__title { font-size: 13px; font-weight: 600; color: var(--ax-ink); letter-spacing: 0.02em; }

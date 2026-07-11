@@ -215,8 +215,8 @@ function App() {
     // The user wants the translucent dark-glass look (their reference). Default to dark;
     // both themes are translucent, user can switch in Settings. v3 migration flips the
     // earlier light default to dark once, then respects the user's choice.
-    if (localStorage.getItem("axiom3.themeMigrated") !== "3") {
-      localStorage.setItem("axiom3.themeMigrated", "3");
+    if (localStorage.getItem("axiom3.themeMigrated") !== "4") {
+      localStorage.setItem("axiom3.themeMigrated", "4");
       localStorage.setItem("axiom3.theme", "dark");
       applyTheme("dark");
       return;
