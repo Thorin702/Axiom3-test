@@ -2061,6 +2061,7 @@ pub async fn coding_run(
     attachments: Option<Vec<String>>,
     provider: Option<String>,
     model: Option<String>,
+    require_plan_approval: Option<bool>,
 ) -> Result<CodingRunResult, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
@@ -2128,6 +2129,11 @@ pub async fn coding_run(
     };
     let cancel = Cancel::new();
     let pause = Pause::new();
+    // "Ask before acting": gate the run so it pauses after its first plan for the user to
+    // approve (resume_run) or reject (cancel_run) before any tool executes.
+    if require_plan_approval.unwrap_or(false) {
+        pause.require_plan_approval();
+    }
     let _guard = state
         .begin_run(&runid, cancel.clone(), pause.clone())
         .ok_or("a run with this id is already in flight")?;

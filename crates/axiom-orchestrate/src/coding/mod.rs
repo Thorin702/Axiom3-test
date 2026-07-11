@@ -302,6 +302,7 @@ pub async fn run_coding_agent(
     let mut transcript = format!("GOAL:\n{goal}\n\nWorkspace root: {}\n", sandbox.root().display());
     let mut ran_command = false; // did the agent run a build/test command this run?
     let mut nudged = false; // pushed back once for finishing without verifying
+    let mut plan_gated = false; // whether the one-time plan-approval gate has fired
     let mut malformed = 0u32; // consecutive un-parseable JSON envelopes (bounded retry, not a fatal "done")
     const MAX_MALFORMED: u32 = 3;
     let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
@@ -704,6 +705,13 @@ pub async fn run_coding_agent(
         on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone(), input, reasoning: reasoning.clone(), figures: step_figures });
         let think = if reasoning.is_empty() { String::new() } else { format!("THINKING: {}\n", truncate(&reasoning, 500)) };
         transcript.push_str(&format!("\n--- step {n}: {tool} {detail} ---\n{think}{obs}\n"));
+        // Plan-approval gate: once the agent has surfaced its FIRST plan, pause (if the run opted in)
+        // so the user can approve / edit / reject before any tool executes. The pause takes effect at
+        // the top of the next turn; resuming = approve, cancelling = reject. Only gates once.
+        if tool == "plan" && pause.approval_required() && !plan_gated {
+            plan_gated = true;
+            pause.pause();
+        }
     }
     let artifacts = collect_artifacts(sandbox.root(), &start_files);
     CodingResult {
@@ -914,6 +922,43 @@ mod tests {
         assert_eq!(res.status, "done", "summary: {}", res.summary);
         assert!(res.summary.contains("looked at the dir"), "must reach the post-nudge final, got: {}", res.summary);
         assert_eq!(steps, 1, "only the valid list_dir ran as a step (malformed reply executed nothing)");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn plan_approval_gate_pauses_until_resumed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let root = tmp("gate");
+        let sb = Sandbox::new(&root).unwrap();
+        let model = ScriptModel {
+            replies: Mutex::new(vec![
+                r#"{"tool":"plan","todos":["[ ] look","[ ] done"]}"#.into(),
+                r#"{"tool":"list_dir","path":"."}"#.into(),
+                r#"{"final":"looked"}"#.into(),
+            ]),
+        };
+        let pause = Pause::new();
+        pause.require_plan_approval();
+        let pause2 = pause.clone();
+        // Watcher: once the gate has paused the run (after the first plan), approve by resuming.
+        let approved = std::sync::Arc::new(AtomicBool::new(false));
+        let approved2 = approved.clone();
+        let watcher = tokio::spawn(async move {
+            for _ in 0..300 {
+                if pause2.is_paused() {
+                    approved2.store(true, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(60)).await; // let the loop actually wait
+                    pause2.resume(); // approve
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        let res = run_coding_agent("x", &sb, &model, &Cancel::new(), &pause, &CodingBudget::default(), None, |_| {}).await;
+        watcher.await.unwrap();
+        assert!(approved.load(Ordering::SeqCst), "the gate must have paused the run after the first plan");
+        assert_eq!(res.status, "done", "summary: {}", res.summary);
+        assert!(res.summary.contains("looked"), "run must continue after approval, got: {}", res.summary);
         let _ = std::fs::remove_dir_all(&root);
     }
 
