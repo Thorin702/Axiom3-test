@@ -1849,10 +1849,12 @@ pub async fn run_workflow(
     search: Option<bool>,
     analyze: Option<bool>,
     attachments: Option<Vec<String>>,
+    mode: Option<String>,
 ) -> Result<Run, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }
+    let _mode = mode.unwrap_or_else(|| "auto".into()); // composer mode; drives thinking/tool routing (see #4 wiring)
     let deep_search = search == Some(true);
     let provider = provider.unwrap_or_else(|| "deepseek".to_string());
     let pp = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;

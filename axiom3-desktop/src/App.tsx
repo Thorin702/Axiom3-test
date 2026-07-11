@@ -158,6 +158,12 @@ function App() {
   // Deep-search mode: run the workflow as Multi-LLM AB-MCTS (adaptive wider/deeper search
   // across the connected models) instead of a one-shot fan-out.
   const [deepSearch, setDeepSearch] = useState(() => localStorage.getItem("axiom3.deepSearch") === "1");
+  // Composer mode (next to Send): 自动 infers intent + thinking depth in the backend; 研究 runs a
+  // literature/multi-agent research pass; 分析 spins up the Python kernel. Replaces the old
+  // deep-search toggle + model dropdown — the backend picks thinking/non-thinking per mode.
+  const [mode, setMode] = useState<"auto" | "research" | "analysis">(
+    () => (localStorage.getItem("axiom3.mode") as "auto" | "research" | "analysis") || "auto",
+  );
   // When a session is forked, the next session created inherits this lineage (then clears).
   const [forkOrigin, setForkOrigin] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>(() => {
@@ -283,7 +289,8 @@ function App() {
     localStorage.setItem("axiom3.taskModel", taskModel);
     localStorage.setItem("axiom3.wfAgents", String(wfAgents));
     localStorage.setItem("axiom3.deepSearch", deepSearch ? "1" : "0");
-  }, [taskModel, wfAgents, deepSearch]);
+    localStorage.setItem("axiom3.mode", mode);
+  }, [taskModel, wfAgents, deepSearch, mode]);
 
   // Persist the source library (most recent first, ≤12). A full document's text can be
   // megabytes, so capping to 12 ENTRIES doesn't bound the payload — bound it by BYTES: if
@@ -735,7 +742,7 @@ function App() {
       setActiveId(appendTo);
       pushTab(appendTo);
     } else {
-      setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: deepSearch, forkedFrom: forkOrigin ?? undefined }, ...ts]);
+      setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: mode === "research", forkedFrom: forkOrigin ?? undefined }, ...ts]);
       setForkOrigin(null);
       setActiveId(runid);
       pushTab(runid);
@@ -751,7 +758,7 @@ function App() {
       synthesis: string | null;
       review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
-    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch, analyze: codeAnalyze || codeAttachments.length > 0, attachments: codeAttachments }));
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode }));
     if (!appendTo) setCodeAttachments([]);
     const steps = r?.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model }));
     setTasks((ts) =>
@@ -924,7 +931,9 @@ function App() {
     const at = tasks.find((x) => x.id === activeId);
     if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → iterate the artifact (v2…)
     else if (at?.type === "code" && (codeWs || codeAnalyze)) runCoding(text);
-    else if (deepSearch || codeAttachments.length > 0) runWorkflow(text); // deep-search or attached data → multi-agent run (attachments feed the analysis)
+    // Route by composer mode: 研究 / 分析 (and attachments) go to the multi-agent + kernel run;
+    // 自动 with plain prose runs a grounded check/answer (the backend still escalates as needed).
+    else if (mode === "research" || mode === "analysis" || codeAttachments.length > 0) runWorkflow(text);
     else runCheckDraft(text);
     return true;
   }
@@ -1002,42 +1011,38 @@ function App() {
                 >
                   <Mic size={15} aria-hidden />
                 </button>
-                <select
-                  className="ax-select ax-select--sm"
-                  value={taskModel}
-                  onChange={(e) => setTaskModel(e.currentTarget.value)}
-                  title={lang === "zh" ? "模型" : "Model"}
-                >
-                  {MODELS.map((m) => (
-                    <option key={m.id} value={m.id}>{m.label}</option>
-                  ))}
-                </select>
               </span>
-              <button
-                className="ax-send"
-                onClick={() => submitFreeText()}
-                disabled={busy || !slash.trim() || slashOpen}
-                title={t(lang, "task_run")}
-                aria-label={t(lang, "task_run")}
-              >
-                <ArrowUp size={16} aria-hidden />
-              </button>
-            </div>
-            {/* Deep-search mode: sits below the send button so it's discoverable. ON → the
-                typed task runs as a Multi-LLM AB-MCTS search (adaptive explore/refine across
-                models); OFF → the usual check/answer. */}
-            <div className="ax-toolrow" style={{ justifyContent: "flex-start", marginTop: 2 }}>
-              <button
-                className={`ax-toggle ${deepSearch ? "on" : ""}`}
-                onClick={() => setDeepSearch(!deepSearch)}
-                title={
-                  deepSearch
-                    ? (lang === "zh" ? "深度搜索:把任务交给多智能体自适应搜索(AB-MCTS,跨模型扩展/精修择优)" : "Deep search: run the task as an adaptive multi-agent search (AB-MCTS across models)")
-                    : (lang === "zh" ? "标准模式:直接校对/回答。开启深度搜索让多智能体自适应择优。" : "Standard mode. Turn on deep search for an adaptive multi-agent search.")
-                }
-              >
-                <Boxes size={13} aria-hidden /> {deepSearch ? (lang === "zh" ? "深度搜索 · 开" : "deep search · on") : (lang === "zh" ? "深度搜索" : "deep search")}
-              </button>
+              {/* Mode selector sits immediately left of Send. The backend chooses thinking vs
+                  non-thinking (and which tools) per mode — no manual model/thinking picker. */}
+              <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <div className="ax-modeseg" role="tablist" aria-label={lang === "zh" ? "模式" : "Mode"}>
+                  {([
+                    { k: "auto", zh: "自动", en: "Auto", Icon: Sparkles, tip: lang === "zh" ? "自动:读懂请求,自己选研究/分析/校验与思考深度" : "Auto: infer intent + thinking depth" },
+                    { k: "research", zh: "研究", en: "Research", Icon: Search, tip: lang === "zh" ? "研究:文献 + 检索 → 带引用综述(多智能体)" : "Research: literature + search → cited synthesis" },
+                    { k: "analysis", zh: "分析", en: "Analysis", Icon: TerminalSquare, tip: lang === "zh" ? "分析:Python 内核真跑数据 → 计算图 + 统计" : "Analysis: Python kernel → computed figures + stats" },
+                  ] as const).map(({ k, zh, en, Icon, tip }) => (
+                    <button
+                      key={k}
+                      role="tab"
+                      aria-selected={mode === k}
+                      className={`ax-modeseg__opt ${mode === k ? "on" : ""}`}
+                      onClick={() => setMode(k)}
+                      title={tip}
+                    >
+                      <Icon size={13} aria-hidden /> {lang === "zh" ? zh : en}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  className="ax-send"
+                  onClick={() => submitFreeText()}
+                  disabled={busy || !slash.trim() || slashOpen}
+                  title={t(lang, "task_run")}
+                  aria-label={t(lang, "task_run")}
+                >
+                  <ArrowUp size={16} aria-hidden />
+                </button>
+              </span>
             </div>
             {slashOpen && slashMatches.length > 0 && (
               <div className="ax-slash-menu">

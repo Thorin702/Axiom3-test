@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "axiom3-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "axiom3-desktop", "run", "dev"],
+      "port": 1420
+    }
+  ]
+}

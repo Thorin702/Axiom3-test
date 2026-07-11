@@ -897,6 +897,16 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   color: var(--ax-ink-soft); }
 .ax-select--sm:hover { border-color: var(--ax-line); background: var(--ax-surface); color: var(--ax-ink); }
 
+/* ── mode selector (segmented pill, immediately left of Send) ─────── */
+.ax-modeseg { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border-radius: 11px;
+  background: var(--ax-paper); border: 0.5px solid var(--ax-line); }
+.ax-modeseg__opt { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 550;
+  line-height: 1; color: var(--ax-ink-soft); background: transparent; border: 0; border-radius: 8px;
+  padding: 5px 11px; cursor: pointer; white-space: nowrap; transition: background .12s ease, color .12s ease; }
+.ax-modeseg__opt:hover { color: var(--ax-ink); }
+.ax-modeseg__opt.on { background: var(--ax-surface); color: var(--ax-accent); box-shadow: 0 1px 2px rgba(0,0,0,.10); }
+.ax-modeseg__opt:focus-visible { outline: 2px solid var(--ax-focus); outline-offset: 1px; }
+
 /* ── open-tabs bar (multiple sessions open at once) ───────────────── */
 .ax-tabs { display: flex; align-items: stretch; gap: 2px; padding: 4px 10px 0;
   border-bottom: 0.5px solid var(--ax-line); background: var(--ax-surface-2); overflow-x: auto; }
