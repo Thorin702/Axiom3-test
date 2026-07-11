@@ -57,6 +57,7 @@ pub async fn orchestrate(
         status: RunStatus::Planning,
         steps: Vec::new(),
         synthesis: None,
+        review: None,
         created_ms: now_ms(),
     };
 
@@ -205,6 +206,7 @@ pub async fn orchestrate(
         c
     };
 
+    run.review = if critique.trim().is_empty() { None } else { Some(critique.clone()) };
     // ── synthesize (addressing the critique) ──
     em.emit(RunEventBody::PhaseChanged { phase: "synthesizing".into(), index: 3, total: 5 });
     run.status = RunStatus::Synthesizing;
@@ -277,6 +279,7 @@ where
         status: RunStatus::Planning,
         steps: Vec::new(),
         synthesis: None,
+        review: None,
         created_ms: now_ms(),
     };
     em.emit(RunEventBody::RunStarted { task_kind: "workflow".into(), title: title_of(goal), cancellable: true });
@@ -439,6 +442,7 @@ where
         em.emit(RunEventBody::AgentFinished { agent_id: vid, outcome: "ok".into(), tokens_in: 0, tokens_out: 0, error: None, summary: Some(if c.trim().is_empty() { "no critique".into() } else { truncate(&c, 120) }) });
         c
     };
+    run.review = if critique.trim().is_empty() { None } else { Some(critique.clone()) };
     em.emit(RunEventBody::PhaseChanged { phase: "synthesizing".into(), index: 3, total: 5 });
     run.status = RunStatus::Synthesizing;
     run.synthesis = Some(synthesize::synthesize(goal, &run.steps, &critique, &opts.provider, &opts.model, cancel).await);

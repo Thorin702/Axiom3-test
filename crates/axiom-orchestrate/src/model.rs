@@ -132,6 +132,10 @@ pub struct Run {
     pub steps: Vec<StepState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub synthesis: Option<String>,
+    /// The reviewer agent's critique of the run — free-form findings ("what a careful
+    /// reviewer would flag"), NEVER a verdict. Surfaced inline as the reviewer panel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<String>,
     pub created_ms: u64,
 }
 

@@ -119,6 +119,7 @@ export type Task = {
   deep?: boolean; // ran as an adaptive multi-agent (AB-MCTS) search
   result?: DraftCheck;
   synthesis?: string; // workflow runs: the folded multi-agent output
+  review?: string; // the reviewer agent's critique/findings (never a verdict)
   steps?: AgentStepView[]; // workflow runs: each sub-agent's output
   error?: string;
 };

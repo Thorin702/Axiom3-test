@@ -8,6 +8,7 @@ import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source,
 import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
+import { ReviewerPanel } from "./components/ReviewerPanel";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { ReadingView } from "./components/ReadingView";
@@ -205,15 +206,15 @@ function App() {
   });
 
   useEffect(() => {
-    // Dark-first, like Claude Science. Both themes are maintained; the user can switch.
-    // One-time migration: the OLD default already persisted "system" on first launch, so a
-    // plain default change would never take effect. Flip once, then respect user choice.
-    if (!localStorage.getItem("axiom3.themeMigrated")) {
-      localStorage.setItem("axiom3.themeMigrated", "1");
-      applyTheme("dark");
+    // The REAL Claude Science app is light (the dark I'd matched was only its marketing
+    // page). Match the real reference: light default, both themes tuned, user can switch.
+    // v2 migration corrects an earlier forced-dark, then respects the user's choice.
+    if (localStorage.getItem("axiom3.themeMigrated") !== "2") {
+      localStorage.setItem("axiom3.themeMigrated", "2");
+      applyTheme("light");
       return;
     }
-    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "dark");
+    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "light");
   }, []);
 
   // Persist the task history (most recent first, ≤50). A task's result carries all its
@@ -641,6 +642,7 @@ function App() {
     const r = await run<{
       status: string;
       synthesis: string | null;
+      review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
     }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: deepSearch }));
     setTasks((ts) =>
@@ -651,6 +653,7 @@ function App() {
                 ...x,
                 status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed",
                 synthesis: r.synthesis ?? undefined,
+                review: r.review ?? undefined,
                 // Keep each sub-agent's full output + model so the artifact can state how it
                 // was made (which model produced each part) after reload.
                 steps: r.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model })),
@@ -1343,6 +1346,9 @@ function App() {
                           <div className="ax-synth__body">{tk.synthesis}</div>
                         </div>
                       )}
+
+                      {/* the reviewer agent, inline — like Claude Science's Reviewer panel */}
+                      {tk.review && <ReviewerPanel lang={lang} review={tk.review} />}
 
                       {tk.steps && tk.steps.length > 0 && (
                         <details className="ax-agents" style={{ marginTop: 12 }}>

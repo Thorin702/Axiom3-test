@@ -157,6 +157,7 @@ pub async fn search_core<G: Generator, S: Scorer>(
         status: RunStatus::Planning,
         steps: Vec::new(),
         synthesis: None,
+        review: None,
         created_ms: now_ms(),
     };
     em.emit(RunEventBody::RunStarted {
@@ -336,6 +337,7 @@ pub async fn search_core<G: Generator, S: Scorer>(
     } else {
         // fold the top candidates into one result (reuses the verify+synthesize seam).
         let critique = synthesize::critique(goal, &run.steps, &opts.provider, &opts.model, cancel).await;
+        run.review = if critique.trim().is_empty() { None } else { Some(critique.clone()) };
         run.synthesis = Some(synthesize::synthesize(goal, &run.steps, &critique, &opts.provider, &opts.model, cancel).await);
     }
 
