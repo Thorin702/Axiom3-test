@@ -192,6 +192,25 @@ pub async fn complete_by_name(name: &str, req: &Request) -> anyhow::Result<Strin
     complete_with(provider, req).await
 }
 
+/// Probe an OpenAI-compatible connection with a one-token completion (the "test connection"
+/// button). Returns the model's reply on success, or an error, within 30s.
+pub async fn test_openai_compatible(base_url: &str, api_key: &str, model: &str) -> anyhow::Result<String> {
+    let req = Request {
+        system: Some("You are a connectivity probe. Reply with exactly: ok".into()),
+        messages: vec![axiom_providers::message::Message::user(vec![ContentBlock::text("ping")])],
+        model: model.to_string(),
+        max_tokens: None,
+        reasoning_effort: None,
+        tools: Vec::new(),
+    };
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        complete_openai_compatible(base_url, api_key, &req),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out after 30s"))?
+}
+
 /// Flatten the last user message's text blocks into a prompt string.
 /// (Multi-turn history, tool, and thinking blocks are TODO — P0.5.)
 fn last_user_text(req: &Request) -> String {

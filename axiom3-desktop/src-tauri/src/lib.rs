@@ -76,6 +76,9 @@ pub fn run() {
             // Done here (not before the builder) so the app data dir — hence the configured
             // secret store — is resolvable.
             workbench::load_provider_keys_into_env(app.handle());
+            // Register the user's OpenAI-compatible model connections into the runtime dispatch
+            // table so runs can reach them by label.
+            workbench::register_connections_into_runtime(app.handle());
             #[cfg(target_os = "macos")]
             setup_menu(app)?;
             Ok(())
@@ -107,6 +110,10 @@ pub fn run() {
             workbench::provider_status,
             workbench::set_provider_key,
             workbench::delete_provider_key,
+            workbench::list_connections,
+            workbench::save_connection,
+            workbench::delete_connection,
+            workbench::test_connection,
             workbench::close_project,
         ])
         .run(tauri::generate_context!())

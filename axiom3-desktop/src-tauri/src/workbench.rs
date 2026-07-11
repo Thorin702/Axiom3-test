@@ -35,7 +35,7 @@ use axiom_orchestrate::{orchestrate, orchestrate_deep, orchestrate_search, Model
 use axiom_secrets::{get_or_create_db_key, FileSecretStore, KeyringSecretStore, SecretStore};
 use axiom_store::SqliteStore;
 use axiom_vector::LanceStore;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::Manager;
 
@@ -1210,6 +1210,217 @@ pub fn load_provider_keys_into_env(app: &tauri::AppHandle) {
     }
 }
 
+// ── Model connections (#4) ──────────────────────────────────────────────────────────
+// A "connection" is just base URL + API key + model — enough to reach ANY OpenAI-compatible
+// endpoint. Metadata (label/url/model) lives in connections.json; the key lives in the secret
+// store under `conn:<label>`. On save/startup every connection is registered into the runtime,
+// so a run can dispatch to it by label (axiom_runtime::complete_by_name).
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Conn {
+    pub label: String,
+    pub base_url: String,
+    pub model: String,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+fn connections_path(base: &std::path::Path) -> std::path::PathBuf {
+    base.join("connections.json")
+}
+fn load_conns(base: &std::path::Path) -> Vec<Conn> {
+    std::fs::read(connections_path(base))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Vec<Conn>>(&b).ok())
+        .unwrap_or_default()
+}
+fn save_conns(base: &std::path::Path, conns: &[Conn]) -> Result<(), String> {
+    std::fs::create_dir_all(base).ok();
+    let bytes = serde_json::to_vec_pretty(conns).map_err(|e| e.to_string())?;
+    std::fs::write(connections_path(base), bytes).map_err(|e| e.to_string())
+}
+fn conn_secret_name(label: &str) -> String {
+    format!("conn:{label}")
+}
+
+/// A connection as the Settings UI sees it (metadata + whether a key is stored; never the key).
+#[derive(Serialize)]
+pub struct ConnInfo {
+    pub label: String,
+    pub base_url: String,
+    pub model: String,
+    pub primary: bool,
+    pub has_key: bool,
+}
+
+#[tauri::command]
+pub fn list_connections(app: tauri::AppHandle) -> Vec<ConnInfo> {
+    let base = match app.path().app_data_dir() {
+        Ok(b) => b,
+        Err(_) => return vec![],
+    };
+    let store = secret_store_for(&app);
+    load_conns(&base)
+        .into_iter()
+        .map(|c| {
+            let has_key = store.get(&conn_secret_name(&c.label)).ok().flatten().is_some();
+            ConnInfo { has_key, label: c.label, base_url: c.base_url, model: c.model, primary: c.primary }
+        })
+        .collect()
+}
+
+/// Create or update a connection. An empty `key` keeps the existing stored key.
+#[tauri::command]
+pub fn save_connection(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    label: String,
+    base_url: String,
+    model: String,
+    key: Option<String>,
+    primary: Option<bool>,
+) -> Result<(), String> {
+    let label = label.trim().to_string();
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    let model = model.trim().to_string();
+    if label.is_empty() {
+        return Err("连接名不能为空 · name required".into());
+    }
+    if base_url.is_empty() || model.is_empty() {
+        return Err("调用地址与型号不能为空 · base URL + model required".into());
+    }
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let store = secret_store_for(&app);
+    state.mutate_keys_locked(|| {
+        if let Some(k) = key.as_ref() {
+            let k = k.trim();
+            if !k.is_empty() {
+                store.set(&conn_secret_name(&label), k).map_err(|e| e.to_string())?;
+            }
+        }
+        let mut conns = load_conns(&base);
+        let make_primary = primary.unwrap_or(false);
+        if make_primary {
+            for c in conns.iter_mut() {
+                c.primary = false;
+            }
+        }
+        match conns.iter_mut().find(|c| c.label == label) {
+            Some(c) => {
+                c.base_url = base_url.clone();
+                c.model = model.clone();
+                if make_primary {
+                    c.primary = true;
+                }
+            }
+            None => {
+                let primary = make_primary || conns.is_empty();
+                conns.push(Conn { label: label.clone(), base_url: base_url.clone(), model: model.clone(), primary });
+            }
+        }
+        save_conns(&base, &conns)
+    })?;
+    register_connections_into_runtime(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_connection(app: tauri::AppHandle, state: tauri::State<'_, AppState>, label: String) -> Result<(), String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let store = secret_store_for(&app);
+    state.mutate_keys_locked(|| {
+        store.delete(&conn_secret_name(&label)).ok();
+        let mut conns = load_conns(&base);
+        conns.retain(|c| c.label != label);
+        if !conns.is_empty() && !conns.iter().any(|c| c.primary) {
+            conns[0].primary = true;
+        }
+        save_conns(&base, &conns)
+    })?;
+    register_connections_into_runtime(&app);
+    Ok(())
+}
+
+/// Probe a connection with a one-token completion — the "测试连接" button.
+#[tauri::command]
+pub async fn test_connection(base_url: String, key: String, model: String) -> Result<String, String> {
+    let base_url = base_url.trim().trim_end_matches('/').to_string();
+    let model = model.trim().to_string();
+    if base_url.is_empty() || model.is_empty() || key.trim().is_empty() {
+        return Err("调用地址 / APIKey / 型号 都要填 · fill all three".into());
+    }
+    match axiom_runtime::test_openai_compatible(&base_url, key.trim(), &model).await {
+        Ok(reply) => Ok(format!("连接成功 · 模型回应:{}", reply.trim().chars().take(60).collect::<String>())),
+        Err(e) => Err(format!("连接失败:{e}")),
+    }
+}
+
+/// Register every stored connection into the runtime dispatch table (clears first).
+pub fn register_connections_into_runtime(app: &tauri::AppHandle) {
+    let base = match app.path().app_data_dir() {
+        Ok(b) => b,
+        Err(_) => return,
+    };
+    let store = secret_store_for(app);
+    axiom_runtime::clear_connections();
+    for c in load_conns(&base) {
+        if let Ok(Some(k)) = store.get(&conn_secret_name(&c.label)) {
+            axiom_runtime::register_connection(&c.label, &c.base_url, &k);
+        }
+    }
+}
+
+/// The primary connection's (label, model) — the default a run dispatches to when the caller
+/// didn't pin a provider/model explicitly.
+pub fn primary_connection(app: &tauri::AppHandle) -> Option<(String, String)> {
+    let base = app.path().app_data_dir().ok()?;
+    let conns = load_conns(&base);
+    conns
+        .iter()
+        .find(|c| c.primary)
+        .or_else(|| conns.first())
+        .map(|c| (c.label.clone(), c.model.clone()))
+}
+
+fn find_connection(app: &tauri::AppHandle, label: &str) -> Option<Conn> {
+    let base = app.path().app_data_dir().ok()?;
+    load_conns(&base).into_iter().find(|c| c.label == label)
+}
+
+/// Resolve which provider/connection + model a run dispatches to. An explicit provider wins
+/// (a registered connection label OR a built-in provider); otherwise the user's primary
+/// connection; otherwise the built-in DeepSeek default. Built-in providers require an env key
+/// (checked here; deep-search may instead use other env-key providers); a connection carries its
+/// own key in the runtime table.
+fn resolve_model(
+    app: &tauri::AppHandle,
+    provider: Option<String>,
+    model: Option<String>,
+    deep: bool,
+) -> Result<(String, String), String> {
+    let model = model.filter(|m| !m.trim().is_empty());
+    let prov = match provider.filter(|p| !p.trim().is_empty()) {
+        Some(p) => p,
+        None => match primary_connection(app) {
+            Some((label, m)) => return Ok((label, model.unwrap_or(m))),
+            None => "deepseek".to_string(),
+        },
+    };
+    if let Some(conn) = find_connection(app, &prov) {
+        return Ok((prov, model.unwrap_or(conn.model)));
+    }
+    let pp = Provider::parse(&prov).ok_or_else(|| format!("unknown provider: {prov}"))?;
+    let key_ok = std::env::var(pp.env_var()).is_ok() || (deep && !search_arms_from_env().is_empty());
+    if !key_ok {
+        return Err(
+            "尚未连接模型 — 请在「设置 → 模型与提供方」添加一个连接(调用地址 / APIKey / 型号)。 · No model connected — add one in Settings → Models & providers."
+                .into(),
+        );
+    }
+    let m = model.unwrap_or_else(|| workflow_model_for(&prov));
+    Ok((prov, m))
+}
+
 /// What an export wrote — surfaced to the UI so the user sees the artifact landed and
 /// whether it is anchored into an intact chain.
 #[derive(Serialize)]
@@ -1856,21 +2067,8 @@ pub async fn run_workflow(
     }
     let _mode = mode.unwrap_or_else(|| "auto".into()); // composer mode; drives thinking/tool routing (see #4 wiring)
     let deep_search = search == Some(true);
-    let provider = provider.unwrap_or_else(|| "deepseek".to_string());
-    let pp = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
-    // Deep-search draws its models from ALL connected providers (the multi-LLM axis), so it
-    // only needs ≥1 key; the flat/deep paths use the single primary provider.
-    let key_ok = if deep_search {
-        !search_arms_from_env().is_empty() || std::env::var(pp.env_var()).is_ok()
-    } else {
-        std::env::var(pp.env_var()).is_ok()
-    };
-    if !key_ok {
-        return Err(format!(
-            "{provider} 密钥未连接 — 请在「设置 → 模型与提供方」中填入密钥后重试。 · {provider} key not connected — add it in Settings → Models & providers."
-        ));
-    }
-    let model_id = model.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| workflow_model_for(&provider));
+    // Resolve provider/connection + model: explicit → primary connection → DeepSeek default.
+    let (provider, model_id) = resolve_model(&app, provider, model, deep_search)?;
     // Cap the target at the command boundary: the UI offers ≤16, but this is a directly
     // invokable command, so clamp absurd counts (which would otherwise overflow `sub` below).
     let target = agents.filter(|n| *n > 0).map(|n| n.min(64)); // user's target (None = model decides)
@@ -2068,14 +2266,8 @@ pub async fn coding_run(
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }
-    let provider = provider.unwrap_or_else(|| "deepseek".to_string());
-    let pp = Provider::parse(&provider).ok_or_else(|| format!("unknown provider: {provider}"))?;
-    if std::env::var(pp.env_var()).is_err() {
-        return Err(format!(
-            "{provider} 密钥未连接 — 请在「设置 → 模型与提供方」中填入密钥后重试。 · {provider} key not connected — add it in Settings → Models & providers."
-        ));
-    }
-    let model_id = model.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| workflow_model_for(&provider));
+    // Resolve provider/connection + model: explicit → primary connection → DeepSeek default.
+    let (provider, model_id) = resolve_model(&app, provider, model, false)?;
     let is_analyze = analyze.unwrap_or(false);
     // Analysis with no chosen folder gets a private scratch workspace, so a user can just
     // attach data and ask — no need to pick a code directory.
