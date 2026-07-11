@@ -118,6 +118,35 @@ impl CodingModel for ProviderModel {
     }
 }
 
+/// Kernel code for `conda_install`: bootstrap a standalone micromamba (once), then launch the
+/// slow bioconda create/install as a DETACHED background job (conda solves are minutes-long), and
+/// pre-wire the env's bin onto the kernel PATH so the binaries resolve once the job finishes.
+/// `__PKGS__` → a python list literal; `__ID__` → the job id.
+const CONDA_INSTALL: &str = r#"import os, sys, subprocess, platform, tarfile, io, requests
+ROOT = os.path.expanduser('~/.axiom3'); MM = os.path.join(ROOT, 'bin', 'micromamba'); ENV = os.path.join(ROOT, 'bioenv')
+os.makedirs(os.path.join(ROOT, 'bin'), exist_ok=True); os.makedirs('.axiom_jobs', exist_ok=True)
+if not os.path.exists(MM):
+    _s = platform.system().lower(); _m = platform.machine().lower()
+    _key = ('osx-arm64' if _m in ('arm64','aarch64') else 'osx-64') if _s == 'darwin' else (('linux-aarch64' if _m in ('aarch64','arm64') else 'linux-64') if _s == 'linux' else None)
+    if not _key: raise SystemExit('unsupported platform ' + _s + ' ' + _m)
+    _d = requests.get('https://micro.mamba.pm/api/micromamba/%s/latest' % _key, timeout=120).content
+    with tarfile.open(fileobj=io.BytesIO(_d), mode='r:bz2') as _tf:
+        _mem = next(x for x in _tf.getmembers() if x.name.endswith('bin/micromamba'))
+        _mem.name = os.path.basename(_mem.name); _tf.extract(_mem, os.path.join(ROOT, 'bin'))
+    os.chmod(MM, 0o755)
+_sub = 'install' if os.path.isdir(ENV) else 'create'
+_pkgs = __PKGS__
+_cmd = [MM, _sub, '-y', '-p', ENV, '-c', 'conda-forge', '-c', 'bioconda'] + _pkgs
+_wrap = ("import subprocess, sys\n" "r = subprocess.run(%r, capture_output=True, text=True)\n" "sys.stdout.write(r.stdout or ''); sys.stderr.write(r.stderr or '')\n" "open('.axiom_jobs/__ID__.status', 'w').write('done' if r.returncode == 0 else 'failed')\n") % (_cmd,)
+open('.axiom_jobs/__ID__.py', 'w').write(_wrap)
+try: os.remove('.axiom_jobs/__ID__.status')
+except OSError: pass
+_p = subprocess.Popen([sys.executable, '.axiom_jobs/__ID__.py'], stdout=open('.axiom_jobs/__ID__.log', 'w'), stderr=subprocess.STDOUT, start_new_session=True)
+_eb = os.path.join(ENV, 'bin'); os.environ['PATH'] = _eb + os.pathsep + os.environ.get('PATH', '')
+print('micromamba ready; installing', _pkgs, 'as background job __ID__ (pid', _p.pid, ')')
+print('poll with job_status id=__ID__; binaries land on PATH at', _eb, 'once DONE')
+"#;
+
 fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
     let mut s = String::from(
         "You are a coding agent working inside a sandboxed workspace. Each turn respond with \
@@ -170,6 +199,10 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              dendropy, scikit-bio, umap-learn, statsmodels extras, etc. They become importable in the \
              SAME kernel right after. Prefer the pre-installed stack when it suffices; reach for this \
              when a task genuinely needs a domain library. Heavy builds may be slow.)\n\
+             {\"tool\":\"conda_install\",\"packages\":[\"mafft\",\"iqtree\"]}   (install BINARY tools that \
+             pip can't — MAFFT, IQ-TREE, trimAl, FastTree, Cas-OFFinder, samtools, etc. — from bioconda \
+             via micromamba. The solve runs as a background job (minutes): poll job_status with the \
+             returned id; once DONE the binaries are on PATH, call them from python with subprocess.)\n\
              {\"tool\":\"job_start\",\"code\":\"<python>\",\"label\":\"<what it does>\"}   (run a LONG \
              computation as a DETACHED background job that keeps going while you do other work — good \
              for a big download, a long fit, or a genome-scale scan. It runs in a FRESH process, so \
@@ -545,6 +578,39 @@ pub async fn run_coding_agent(
                 }
                 None => ("python".to_string(), "ERROR: python tool not available in this run".to_string()),
             },
+            "conda_install" => match &kernel {
+                // Binary bioinformatics tools (MAFFT/IQ-TREE/Cas-OFFinder/…) aren't pip-installable.
+                // Bootstrap a standalone micromamba, then install from bioconda as a DETACHED job
+                // (conda solves take minutes) — poll it with job_status; the env bin is pre-wired
+                // onto PATH so the binaries resolve once the job is DONE.
+                Some(k) => {
+                    let pkgs: Vec<String> = v
+                        .get("packages")
+                        .and_then(|x| x.as_array())
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                        .unwrap_or_default();
+                    let bad = pkgs.iter().find(|p| p.trim().is_empty() || p.starts_with('-'));
+                    if pkgs.is_empty() {
+                        ("conda_install".to_string(), "ERROR: no packages given".to_string())
+                    } else if let Some(b) = bad {
+                        ("conda_install".to_string(), format!("ERROR: refusing suspicious package spec '{b}'"))
+                    } else {
+                        ran_command = true;
+                        let id = format!("conda{n}");
+                        let list_py = format!("[{}]", pkgs.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(", "));
+                        let code = CONDA_INSTALL.replace("__PKGS__", &list_py).replace("__ID__", &id);
+                        let k = k.clone();
+                        // Generous timeout only for the micromamba bootstrap; the install itself is detached.
+                        let obs = match tokio::task::spawn_blocking(move || k.exec(&code, Duration::from_secs(180))).await {
+                            Ok(Ok(cell)) => { let mut o = cell.stdout; if let Some(e) = cell.error { o.push_str(&e); } o }
+                            Ok(Err(e)) => format!("ERROR: {e}"),
+                            Err(e) => format!("ERROR: conda bootstrap failed: {e}"),
+                        };
+                        (format!("{id}: {}", pkgs.join(" ")), obs)
+                    }
+                }
+                None => ("conda_install".to_string(), "ERROR: conda_install needs the analysis kernel".to_string()),
+            },
             "job_start" => match &kernel {
                 // Launch a long-running computation as a DETACHED process (from inside the kernel,
                 // so it inherits the interpreter + SSL env) that keeps running while the agent does
@@ -632,7 +698,7 @@ pub async fn run_coding_agent(
             "glob" => arg_str(&v, "pattern").to_string(),
             "job_start" => arg_str(&v, "code").to_string(),
             "job_status" => arg_str(&v, "id").to_string(),
-            "pip_install" => detail.clone(), // the joined package list
+            "pip_install" | "conda_install" => detail.clone(), // the joined package list
             _ => detail.clone(), // "run": the joined argv
         };
         on_step(CodingStepRec { n, tool: tool.clone(), detail: detail.clone(), observation: obs.clone(), input, reasoning: reasoning.clone(), figures: step_figures });

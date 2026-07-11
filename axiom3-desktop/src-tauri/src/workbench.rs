@@ -2182,6 +2182,7 @@ pub async fn coding_run(
             "load_skill" => format!("**📖 加载技能 · {}**\n\n{}", step.input, obs_full),
             "litsearch" => format!("**📚 文献检索 · {}**\n\n{}", step.input, obs_full),
             "pip_install" => format!("**📦 安装依赖 · {}**\n\n```\n{}\n```", step.input, obs_full),
+            "conda_install" => format!("**🧬 安装二进制工具(bioconda) · {}**\n\n```\n{}\n```", step.input, obs_full),
             "job_start" => format!("**🚀 后台作业**\n\n```python\n{}\n```\n\n{}", step.input.trim(), obs_full),
             "job_status" => format!("**⏳ 作业状态 · {}**\n\n```\n{}\n```", step.input, obs_full),
             "checkpoint" => format!("**💾 检查点** · {}", obs_full),
