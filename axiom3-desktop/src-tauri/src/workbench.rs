@@ -1392,33 +1392,69 @@ fn find_connection(app: &tauri::AppHandle, label: &str) -> Option<Conn> {
 /// connection; otherwise the built-in DeepSeek default. Built-in providers require an env key
 /// (checked here; deep-search may instead use other env-key providers); a connection carries its
 /// own key in the runtime table.
+/// The built-in provider's THINKING model (chain-of-thought), if it has one.
+fn thinking_model_for(provider: &str) -> Option<&'static str> {
+    match provider {
+        "deepseek" => Some("deepseek-reasoner"),
+        _ => None,
+    }
+}
+/// Does a connection's model NAME look like a reasoning/thinking model?
+fn looks_thinking(model: &str) -> bool {
+    let m = model.to_lowercase();
+    ["reason", "think", "-r1", "o1", "o3", "qwq"].iter().any(|p| m.contains(p))
+}
+fn default_model_for(provider: &str, thinking: bool) -> String {
+    if thinking {
+        if let Some(m) = thinking_model_for(provider) {
+            return m.to_string();
+        }
+    }
+    workflow_model_for(provider)
+}
+const NO_MODEL_ERR: &str = "尚未连接模型 — 请在「设置 → 模型与提供方」添加一个连接(调用地址 / APIKey / 型号)。 · No model connected — add one in Settings → Models & providers.";
+
+/// Resolve provider/connection + model, MODE-AWARE: 研究/分析 prefer a thinking model (a
+/// reasoning-looking connection, else the built-in reasoner), 自动/对话 use the fast default.
+/// Explicit provider/model always win.
 fn resolve_model(
     app: &tauri::AppHandle,
     provider: Option<String>,
     model: Option<String>,
     deep: bool,
+    mode: &str,
 ) -> Result<(String, String), String> {
+    let want_thinking = matches!(mode, "research" | "analysis");
     let model = model.filter(|m| !m.trim().is_empty());
-    let prov = match provider.filter(|p| !p.trim().is_empty()) {
-        Some(p) => p,
-        None => match primary_connection(app) {
-            Some((label, m)) => return Ok((label, model.unwrap_or(m))),
-            None => "deepseek".to_string(),
-        },
-    };
-    if let Some(conn) = find_connection(app, &prov) {
-        return Ok((prov, model.unwrap_or(conn.model)));
+    // Explicit provider/connection wins.
+    if let Some(prov) = provider.filter(|p| !p.trim().is_empty()) {
+        if let Some(conn) = find_connection(app, &prov) {
+            return Ok((prov, model.unwrap_or(conn.model)));
+        }
+        let pp = Provider::parse(&prov).ok_or_else(|| format!("unknown provider: {prov}"))?;
+        let key_ok = std::env::var(pp.env_var()).is_ok() || (deep && !search_arms_from_env().is_empty());
+        if !key_ok {
+            return Err(NO_MODEL_ERR.into());
+        }
+        return Ok((prov.clone(), model.unwrap_or_else(|| default_model_for(&prov, want_thinking))));
     }
-    let pp = Provider::parse(&prov).ok_or_else(|| format!("unknown provider: {prov}"))?;
-    let key_ok = std::env::var(pp.env_var()).is_ok() || (deep && !search_arms_from_env().is_empty());
+    // No explicit provider. For thinking modes, prefer a reasoning-looking connection.
+    if want_thinking {
+        if let Ok(base) = app.path().app_data_dir() {
+            if let Some(c) = load_conns(&base).into_iter().find(|c| looks_thinking(&c.model)) {
+                return Ok((c.label, model.unwrap_or(c.model)));
+            }
+        }
+    }
+    if let Some((label, m)) = primary_connection(app) {
+        return Ok((label, model.unwrap_or(m)));
+    }
+    // Built-in DeepSeek fallback.
+    let key_ok = std::env::var("DEEPSEEK_API_KEY").is_ok() || (deep && !search_arms_from_env().is_empty());
     if !key_ok {
-        return Err(
-            "尚未连接模型 — 请在「设置 → 模型与提供方」添加一个连接(调用地址 / APIKey / 型号)。 · No model connected — add one in Settings → Models & providers."
-                .into(),
-        );
+        return Err(NO_MODEL_ERR.into());
     }
-    let m = model.unwrap_or_else(|| workflow_model_for(&prov));
-    Ok((prov, m))
+    Ok(("deepseek".to_string(), model.unwrap_or_else(|| default_model_for("deepseek", want_thinking))))
 }
 
 /// What an export wrote — surfaced to the UI so the user sees the artifact landed and
@@ -2079,10 +2115,10 @@ pub async fn run_workflow(
         return Err("empty goal".into());
     }
     let goal = prepend_skill(goal, skill); // /技能 picker: inject the chosen skill card up front
-    let _mode = mode.unwrap_or_else(|| "auto".into()); // composer mode; drives thinking/tool routing (see #4 wiring)
-    let deep_search = search == Some(true);
-    // Resolve provider/connection + model: explicit → primary connection → DeepSeek default.
-    let (provider, model_id) = resolve_model(&app, provider, model, deep_search)?;
+    let mode = mode.unwrap_or_else(|| "auto".into()); // composer mode → thinking vs fast model
+    let deep_search = search == Some(true) || mode == "research";
+    // Resolve provider/connection + model, mode-aware (研究/分析 → thinking model).
+    let (provider, model_id) = resolve_model(&app, provider, model, deep_search, &mode)?;
     // Cap the target at the command boundary: the UI offers ≤16, but this is a directly
     // invokable command, so clamp absurd counts (which would otherwise overflow `sub` below).
     let target = agents.filter(|n| *n > 0).map(|n| n.min(64)); // user's target (None = model decides)
@@ -2287,9 +2323,9 @@ pub async fn coding_run(
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }
-    // Resolve provider/connection + model: explicit → primary connection → DeepSeek default.
-    let (provider, model_id) = resolve_model(&app, provider, model, false)?;
+    // Resolve provider/connection + model, mode-aware: analysis (kernel) prefers a thinking model.
     let is_analyze = analyze.unwrap_or(false);
+    let (provider, model_id) = resolve_model(&app, provider, model, false, if is_analyze { "analysis" } else { "auto" })?;
     // Analysis with no chosen folder gets a private scratch workspace, so a user can just
     // attach data and ask — no need to pick a code directory.
     let workspace = if workspace.trim().is_empty() && is_analyze {
