@@ -2411,6 +2411,53 @@ pub struct CodingStepOut {
 /// proposed changes. It cannot write files or run build/test commands (the fail-closed
 /// [`Sandbox`] enforces path-jail + a read-only command allowlist). Streams its steps on
 /// the `run_event` channel into the ActivityRail. Cancel via `cancel_run`.
+// The "intent → research directive" reframer. A normal user types plainly; this expands their
+// request into a rigorous, self-contained directive AND injects the depth a real researcher brings
+// (breadth-first survey, competing hypotheses, self-critique, literature grounding, budget use) —
+// the thing that a bare "propose a hypothesis for X" prompt does NOT get you. Silent auto-expansion:
+// the expanded directive is streamed to the thinking chain, then executed.
+const REFRAME_SYSTEM: &str = "\
+You convert a user's plain-language request into a rigorous, self-contained RESEARCH DIRECTIVE that a \
+capable research agent will execute. The user speaks casually; make their intent PRECISE and DEMANDING \
+— never invent scope, domain, or specifics they did not ask for, and keep their actual question and any \
+concrete details. Into the directive, bake the depth a good researcher brings:\n\
+- DELIVERABLE: state exactly what the final answer must contain (e.g. a mechanism diagram + testable \
+predictions; a ranked comparison; a decision with its justification).\n\
+- BREADTH FIRST: have the agent survey SEVERAL DISTINCT angles / candidate mechanisms / competing \
+explanations via litsearch — DIVERSE queries, not variations of one — before committing to any.\n\
+- COMPETING HYPOTHESES: require at least 2-3 genuinely different hypotheses/approaches, each weighed \
+against the evidence, then an explicit, justified choice of the strongest.\n\
+- SELF-CRITIQUE: require naming the chosen answer's weaknesses and what would falsify it.\n\
+- GROUNDING + HONESTY: ground key claims in REAL literature via litsearch and cite; separate clearly \
+what is supported from what is speculative.\n\
+- USE THE STEP BUDGET FOR DEPTH: do not stop at the first plausible answer; keep going until the space \
+is adequately covered.\n\
+Output ONLY the directive itself (no preamble, no 'Here is'), in the user's language, phrased as an \
+instruction to the agent. If the request is ALREADY a detailed rigorous directive, return it unchanged.";
+
+/// Expand a casual request into a rigorous research directive (see `REFRAME_SYSTEM`). Returns None
+/// when reframing doesn't apply (empty / already-long structured prompt) or the model call fails —
+/// the caller then runs the original goal unchanged.
+async fn reframe_goal(provider: &str, model_id: &str, raw: &str, cancel: &Cancel) -> Option<String> {
+    use axiom_orchestrate::coding::CodingModel;
+    let raw_t = raw.trim();
+    let n = raw_t.chars().count();
+    // Skip a trivial ask or an already-long/structured directive (the user pasted a detailed prompt).
+    if n < 8 || n > 700 {
+        return None;
+    }
+    let m = ProviderModel { provider: provider.to_string(), model: model_id.to_string(), timeout_s: 60 };
+    let user = format!("User's request:\n{raw_t}\n\nRewrite it as the research directive:");
+    let out = m.complete(REFRAME_SYSTEM, &user, cancel).await.ok()?;
+    let t = out.trim().trim_matches('"').trim();
+    // Sanity: a real expansion is longer than the ask and isn't a meta-reply/refusal.
+    let low = t.chars().take(40).collect::<String>().to_lowercase();
+    if t.chars().count() <= n || low.starts_with("i ") || low.starts_with("sorry") || low.contains("cannot") {
+        return None;
+    }
+    Some(t.to_string())
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri command args bind 1:1 to JS invoke keys
 pub async fn coding_run(
@@ -2473,7 +2520,15 @@ pub async fn coding_run(
             }
         }
     }
-    let goal = format!("{goal}{data_note}");
+    // Silent auto-expansion: turn a casual request into a rigorous research directive (with the
+    // depth requirements baked in) before the agent runs. Kept for the emit below to stream it.
+    let reframed = if is_analyze {
+        reframe_goal(&provider, &model_id, &goal, &Cancel::new()).await
+    } else {
+        None
+    };
+    let base_goal = reframed.clone().unwrap_or_else(|| goal.clone());
+    let goal = format!("{base_goal}{data_note}");
     // Analysis mode: give the agent a PERSISTENT Python kernel (numpy/pandas/scipy/
     // matplotlib/statsmodels/scikit-learn from the managed venv), cwd = the workspace so
     // files it writes and code it runs
@@ -2506,6 +2561,19 @@ pub async fn coding_run(
     let em = SeqEmitter::new(sink, runid.clone());
     let title: String = goal.trim().chars().take(60).collect();
     em.emit(RunEventBody::RunStarted { task_kind: "coding".into(), title, cancellable: true });
+    // Show the reframed directive in the thinking chain so the expansion is transparent, not hidden.
+    if let Some(ref rf) = reframed {
+        em.emit(RunEventBody::AgentStep {
+            agent_id: "reframe".into(),
+            step: 0,
+            role: "reframe".into(),
+            status: "ok".into(),
+            title: "理解意图 → 研究指令".into(),
+            reasoning: String::new(),
+            output: format!("**研究指令(自动扩写自你的请求)**\n\n{rf}"),
+            lines: rf.lines().count(),
+        });
+    }
     em.emit(RunEventBody::PlanReady {
         phases: vec!["planning".into(), "executing".into(), "done".into()],
         planned_agents: 1,

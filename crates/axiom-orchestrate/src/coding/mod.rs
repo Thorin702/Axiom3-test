@@ -372,6 +372,7 @@ pub async fn run_coding_agent(
     let mut skill_searched = false; // once true, HARD-block further search_skills until a load_skill (force-commit)
     let mut fig_seen: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup identical figures (re-run plots)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
+    let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
     // Snapshot the workspace so we can report the files the agent produces (per-file artifacts).
     let start_files = snapshot_files(sandbox.root());
     for n in 1..=budget.max_steps {
@@ -687,6 +688,16 @@ pub async fn run_coding_agent(
                         .collect::<Vec<_>>()
                         .join("\n\n"),
                     Err(e) => format!("ERROR: litsearch failed: {e}"),
+                };
+                // Anti-fixation: research quality dies when the agent keeps re-querying ONE angle
+                // (the flagship fired 5 near-identical STAT3/HLA-E searches). If this query heavily
+                // overlaps a recent one, nudge it to search a genuinely DIFFERENT angle/mechanism.
+                let obs = if lit_queries.iter().any(|prev| query_overlap(prev, &q) >= 0.6) {
+                    lit_queries.push(q.clone());
+                    format!("{obs}\n\n[breadth] You've already searched this angle. To go DEEPER, search a genuinely DIFFERENT mechanism / competing explanation / alternative pathway next — not another variation of this query.")
+                } else {
+                    lit_queries.push(q.clone());
+                    obs
                 };
                 (q, obs)
             }
@@ -1085,6 +1096,26 @@ fn compact_transcript(t: &str, budget_chars: usize) -> String {
         "{head}\n\n[... {} earlier characters elided to stay within context — the goal above and the recent steps below are kept verbatim ...]\n{tail}",
         total.saturating_sub(head_n + tail_n)
     )
+}
+
+/// Jaccard-ish word overlap between two search queries in [0,1] — used to detect when the agent is
+/// re-searching the SAME angle instead of broadening. Lowercased, split on whitespace, ignores a few
+/// stopwords so "STAT3 HLA-E senescence" vs "STAT3 HLA-E promoter senescence" reads as near-identical.
+fn query_overlap(a: &str, b: &str) -> f64 {
+    fn toks(s: &str) -> std::collections::HashSet<String> {
+        const STOP: &[&str] = &["the", "and", "of", "in", "for", "a", "to", "via", "on", "with"];
+        s.to_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 2 && !STOP.contains(w))
+            .map(|w| w.to_string())
+            .collect()
+    }
+    let (x, y) = (toks(a), toks(b));
+    if x.is_empty() || y.is_empty() {
+        return 0.0;
+    }
+    let inter = x.intersection(&y).count() as f64;
+    inter / (x.union(&y).count() as f64)
 }
 
 /// If `obs` reads as an error, return a stable signature (the Python exception line, e.g.
