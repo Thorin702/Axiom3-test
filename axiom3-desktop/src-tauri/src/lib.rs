@@ -102,6 +102,7 @@ pub fn run() {
             workbench::export_provenance,
             workbench::save_report_html,
             workbench::save_png,
+            workbench::rewrite_passage,
             workbench::clear_cache,
             workbench::kernel_exec,
             workbench::kernel_reset,

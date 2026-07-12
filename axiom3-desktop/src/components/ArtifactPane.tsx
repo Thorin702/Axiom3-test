@@ -4,7 +4,8 @@
 // carrying its own rigor. Scoped to workflow / coding sessions (the generated artifacts);
 // draft-check sessions keep their claim-by-claim flow in the thread.
 import { useEffect, useRef, useState } from "react";
-import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Check, Maximize2, Minimize2, Palette, Newspaper, Wand2 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
+import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Check, Maximize2, Minimize2, Palette, Newspaper, Wand2, PenLine, CornerDownLeft, Loader2 } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
@@ -34,6 +35,7 @@ export function ArtifactPane({
   onClose,
   onRedraw,
   onRelayout,
+  onRevise,
   expanded,
   onToggleExpand,
   busy,
@@ -46,6 +48,7 @@ export function ArtifactPane({
   onClose: () => void;
   onRedraw?: (tool: string) => void; // re-run the analysis, drawing figures with a chosen library
   onRelayout?: () => void; // re-run the analysis, reformatting the report as an academic paper
+  onRevise?: (newSynthesis: string, note: string) => void; // splice a surgically-revised passage in as a new version
   expanded?: boolean;
   onToggleExpand?: () => void;
   busy?: boolean;
@@ -97,8 +100,107 @@ export function ArtifactPane({
   const [tab, setTab] = useState<Tab>("artifact");
   const [toolsOpen, setToolsOpen] = useState(false);
   const [paper, setPaper] = useState(() => localStorage.getItem("axiom3.paperLayout") === "1"); // academic-paper typography
-  // reset to the artifact tab whenever a different session is shown
-  useEffect(() => setTab("artifact"), [task.id]);
+
+  // ── Select-to-revise: highlight a passage of the report → give a plain instruction →
+  // the model rewrites ONLY that passage and it's spliced back in as a new version. A
+  // surgical text edit, not an analysis re-run; it never touches the computed data/figures.
+  const [sel, setSel] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [annOpen, setAnnOpen] = useState(false);
+  const [instr, setInstr] = useState("");
+  const [revising, setRevising] = useState(false);
+  const [reviseErr, setReviseErr] = useState<string | null>(null);
+  const reviseGen = useRef(0); // bumped on dismiss/switch so an in-flight revision can't apply late
+  // Only the LATEST version is editable — splicing into an older version and saving it as the new
+  // latest would silently discard everything changed in the versions after it.
+  const isLatest = vIdx === versions.length - 1;
+
+  function clearSel() {
+    reviseGen.current++; // invalidate any in-flight revision (dismiss = cancel)
+    setSel(null);
+    setAnnOpen(false);
+    setInstr("");
+    setReviseErr(null);
+  }
+
+  // reset tab + any open revise popover whenever a different session is shown
+  useEffect(() => { setTab("artifact"); clearSel(); }, [task.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Locate the selected prose in the RAW markdown source, refusing anything unsafe to splice:
+  // returns the byte offset ONLY when the text occurs exactly once OUTSIDE any fenced block
+  // (``` figure/code specs). 0 matches → formatting mismatch (rendered ≠ source); >1 → ambiguous.
+  // The selection comes from the rendered DOM, so we cannot map it to a source offset directly;
+  // requiring a unique out-of-fence match is what keeps us from corrupting a figure spec or
+  // editing the wrong occurrence. Returns -1 (none) or -2 (ambiguous) on refusal.
+  function uniqueProsePos(full: string, passage: string): number {
+    const fences: [number, number][] = [];
+    const fre = /```[\s\S]*?```/g;
+    let fm: RegExpExecArray | null;
+    while ((fm = fre.exec(full))) fences.push([fm.index, fre.lastIndex]);
+    const inFence = (i: number) => fences.some(([a, b]) => i >= a && i < b);
+    const hits: number[] = [];
+    for (let from = 0; ; ) {
+      const at = full.indexOf(passage, from);
+      if (at < 0) break;
+      if (!inFence(at)) hits.push(at);
+      from = at + 1;
+      if (hits.length > 1) break; // ambiguous — no need to keep scanning
+    }
+    if (hits.length === 0) return -1;
+    if (hits.length > 1) return -2;
+    return hits[0];
+  }
+
+  function onArtifactMouseUp() {
+    if (!onRevise || busy || annOpen || !isLatest) return; // typing / older version → ignore stray mouseups
+    // Defer so the browser finalizes the selection first.
+    setTimeout(() => {
+      const s = window.getSelection();
+      const text = s?.toString().trim() ?? "";
+      if (!s || s.rangeCount === 0 || text.length < 2) { setSel(null); return; } // a click, not a drag → dismiss
+      const range = s.getRangeAt(0);
+      // Only react to selections inside the artifact prose.
+      if (!artifactRef.current || !artifactRef.current.contains(range.commonAncestorContainer)) return;
+      const r = range.getBoundingClientRect();
+      setSel({ text, x: Math.round(r.left + r.width / 2), y: Math.round(r.bottom) });
+      setReviseErr(null);
+    }, 0);
+  }
+
+  async function runRevise() {
+    if (!sel || !onRevise || !instr.trim()) return;
+    const full = ver.synthesis ?? "";
+    const passage = sel.text;
+    // Resolve the exact splice site up front — fail fast (no model call) if it's unsafe.
+    const at = uniqueProsePos(full, passage);
+    if (at === -1) {
+      setReviseErr(zh ? "无法在原文中定位这段(可能跨越了加粗/标题/表格/图表等格式)。请选一段纯文字。" : "Can't locate this in the source (it likely crosses bold/heading/table/figure markup). Select plain prose.");
+      return;
+    }
+    if (at === -2) {
+      setReviseErr(zh ? "这段文字在报告里出现多次,无法确定改哪一处。请多选一些上下文让它唯一。" : "This text appears more than once — select more context so it's unique.");
+      return;
+    }
+    const gen = ++reviseGen.current;
+    setRevising(true);
+    setReviseErr(null);
+    try {
+      const revised = await invoke<string>("rewrite_passage", { full, passage, instruction: instr.trim() });
+      if (reviseGen.current !== gen) return; // dismissed / session switched while in flight → drop it
+      if (revised && revised !== passage) {
+        const next = full.slice(0, at) + revised + full.slice(at + passage.length);
+        onRevise(next, instr.trim());
+        clearSel();
+        window.getSelection()?.removeAllRanges();
+      } else {
+        // model returned no change — keep the popover and tell the user
+        setReviseErr(zh ? "模型未作改动。" : "The model made no change.");
+      }
+    } catch (e) {
+      if (reviseGen.current === gen) setReviseErr(String(e));
+    } finally {
+      if (reviseGen.current === gen) setRevising(false);
+    }
+  }
 
   return (
     <aside className={`ax-artpane ${expanded ? "is-expanded" : ""}`}>
@@ -206,7 +308,7 @@ export function ArtifactPane({
                 {zh ? `第 ${vIdx + 1} 版 · 目标:${ver.goal}` : `Version ${vIdx + 1} · goal: ${ver.goal}`}
               </p>
             )}
-            <div ref={artifactRef} className={paper ? "ax-artbody--paper" : ""}>
+            <div ref={artifactRef} className={paper ? "ax-artbody--paper" : ""} onMouseUp={onArtifactMouseUp}>
               {ver.synthesis ? <ArtifactBody text={ver.synthesis} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>}
             </div>
           </>
@@ -245,6 +347,46 @@ export function ArtifactPane({
           </>
         )}
       </div>
+
+      {/* Select-to-revise floating control — anchored to the highlighted passage. The dismiss
+          scrim is only mounted once the instruction box is open (so the chip phase still lets
+          you freely re-drag a new selection). */}
+      {onRevise && sel && tab === "artifact" && isLatest && (
+        <>
+          {annOpen && <div className="ax-annscrim" onMouseDown={clearSel} />}
+          <div
+            className="ax-annpop"
+            style={{ left: Math.max(12, Math.min(sel.x, window.innerWidth - 190)), top: sel.y + 8 }}
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            {!annOpen ? (
+              <button className="ax-annpop__chip" onMouseDown={(e) => { e.preventDefault(); setAnnOpen(true); }}>
+                <PenLine size={13} aria-hidden /> {zh ? "改写这段" : "Revise"}
+              </button>
+            ) : (
+              <div className="ax-annpop__box">
+                <div className="ax-annpop__quote">“{sel.text.length > 90 ? sel.text.slice(0, 90) + "…" : sel.text}”</div>
+                <div className="ax-annpop__row">
+                  <input
+                    className="ax-annpop__input"
+                    autoFocus
+                    placeholder={zh ? "如何改?例如「更简洁」「弱化这个结论」「补一句局限」" : "How? e.g. 'shorten', 'hedge this claim', 'add a caveat'"}
+                    value={instr}
+                    disabled={revising}
+                    onChange={(e) => setInstr(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && instr.trim()) runRevise(); if (e.key === "Escape") clearSel(); }}
+                  />
+                  <button className="ax-annpop__go" disabled={revising || !instr.trim()} onMouseDown={(e) => { e.preventDefault(); runRevise(); }} title={zh ? "改写" : "Revise"}>
+                    {revising ? <Loader2 size={14} className="ax-spin" aria-hidden /> : <CornerDownLeft size={14} aria-hidden />}
+                  </button>
+                </div>
+                {reviseErr && <div className="ax-annpop__err">{reviseErr}</div>}
+                <div className="ax-annpop__hint">{zh ? "只改写选中的文字,数据与图表不动,生成新版本。" : "Rewrites the selected prose only; data and figures are untouched. Creates a new version."}</div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </aside>
   );
 }

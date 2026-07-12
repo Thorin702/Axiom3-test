@@ -1509,6 +1509,62 @@ pub async fn save_png(path: String, bytes: Vec<u8>) -> Result<(), String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Surgical passage rewrite for the artifact pane: the user selects a passage of a finished
+/// report, adds a plain-language instruction ("shorten this", "hedge this claim", "add a
+/// limitations note"), and the model returns ONLY that passage, revised — which the UI splices
+/// back in place as a new artifact version. This is a single focused completion, NOT a full
+/// analysis re-run: it never touches the computed data/figures, only the prose the user selected.
+/// It deliberately cannot fabricate results — the prompt forbids inventing numbers, and revising
+/// narrative text is not a truth judgment (the red line: the product never adjudicates truth).
+#[tauri::command]
+pub async fn rewrite_passage(
+    app: tauri::AppHandle,
+    full: String,
+    passage: String,
+    instruction: String,
+) -> Result<String, String> {
+    use axiom_orchestrate::coding::CodingModel;
+    let passage = passage.trim();
+    if passage.is_empty() {
+        return Err("empty selection".into());
+    }
+    let (provider, model_id) = resolve_model(&app, None, None, false, "auto")?;
+    let model = ProviderModel { provider, model: model_id, timeout_s: 90 };
+    let sys = "You revise ONE selected passage of a scientific report per the user's instruction. \
+        Return ONLY the revised passage as plain GitHub-flavored markdown — no preamble, no closing \
+        remark, no surrounding quotes, no code fences. Keep the passage's role and voice; change only \
+        what the instruction asks. NEVER invent data, numbers, citations, or results that are not \
+        already present in the passage or the surrounding report — if the instruction would require an \
+        unsupported factual claim, revise the wording faithfully instead and do not fabricate values.";
+    let user = format!(
+        "FULL REPORT (context only — do NOT return this):\n{full}\n\n\
+         SELECTED PASSAGE (return a revised version of exactly THIS):\n{passage}\n\n\
+         INSTRUCTION: {instruction}\n\nRevised passage:",
+        full = full.chars().take(24_000).collect::<String>(),
+    );
+    let out = model
+        .complete(sys, &user, &Cancel::new())
+        .await
+        .map_err(|e| e.to_string())?;
+    // Strip a wrapper ONLY when the whole answer is spuriously wrapped — never touch a fence or
+    // quote that is part of the revised prose itself.
+    let mut s = out.trim();
+    // (a) a fully-fenced answer: ``` … ``` wrapping the entire output → unwrap it.
+    if s.starts_with("```") && s.ends_with("```") && s.len() > 6 {
+        let inner = &s[3..s.len() - 3];
+        // drop an optional language tag on the opening fence line
+        s = inner.split_once('\n').map(|(_, b)| b).unwrap_or(inner).trim_end_matches('`').trim();
+    }
+    // (b) a fully double-quoted answer with no interior quotes → unwrap the surrounding pair.
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') && !s[1..s.len() - 1].contains('"') {
+        s = s[1..s.len() - 1].trim();
+    }
+    if s.is_empty() {
+        return Err("model returned an empty revision".into());
+    }
+    Ok(s.to_string())
+}
+
 /// Export the latest draft check's provenance record to `path` (chosen by the OS save
 /// dialog). The record is rebuilt from the hash-chained log and written as JSON — one
 /// purpose-built sink, not a general file-write primitive: the only content it ever

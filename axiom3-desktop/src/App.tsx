@@ -1994,6 +1994,20 @@ function App() {
                 true
               );
             }}
+            onRevise={(newSynthesis, note) => {
+              // Splice a surgically-revised passage in as a NEW artifact version (v_n+1),
+              // leaving the computed data/figures and prior versions intact.
+              setTasks((ts) =>
+                ts.map((x) => {
+                  if (x.id !== activeTask.id) return x;
+                  const base = x.versions ?? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }];
+                  const last = base[base.length - 1];
+                  const nv = { synthesis: newSynthesis, review: last?.review, steps: last?.steps, ts: Date.now(), goal: note ? `批注改写:${note}` : "批注改写" };
+                  return { ...x, synthesis: newSynthesis, versions: [...base, nv] };
+                })
+              );
+              note && note.trim() && setToast(lang === "zh" ? "已按批注改写并生成新版本" : "Revised and saved as a new version");
+            }}
             expanded={artifactExpanded}
             onToggleExpand={() => setArtifactExpanded((e) => !e)}
             onClose={() => {
