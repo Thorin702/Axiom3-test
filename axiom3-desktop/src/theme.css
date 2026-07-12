@@ -506,6 +506,30 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-runpill__mark.is-pulsing .ax-runpill__node { animation: ax-node-pulse 1.4s ease-in-out infinite; }
 @keyframes ax-node-pulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.12); } }
 
+/* ── "Starting workflow" launch card (thinking chain, pre-first-agent) ── */
+.ax-wfstart { margin: 6px 2px 4px; padding: 11px 13px; border-radius: var(--ax-radius);
+  border: 1px solid var(--ax-line); background: var(--ax-surface-2); overflow: hidden;
+  animation: ax-agent-in .28s ease both; }
+.ax-wfstart__head { display: flex; align-items: center; gap: 8px; }
+.ax-wfstart__mark { color: var(--ax-ink); flex: none; }
+.ax-wfstart__label { font-size: 12.5px; font-weight: 600; color: var(--ax-ink-soft);
+  animation: ax-wfstart-breathe 1.8s ease-in-out infinite; }
+.ax-wfstart__dots { display: inline-flex; gap: 3px; align-items: flex-end; padding-bottom: 1px; }
+.ax-wfstart__dots i { width: 3px; height: 3px; border-radius: 50%; background: var(--ax-ink-faint);
+  animation: ax-wfstart-dot 1.2s ease-in-out infinite; }
+.ax-wfstart__dots i:nth-child(2) { animation-delay: .2s; }
+.ax-wfstart__dots i:nth-child(3) { animation-delay: .4s; }
+.ax-wfstart__spacer { flex: 1; }
+.ax-wfstart__chev { color: var(--ax-ink-faint); font-size: 15px; line-height: 1; }
+.ax-wfstart__skeleton { position: relative; height: 7px; margin-top: 11px; width: 44%;
+  border-radius: 4px; background: var(--ax-line-soft); overflow: hidden; }
+.ax-wfstart__bar { position: absolute; inset: 0; border-radius: 4px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--ax-accent) 40%, transparent), transparent);
+  transform: translateX(-100%); animation: ax-wfstart-sweep 1.35s ease-in-out infinite; }
+@keyframes ax-wfstart-breathe { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+@keyframes ax-wfstart-dot { 0%, 100% { opacity: .25; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-2px); } }
+@keyframes ax-wfstart-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(220%); } }
+
 /* ── new-session: pick a project directory ─────────────────────────── */
 .ax-newsess { width: min(440px, 92vw); background: var(--ax-surface); border: 1px solid var(--ax-line);
   border-radius: var(--ax-radius-lg); box-shadow: var(--ax-shadow); padding: 22px; }

@@ -8,6 +8,7 @@ import { Square, Cpu } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { RunView } from "../lib/types";
 import { AgentSteps } from "./AgentSteps";
+import { WorkflowStarting } from "./WorkflowStarting";
 import { phaseLabel } from "../lib/phaseLabels";
 
 function fmtDur(ms: number): string {
@@ -103,9 +104,7 @@ export function ThreadActivity({ run, lang, onCancel }: { run: RunView; lang: La
         );
       })}
 
-      {run.agents.length === 0 && live && (
-        <p className="ax-tact__note ax-tact__note--muted">{zh ? "智能体启动中…" : "spawning agent…"}</p>
-      )}
+      {run.agents.length === 0 && live && <WorkflowStarting lang={lang} />}
     </div>
   );
 }
