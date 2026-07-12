@@ -2432,8 +2432,14 @@ against the evidence, then an explicit, justified choice of the strongest.\n\
 what is supported from what is speculative.\n\
 - USE THE STEP BUDGET FOR DEPTH: do not stop at the first plausible answer; keep going until the space \
 is adequately covered.\n\
-Output ONLY the directive itself (no preamble, no 'Here is'), in the user's language, phrased as an \
-instruction to the agent. If the request is ALREADY a detailed rigorous directive, return it unchanged.";
+HARD RULES: The agent EXECUTES REAL TOOLS. REQUIRE it to actually run litsearch and cite the real papers \
+it retrieves — NEVER tell it to 'imagine', 'assume', or generate a 'hypothetical' report, and never say \
+'you don't need to run real queries'. Do NOT invent figure syntax, node/edge notation, or an output \
+template — the agent already knows its own native figure blocks; just NAME the deliverable (e.g. 'a \
+mechanism network figure + testable predictions'). Keep the directive CONCISE — one focused paragraph or \
+a short list, no padding.\n\
+Output ONLY the directive itself (no preamble, no 'Here is', no meta-notes), in the user's language, \
+phrased as an instruction to the agent. If the request is ALREADY a detailed rigorous directive, return it unchanged.";
 
 /// Expand a casual request into a rigorous research directive (see `REFRAME_SYSTEM`). Returns None
 /// when reframing doesn't apply (empty / already-long structured prompt) or the model call fails —
