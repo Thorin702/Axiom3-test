@@ -12,6 +12,7 @@ import { ReviewerPanel } from "./components/ReviewerPanel";
 import { AgentSteps } from "./components/AgentSteps";
 import { ThreadActivity } from "./components/ThreadActivity";
 import { RunStatusPill } from "./components/RunStatusPill";
+import { ResizeHandle } from "./components/ResizeHandle";
 import { runStore } from "./lib/runStore";
 import { ArtifactBody } from "./components/artifact/ArtifactBody";
 import { ArtifactPane } from "./components/ArtifactPane";
@@ -250,6 +251,12 @@ function App() {
   const [railOpen, setRailOpen] = useState(localStorage.getItem("axiom3.rail") === "1");
   // Left sidebar can collapse to a slim icon rail (like Claude). Persisted.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(localStorage.getItem("axiom3.sidebarCollapsed") === "1");
+  // Draggable panel widths (persisted). Double-click a handle resets to the default.
+  const SIDEBAR_DEFAULT = 258, RAIL_DEFAULT = 360;
+  const [sidebarW, setSidebarW] = useState(() => Number(localStorage.getItem("axiom3.sidebarW")) || SIDEBAR_DEFAULT);
+  const [railW, setRailW] = useState(() => Number(localStorage.getItem("axiom3.railW")) || RAIL_DEFAULT);
+  useEffect(() => { localStorage.setItem("axiom3.sidebarW", String(sidebarW)); }, [sidebarW]);
+  useEffect(() => { localStorage.setItem("axiom3.railW", String(railW)); }, [railW]);
   function toggleSidebar() {
     setSidebarCollapsed((c) => {
       const n = !c;
@@ -872,6 +879,23 @@ function App() {
   }
 
   async function exportProvenance() {
+    const at = activeTask;
+    // Code/workflow artifacts have no draft-check hash-chain (latest_provenance() would error);
+    // export the ARTIFACT's own provenance instead — goal, every step + its verbatim code, the
+    // synthesis, the reviewer's findings, and version history — as a self-contained JSON.
+    if (at && (at.type === "code" || at.type === "workflow")) {
+      const base = (at.title || "artifact").slice(0, 40).replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "artifact";
+      const path = await save({ defaultPath: `${base}-provenance.json`, filters: [{ name: "JSON", extensions: ["json"] }] });
+      if (typeof path !== "string") return;
+      const payload = JSON.stringify(
+        { title: at.title, type: at.type, goal: at.goal, status: at.status, ts: at.ts, synthesis: at.synthesis, review: at.review, steps: at.steps, versions: at.versions },
+        null, 2
+      );
+      const bytes = Array.from(new TextEncoder().encode(payload));
+      const ok = await run(() => invoke("save_png", { path, bytes }));
+      if (ok !== undefined) note(`${t(lang, "exported")}: ${path.split(/[/\\]/).pop()} · ${at.steps?.length ?? 0} ${lang === "zh" ? "步" : "steps"}`);
+      return;
+    }
     const path = await save({
       defaultPath: "axiom3-provenance.json",
       filters: [{ name: "JSON", extensions: ["json"] }],
@@ -1413,7 +1437,30 @@ function App() {
           </div>
         </div>
       )}
-      <div className={`ax-app ${railOpen ? "has-rail" : ""} ${sidebarCollapsed ? "is-collapsed" : ""}`}>
+      <div
+        className={`ax-app ${railOpen ? "has-rail" : ""} ${sidebarCollapsed ? "is-collapsed" : ""}`}
+        style={{
+          gridTemplateColumns: railOpen
+            ? `${sidebarCollapsed ? 60 : sidebarW}px 1fr ${railW}px`
+            : `${sidebarCollapsed ? 60 : sidebarW}px 1fr`,
+        }}
+      >
+        {/* drag the boundaries to resize the sidebar / right panel (double-click resets) */}
+        {!sidebarCollapsed && (
+          <ResizeHandle
+            style={{ left: sidebarW - 3 }}
+            onResize={(x) => setSidebarW(Math.max(190, Math.min(460, x, window.innerWidth - (railOpen ? railW : 0) - 360)))}
+            onReset={() => setSidebarW(SIDEBAR_DEFAULT)}
+          />
+        )}
+        {railOpen && !artifactExpanded && (
+          <ResizeHandle
+            className="ax-resize--rail"
+            style={{ right: railW - 3 }}
+            onResize={(x) => setRailW(Math.max(300, Math.min(760, window.innerWidth - x, window.innerWidth - (sidebarCollapsed ? 60 : sidebarW) - 360)))}
+            onReset={() => setRailW(RAIL_DEFAULT)}
+          />
+        )}
       <aside className="ax-sidebar">
         <div className="ax-side-top">
           {!sidebarCollapsed && <div className="ax-brand" style={{ fontSize: 19 }}>Axiom3</div>}
@@ -1676,9 +1723,7 @@ function App() {
           );
         })()}
 
-        <div className="ax-content">
-
-
+        <div className={`ax-content ${nav === "tasks" && view === "thread" ? "ax-content--thread" : ""}`}>
           {nav !== "tasks" ? (
             <div className="ax-canvas">
               {nav === "projects" && <ProjectsView lang={lang} />}
@@ -1730,6 +1775,7 @@ function App() {
             </div>
           ) : (
             <div className="ax-thread">
+              <div className="ax-thread__scroll">
               {(() => {
                   const tk = tasks.find((x) => x.id === activeId);
                   if (!tk) return null;
@@ -1888,6 +1934,7 @@ function App() {
                     </>
                   );
                 })()}
+              </div>
               {activeId && (
                 <div className="ax-thread__followup">{composerBlock()}</div>
               )}

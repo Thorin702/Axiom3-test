@@ -71,7 +71,7 @@ export function ThreadActivity({ run, lang, onCancel }: { run: RunView; lang: La
             <div className="ax-tact__ahead">
               <span className={`ax-adot ${dotClass}`} />
               <span className="ax-tact__arole">
-                <Cpu size={12} aria-hidden />
+                <Cpu size={11} aria-hidden />
                 {zh ? "启动智能体" : "agent"} · {a.role || a.id}
               </span>
               {a.model && <span className="ax-tact__amodel">{a.model}{a.vendor ? ` · ${a.vendor}` : ""}</span>}

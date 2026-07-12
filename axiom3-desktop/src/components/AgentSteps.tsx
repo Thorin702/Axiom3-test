@@ -45,11 +45,11 @@ function AgentStepCard({ step, lang }: { step: AgentStepView; lang: Lang }) {
         aria-expanded={hasBody ? open : undefined}
       >
         <span className={`ax-chain__ic ${failed ? "is-err" : "is-ok"}`}>
-          {failed ? <X size={12} aria-hidden /> : <Check size={12} aria-hidden />}
+          {failed ? <X size={9} aria-hidden /> : <Check size={9} aria-hidden />}
         </span>
         <span className="ax-chain__title">{title}</span>
         {count && <span className="ax-chain__count">{count}</span>}
-        {hasBody && <ChevronRight size={15} className={`ax-chain__chev ${open ? "is-open" : ""}`} aria-hidden />}
+        {hasBody && <ChevronRight size={13} className={`ax-chain__chev ${open ? "is-open" : ""}`} aria-hidden />}
       </button>
       {open && hasBody && (
         <div className="ax-chain__body">
