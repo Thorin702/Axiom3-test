@@ -2479,7 +2479,10 @@ explanations via litsearch — DIVERSE queries, not variations of one — before
 against the evidence, then an explicit, justified choice of the strongest.\n\
 - NOVELTY POSITIONING: require the agent to FIRST establish what is already known / standard in the \
 field, then deliberately target the GAP and propose something genuinely under-explored — say plainly \
-what makes it new versus the existing work.\n\
+what makes it new versus the existing work. And be HONEST about novelty like a good reviewer: do NOT \
+assert 'entirely unexplored' / 'completely novel' / 'the most novel' unless the searches genuinely \
+turned up nothing; run a self-check search on the PROPOSED mechanism itself, and if it is already \
+published, ACKNOWLEDGE that and narrow the truly-new part rather than overclaiming.\n\
 - CROSS-DOMAIN TRANSFER: encourage borrowing a mechanism/approach from an ADJACENT field that has not \
 yet been applied here (the strongest novel hypotheses often come from such a transfer), and to state the \
 analogy explicitly.\n\
@@ -2616,10 +2619,25 @@ pub async fn coding_run(
         // Seed the scientific stack into the managed venv BEFORE starting the kernel — the
         // agent's prompt promises numpy/pandas/… are installed and it cannot pip-install under
         // the sandbox allowlist. Idempotent + fast once seeded; blocking pip → spawn_blocking.
-        let py = tauri::async_runtime::spawn_blocking(move || seed_sci_stack(&base))
+        // Wrap in a generous timeout so a wedged pip (network stall) fails the run with a clear
+        // message instead of hanging on "running" forever — 15 min is ample for a cold big-package
+        // install, so this never false-trips a legitimate first-time seed.
+        let seed = tauri::async_runtime::spawn_blocking(move || seed_sci_stack(&base));
+        let py = tokio::time::timeout(std::time::Duration::from_secs(900), seed)
             .await
+            .map_err(|_| "科学环境初始化超时(>15 分钟) · sci-stack seeding timed out".to_string())?
             .map_err(|e| e.to_string())??;
-        Some(Arc::new(PyKernel::start(&py.to_string_lossy(), sandbox.root()).map_err(|e| e.to_string())?))
+        // Start the kernel OFF the async runtime (a blocking spawn/handshake shouldn't stall a
+        // tokio worker) and under its own timeout, so a wedged kernel start fails fast.
+        let py_s = py.to_string_lossy().into_owned();
+        let root = sandbox.root().to_path_buf();
+        let start = tauri::async_runtime::spawn_blocking(move || PyKernel::start(&py_s, &root));
+        let k = tokio::time::timeout(std::time::Duration::from_secs(120), start)
+            .await
+            .map_err(|_| "Python 内核启动超时 · kernel start timed out".to_string())?
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        Some(Arc::new(k))
     } else {
         None
     };

@@ -38,6 +38,7 @@ axiom-runtime = { path = "../../crates/axiom-runtime" }
 axiom-orchestrate = { path = "../../crates/axiom-orchestrate" }
 # Document text extraction (pdf / docx / txt-md) for upload-and-check.
 axiom-ingest = { path = "../../crates/axiom-ingest" }
+tokio = { version = "1.52.3", features = ["time"] }
 
 # Single-instance guard (desktop only) — prevents two processes racing first-run
 # DB-key creation for the same project (see axiom-secrets::get_or_create_db_key).

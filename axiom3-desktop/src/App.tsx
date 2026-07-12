@@ -118,6 +118,14 @@ function tidyDraft(s: string): string {
   return out.replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+// For LIVE step persistence: strip the heavy base64 `pyfig` blocks from a step body (they'd blow
+// the localStorage quota if snapshotted every 1.5s). The code + text output survive; the final
+// `r.trace` restores the real figures when the run completes.
+function stripLiveFigure(s: AgentStepView): AgentStepView {
+  if (!s.output || !s.output.includes("```pyfig")) return s;
+  return { ...s, output: s.output.replace(/\n*```pyfig\n[\s\S]*?```/g, "") };
+}
+
 function App() {
   const [lang, setLangState] = useState<Lang>(
     (localStorage.getItem("axiom3.lang") as Lang) || "zh"
@@ -249,6 +257,30 @@ function App() {
     if (target.type === "workflow") runWorkflow(text, target.id);
     else runCoding(text, true);
   }, [queued, queuedFor, tasks]);
+  // Live step snapshot: while a run is in flight, mirror its steps into the task (throttled ~1.5s)
+  // so a HARD interruption — process killed, window closed, crash — doesn't lose the progress
+  // already made. The history then shows how far it got instead of a blank cancelled record.
+  // Figures are stripped for the live snapshot (quota); the final r.trace restores them on finish.
+  const liveSyncRef = useRef(0);
+  useEffect(() => {
+    if (!liveRuns.some((r) => r.status === "running")) return;
+    const now = Date.now();
+    if (now - liveSyncRef.current < 1500) return;
+    liveSyncRef.current = now;
+    setTasks((ts) => {
+      let changed = false;
+      const next = ts.map((tk) => {
+        if (tk.status !== "running") return tk;
+        const run = liveRuns.find((r) => r.id === (tk.liveRunId ?? tk.id));
+        if (!run || run.status !== "running") return tk;
+        const rich = run.agents.flatMap((a) => a.rich ?? []);
+        if (rich.length === 0) return tk;
+        changed = true;
+        return { ...tk, steps: rich.map(stripLiveFigure) };
+      });
+      return changed ? next : ts;
+    });
+  }, [liveRuns]);
   const [notableOnly, setNotableOnly] = useState(true);
   const [reviewed, setReviewed] = useState<Record<string, boolean>>(() => {
     try {
@@ -827,13 +859,15 @@ function App() {
         if (x.id !== sessionId) return x;
         if (!r) return { ...x, status: "failed" as const, error: "failed" };
         const status = r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed";
-        const newVer = { synthesis: r.synthesis ?? undefined, review: r.review ?? undefined, steps, ts: Date.now(), goal: g };
+        // Keep the live-snapshotted steps if this run returned none (e.g. a cancel with no trace).
+        const st = steps && steps.length ? steps : x.steps;
+        const newVer = { synthesis: r.synthesis ?? undefined, review: r.review ?? undefined, steps: st, ts: Date.now(), goal: g };
         if (appendTo) {
           // seed v1 from the pre-iteration state, then append this run as the newest version.
           const prior = x.versions ?? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }];
-          return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps, goal: g, versions: [...prior, newVer] };
+          return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps: st, goal: g, versions: [...prior, newVer] };
         }
-        return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps };
+        return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps: st };
       })
     );
   }
@@ -890,7 +924,10 @@ function App() {
         if (x.id !== sessionId) return x;
         if (!r) return { ...x, status: "failed" as const, error: "failed" };
         const status = r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed";
-        const steps = r.trace ?? [];
+        // Prefer the backend's full trace (it carries the figures); but if it came back empty
+        // (e.g. a cancel that returned no trace), keep the steps we snapshotted live so a
+        // cancelled run still shows how far it got instead of blanking out.
+        const steps = (r.trace && r.trace.length) ? r.trace : (x.steps ?? []);
         if (appendTo) {
           const prior = x.versions ?? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }];
           const newVer = { synthesis: r.synthesis, steps, ts: Date.now(), goal: g };

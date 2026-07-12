@@ -209,15 +209,27 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              `mpl.rcParams['font.sans-serif']=['PingFang SC','Heiti TC','Arial Unicode MS','DejaVu Sans']; \
              mpl.rcParams['axes.unicode_minus']=False` — then verify no missing-glyph boxes; only if no CJK \
              font is available fall back to English on the figure. \
-             MECHANISM / PATHWAY figures: don't settle for an abstract node-graph — DRAW A REAL SCHEMATIC \
-             (cells as shapes, molecules/receptors as boxes, +/- arrows, a legend; multi-panel if it \
-             clarifies) with patches/FancyArrowPatch, the way a paper's figure looks. \
+             MECHANISM / PATHWAY / CONCEPT figures MUST be drawn as a REAL matplotlib SCHEMATIC in \
+             python — actual cells as shapes, molecules/receptors as boxes, +/- signalling arrows, hand-\
+             placed labels and a legend (multi-panel if it clarifies), using patches / FancyArrowPatch / \
+             FancyBboxPatch the way a JOURNAL figure looks. This is REQUIRED when the deliverable is a \
+             mechanism/pathway/mechanism-diagram: do NOT emit a ```network (or ```chart) block of abstract \
+             dots-and-lines as the mechanism figure — a node-edge graph is NOT an acceptable mechanism \
+             schematic and reads as a placeholder. Build it with matplotlib and let it be CAPTURED as a \
+             real figure; a run that was asked for a 机理图/mechanism diagram but produced no matplotlib \
+             figure has FAILED its deliverable. \
              ITERATE ON THE FIGURE: after a plotting cell, CHECK it actually ran (no Traceback) and LOOK at \
              the result — if labels overlap, glyphs are boxes, or it errored, FIX and redraw (1-2 refine \
              passes) before finishing; a good figure is iterated, never one-shot. \
-             CODE-QUOTING: in Python string LABELS, use double quotes or triple quotes when the text \
-             contains an apostrophe (e.g. \"don't eat me\") — an apostrophe inside a single-quoted string \
-             breaks parsing (a common cause of a figure cell failing). \
+             CODE-QUOTING — figure cells DIE on this constantly, so sanitize every label BEFORE running: \
+             (a) write EVERY string label with DOUBLE quotes; (b) NEVER put a curly/smart quote (\u{201c} \u{201d} \u{2018} \u{2019}) \
+             or a bare apostrophe INSIDE a label — write \"don't eat me\" with straight ASCII quotes (or \
+             escape the apostrophe), and use straight \" not \u{201c}\u{201d}; (c) a line break inside a label must be \\n, \
+             NEVER a real newline in the middle of a quoted string (that gives 'unterminated string \
+             literal'); (d) matplotlib arrows: plt.arrow() has NO 'mutation_scale' — for a styled arrow \
+             use FancyArrowPatch(posA,posB,arrowstyle=\"-|>\",mutation_scale=14) or ax.annotate(\"\",xy=..,\
+             xytext=..,arrowprops=dict(arrowstyle=\"-|>\")). A smart-quote or unescaped apostrophe in a \
+             label is the #1 cause of a wasted figure attempt. \
              numpy, pandas, scipy, matplotlib, statsmodels and scikit-learn are \
              already installed, plus requests — use them directly (e.g. scipy.stats / statsmodels \
              for tests, confidence intervals and regression; scikit-learn for models). The kernel HAS \
@@ -273,6 +285,18 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              simulate that size, and move on. Spend early steps locating + loading; RESERVE the last \
              few steps to compute the core result, draw the figure, and finish with {\"final\":…}. \
              Do not re-run a search, re-read a file, or re-download something you already have.\n\
+             LARGE / REAL DATA — real datasets can be huge and a naive full read hangs the run for \
+             MANY MINUTES with no visible progress (a 100+ MB single-cell matrix is the classic \
+             trap). So: (1) BEFORE reading, check the size and PRINT it — `import os; \
+             print(os.path.getsize(path)/1e6, 'MB')`; (2) if a table is large (>~50 MB compressed, \
+             or >~1e5 rows, e.g. a single-cell TPM matrix), do NOT read the whole thing at once — \
+             read a HEAD first (`pd.read_csv(path, nrows=5)`) to learn the shape/columns, then load \
+             only the columns/rows you need (`usecols=`), read in chunks, or SUBSAMPLE to the size \
+             the task names (e.g. ~800 cells); a subsampled real dataset beats a full one that never \
+             finishes; (3) put each heavy operation — download, size-check, read, process — in its \
+             OWN python step and PRINT a one-line progress note ('downloaded 126 MB', 'matrix \
+             16291x55738 → subsampling to 800 cells'), so the human sees forward motion instead of a \
+             frozen 'running'. Never let one cell BOTH download a big file AND fully parse it.\n\
              STATISTICAL RIGOR — when the analysis involves statistics, hold yourself to: (1) CORRECT \
              for multiple testing (Benjamini-Hochberg / FDR via statsmodels.stats.multitest) whenever \
              you test many hypotheses, and report adjusted p-values; (2) never present an IN-SAMPLE \
@@ -305,8 +329,10 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              Budget: after intake, at most ~3 discretionary fork cards per run (permission/integrity asks \
              don't count) — when spent, fall back to conventions and DISCLOSE them so the run converges. \
              After the human answers, use exactly their choice and record it in your methods/assumptions.\n\
-             For a crisp, interactive figure in the report, you may instead emit a NATIVE figure block \
-             in your final answer, filled with values you computed in python. Use these EXACT shapes: \
+             For QUANTITATIVE DATA you computed (distributions, comparisons, correlations, time series, \
+             ROC/PR, volcano, heatmaps, embeddings…), you may ALSO emit a NATIVE figure block filled with \
+             your computed values — these are for DATA, NOT a substitute for a hand-drawn mechanism \
+             schematic (draw those in matplotlib as above). Use these EXACT shapes: \
              ```chart bar = {\"type\":\"bar\",\"title\":..,\"xlabel\":..,\"ylabel\":..,\"data\":[{\"label\":\"Jan\",\"value\":12}, …]}; \
              ```chart scatter (also UMAP/PCA/t-SNE embeddings) = {\"type\":\"scatter\",...,\"points\":[{\"x\":1,\"y\":2,\"group\":?}, …]}; \
              ```chart line = {\"type\":\"line\",...,\"series\":[{\"name\":..,\"points\":[[x,y], …]}]}. \
@@ -684,31 +710,42 @@ pub async fn run_coding_agent(
                 // First-class literature tool (OpenAlex) — not a shell command, so it works
                 // regardless of the sandbox network fence. Grounds analysis in real citations.
                 let q = arg_str(&v, "query").to_string();
-                let obs = match LitSearch::new().search(&q, 5).await {
-                    Ok(works) if works.is_empty() => "(no matching works)".to_string(),
-                    Ok(works) => works
-                        .iter()
-                        .enumerate()
-                        .map(|(i, w)| {
-                            let authors = if w.authors.is_empty() { "—".into() } else { w.authors.join(", ") };
-                            let year = w.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
-                            let doi = w.doi.clone().unwrap_or_else(|| "—".into());
-                            let abs: String = w.abstract_text.chars().take(280).collect();
-                            format!("[{}] {} ({year}) — {authors}\n    DOI: {doi}\n    {abs}", i + 1, w.title)
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n\n"),
-                    Err(e) => format!("ERROR: litsearch failed: {e}"),
-                };
-                // Anti-fixation: research quality dies when the agent keeps re-querying ONE angle
-                // (the flagship fired 5 near-identical STAT3/HLA-E searches). If this query heavily
-                // overlaps a recent one, nudge it to search a genuinely DIFFERENT angle/mechanism.
-                let obs = if lit_queries.iter().any(|prev| query_overlap(prev, &q) >= 0.6) {
+                // Convergence guards — GLM OVER-searches (a run fired 6 near-identical IDO queries
+                // and never reached a figure, while Claude Science converges in 2-3). Decide BEFORE
+                // spending an API call: refuse a near-duplicate, and hard-cap total searches so the
+                // run converges to the deliverable instead of looping in the literature.
+                let n_done = lit_queries.len();
+                let is_dup = lit_queries.iter().any(|prev| query_overlap(prev, &q) >= 0.8);
+                let obs = if is_dup {
+                    format!("[skip] 这条检索与之前某次高度重复,未执行。你已检索 {n_done} 次——够了。现在停止检索,基于已有文献:提出 2-3 个竞争假说、选出最强并说明新颖性、画机理图、给相关→因果→增益(gain-of-function)→阴性对照的分级验证,然后 {{\"final\":…}}. Duplicate query — not executed; STOP searching and produce the deliverable now.")
+                } else if n_done >= 10 {
                     lit_queries.push(q.clone());
-                    format!("{obs}\n\n[breadth] You've already searched this angle. To go DEEPER, search a genuinely DIFFERENT mechanism / competing explanation / alternative pathway next — not another variation of this query.")
+                    format!("[stop] litsearch 预算已用尽({n_done} 次),现已暂停。立即用已检索到的文献:提出 2-3 个竞争假说、选最强、**用 python+matplotlib 画一张自定义机理示意图(细胞/受体/箭头/图例,不要用抽象 network 块)**、给分级验证方案,然后 {{\"final\":…}}. 不要再检索。litsearch budget spent — it is DISABLED; DRAW the mechanism schematic in matplotlib (not a node-graph), give the verification plan, and finish; do not search again.")
                 } else {
+                    let hits = match LitSearch::new().search(&q, 5).await {
+                        Ok(works) if works.is_empty() => "(no matching works)".to_string(),
+                        Ok(works) => works
+                            .iter()
+                            .enumerate()
+                            .map(|(i, w)| {
+                                let authors = if w.authors.is_empty() { "—".into() } else { w.authors.join(", ") };
+                                let year = w.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
+                                let doi = w.doi.clone().unwrap_or_else(|| "—".into());
+                                let abs: String = w.abstract_text.chars().take(280).collect();
+                                format!("[{}] {} ({year}) — {authors}\n    DOI: {doi}\n    {abs}", i + 1, w.title)
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                        Err(e) => format!("ERROR: litsearch failed: {e}"),
+                    };
+                    // Soft breadth nudge for a same-angle (0.6–0.8) follow-up that still gets to run.
+                    let same_angle = lit_queries.iter().any(|prev| query_overlap(prev, &q) >= 0.6);
                     lit_queries.push(q.clone());
-                    obs
+                    if same_angle {
+                        format!("{hits}\n\n[breadth] 已搜过相近角度。换一个真正不同的机制/竞争解释,或停止检索去构建假说+画图。Search a genuinely DIFFERENT angle next, or stop and produce.")
+                    } else {
+                        hits
+                    }
                 };
                 (q, obs)
             }
