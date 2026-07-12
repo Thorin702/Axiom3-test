@@ -450,8 +450,12 @@ pub async fn run_coding_agent(
                         if attempt > 3 || cancel.is_cancelled() {
                             return CodingResult { status: "failed".into(), summary: format!("model error after {attempt} attempts: {e}"), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
                         }
-                        // brief backoff, but bail out fast if cancelled during the wait
-                        for _ in 0..(attempt * 5) {
+                        // Escalating backoff — a 429/rate-limit window can last tens of seconds, so
+                        // the old ~6s total (attempt*5*200ms) never outlasts it and all retries fail
+                        // inside the same window. Wait ~2s, ~8s, ~20s across the three retries so a
+                        // final call survives a provider rate-limit; cancellation still bails fast.
+                        let wait_ms: u64 = [2000, 8000, 20000][(attempt as usize - 1).min(2)];
+                        for _ in 0..(wait_ms / 200) {
                             if cancel.is_cancelled() { break; }
                             tokio::time::sleep(Duration::from_millis(200)).await;
                         }
