@@ -39,6 +39,21 @@ pub struct OrchestrateOptions {
     pub provider: String,
     pub model: String,
     pub concurrency: usize,
+    /// Cooperative pause for the run — when set and paused, the engine holds each agent at the
+    /// start of its turn (cancel still wins). Carried on the options so every engine
+    /// (orchestrate / deep / search) honors the pause button without a signature change. None =
+    /// no pause control (offline tests / examples).
+    pub pause: Option<Pause>,
+}
+
+/// Cooperatively hold here while the run is paused; returns as soon as it's resumed OR cancelled
+/// (cancellation always wins). No-op when there's no pause handle.
+pub(crate) async fn wait_while_paused(pause: &Option<Pause>, cancel: &Cancel) {
+    if let Some(p) = pause {
+        while p.is_paused() && !cancel.is_cancelled() {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+    }
 }
 
 /// Run a workflow goal end-to-end, streaming events through `sink`, and return the
@@ -94,6 +109,7 @@ pub async fn orchestrate(
     let em_task = em.clone();
     let em_prog = em.clone();
     let specs = plan.steps.clone();
+    let pause_task = opts.pause.clone();
     // The task body returns (StepId, Result<StepOutcome>) so every result correlates to
     // its input — this is the one fix run_batch needs (it is otherwise lossy/unordered).
     let results = run_batch(
@@ -102,7 +118,11 @@ pub async fn orchestrate(
         cancel,
         move |spec| {
             let em = em_task.clone();
+            let pause = pause_task.clone();
             async move {
+                // Hold at the start of the turn while paused (a queued/next agent waits; in-flight
+                // ones finish). Cancel still wins.
+                wait_while_paused(&pause, cancel).await;
                 em.emit(RunEventBody::AgentSpawned {
                     agent_id: spec.id.clone(),
                     role: spec.role.clone(),
@@ -317,6 +337,7 @@ where
     let em_task = em.clone();
     let tally_task = tally.clone();
     let live_task = live.clone();
+    let pause_top = opts.pause.clone();
     // each top-level sub-task runs its OWN nested fan-out of sub-agents
     let top_results = run_batch(
         top_plan.steps.clone(),
@@ -330,11 +351,14 @@ where
             let step_exec = step_exec.clone();
             let tally = tally_task.clone();
             let live = live_task.clone();
+            let pause_sub = pause_top.clone();
             async move {
+                wait_while_paused(&pause_sub, cancel).await; // hold before planning this group
                 let subplan = sub_dec.plan(&subtask.goal, &subtask.id, cancel).await.unwrap_or(Plan { steps: Vec::new() });
                 let mut states: Vec<StepState> = subplan.steps.iter().cloned().map(StepState::new).collect();
                 let em_sub = em.clone();
                 let subrole = subtask.role.clone();
+                let pause_inner = pause_sub.clone();
                 let sub_results = run_batch(
                     subplan.steps.clone(),
                     inner_cap,
@@ -344,8 +368,10 @@ where
                         let step_exec = step_exec.clone();
                         let tally = tally.clone();
                         let live = live.clone();
+                        let pause = pause_inner.clone();
                         let role = format!("{subrole} · {}", spec.role);
                         async move {
+                            wait_while_paused(&pause, cancel).await; // hold each sub-agent while paused
                             let id = spec.id.clone();
                             tally.spawned.fetch_add(1, Ordering::Relaxed);
                             live.lock().unwrap().insert(id.clone());
@@ -484,7 +510,7 @@ mod tests {
     use supervisor::MockDecomposer;
 
     fn opts() -> OrchestrateOptions {
-        OrchestrateOptions { run_id: "run-test".into(), provider: "mock".into(), model: "mock".into(), concurrency: 2 }
+        OrchestrateOptions { run_id: "run-test".into(), provider: "mock".into(), model: "mock".into(), concurrency: 2, pause: None }
     }
     fn dec(pairs: &[(&str, &str)]) -> MockDecomposer {
         MockDecomposer { specs: pairs.iter().map(|(r, g)| (r.to_string(), g.to_string())).collect() }

@@ -1191,7 +1191,9 @@ function App() {
                 {(() => {
                   const hasText = slash.trim().length > 0;
                   const activeRunning = activeTask?.status === "running";
-                  const runningCode = activeRunning && activeTask?.type === "code"; // only coding runs are pausable
+                  // coding AND workflow runs are pausable — the engine holds each agent at its next
+                  // turn while paused (cancel still wins); resume picks up where it left off.
+                  const runningCode = activeRunning && (activeTask?.type === "code" || activeTask?.type === "workflow");
                   if (runningCode && !hasText) {
                     const rid = activeTask!.liveRunId ?? activeTask!.id;
                     const isPaused = pausedRids.has(rid);

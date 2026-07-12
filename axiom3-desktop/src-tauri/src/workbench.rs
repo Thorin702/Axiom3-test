@@ -2215,9 +2215,11 @@ pub async fn run_workflow(
     let target = agents.filter(|n| *n > 0).map(|n| n.min(64)); // user's target (None = model decides)
     let concurrency = target.map(|n| n.min(8)).unwrap_or(4);
     let cancel = Cancel::new();
-    // Reserve the run slot (rejects a duplicate run id) for the whole run lifetime.
+    let pause = Pause::new();
+    // Reserve the run slot (rejects a duplicate run id) for the whole run lifetime. Register the
+    // SAME pause we hand to the engine below, so the pause/resume buttons actually reach it.
     let _guard = state
-        .begin_run(&runid, cancel.clone(), Pause::new())
+        .begin_run(&runid, cancel.clone(), pause.clone())
         .ok_or("a run with this id is already in flight")?;
     let sink: Arc<dyn EventSink> = Arc::new(TauriSink { app: app.clone() });
     let opts = OrchestrateOptions {
@@ -2225,6 +2227,7 @@ pub async fn run_workflow(
         provider: provider.clone(),
         model: model_id.clone(),
         concurrency,
+        pause: Some(pause),
     };
     let total = target.unwrap_or(0);
     let run = if deep_search {

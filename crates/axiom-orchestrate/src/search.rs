@@ -214,6 +214,7 @@ pub async fn search_core<G: Generator, S: Scorer>(
         if cancel.is_cancelled() {
             break;
         }
+        crate::wait_while_paused(&opts.pause, cancel).await; // hold between candidate generations while paused
         // ── SELECT: descend from the root via Thompson sampling until "generate here" wins.
         let sel = select(&nodes, max_depth, &mut rng);
 
@@ -618,7 +619,7 @@ mod tests {
     use std::collections::HashSet;
 
     fn opts() -> OrchestrateOptions {
-        OrchestrateOptions { run_id: "s".into(), provider: "mock".into(), model: "mock".into(), concurrency: 2 }
+        OrchestrateOptions { run_id: "s".into(), provider: "mock".into(), model: "mock".into(), concurrency: 2, pause: None }
     }
     fn cfg(budget: usize, max_depth: usize, seed: u64) -> SearchConfig {
         SearchConfig { budget, max_depth, models: Vec::new(), seed }

@@ -56,6 +56,7 @@ async fn main() {
         provider: models[0].provider.clone(),
         model: models[0].model.clone(),
         concurrency: 4,
+        pause: None,
     };
     let budget: usize = std::env::var("AXIOM_SEARCH_BUDGET").ok().and_then(|s| s.parse().ok()).unwrap_or(8);
     let cfg = SearchConfig { budget, max_depth: 3, models: models.clone(), seed: 42 };
