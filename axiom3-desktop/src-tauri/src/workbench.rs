@@ -2694,7 +2694,19 @@ pub async fn coding_run(
         let obs_full = step.observation.trim();
         let out = match step.tool.as_str() {
             "plan" => format!("**📋 计划 · {}**\n\n{}", step.detail, obs_full),
-            "python" => format!("```python\n{}\n```\n\n```\n{}\n```", step.input.trim(), obs_full),
+            "python" => {
+                // Code + text result, then any figures this cell computed — as native `pyfig`
+                // blocks so the thinking chain renders the plot inline, right under the code that
+                // made it (Claude-Science style), not only later in the report. Figures are already
+                // deduped upstream (fig_seen), so this never repeats a re-drawn plot.
+                let mut s = format!("```python\n{}\n```\n\n```\n{}\n```", step.input.trim(), obs_full);
+                for f in &step.figures {
+                    s.push_str("\n\n```pyfig\n");
+                    s.push_str(f);
+                    s.push_str("\n```");
+                }
+                s
+            }
             "run" => format!("`$ {}`\n\n```\n{}\n```", step.input, obs_full),
             "write_file" => format!("✎ wrote `{}`", step.input),
             "edit" => format!("✎ edited `{}` — {}", step.input, obs_full),

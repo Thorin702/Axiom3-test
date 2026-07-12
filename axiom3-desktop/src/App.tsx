@@ -311,16 +311,17 @@ function App() {
   });
 
   useEffect(() => {
-    // The user wants the translucent dark-glass look (their reference). Default to dark;
-    // both themes are translucent, user can switch in Settings. v3 migration flips the
-    // earlier light default to dark once, then respects the user's choice.
-    if (localStorage.getItem("axiom3.themeMigrated") !== "4") {
-      localStorage.setItem("axiom3.themeMigrated", "4");
-      localStorage.setItem("axiom3.theme", "dark");
-      applyTheme("dark");
+    // Align with Claude Science, which is a light workbench (warm cream field, white cards,
+    // a dark code cell that pops against it). Default to light; the user can still switch in
+    // Settings. The v5 migration flips the earlier dark default to light once, then respects
+    // the user's choice.
+    if (localStorage.getItem("axiom3.themeMigrated") !== "5") {
+      localStorage.setItem("axiom3.themeMigrated", "5");
+      localStorage.setItem("axiom3.theme", "light");
+      applyTheme("light");
       return;
     }
-    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "dark");
+    applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "light");
   }, []);
 
   // Persist the task history (most recent first, ≤50). A task's result carries all its

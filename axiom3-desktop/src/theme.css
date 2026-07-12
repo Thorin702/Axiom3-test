@@ -434,25 +434,58 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   color: var(--ax-ink-faint); padding: 4px 10px 6px; }
 
 /* ── thinking chain (Claude-Science-style narration + collapsible step cards) ─── */
-.ax-chain { display: flex; flex-direction: column; gap: 6px; }
-.ax-chain__step { display: flex; flex-direction: column; gap: 5px; }
-.ax-chain__narr { margin: 4px 2px 1px; font-size: 12px; line-height: 1.55; color: var(--ax-ink-soft); }
-.ax-chain__card { display: flex; align-items: center; gap: 7px; width: 100%; text-align: left;
-  padding: 5px 9px; border: 0.5px solid var(--ax-line); border-radius: 8px; background: var(--ax-surface);
-  color: var(--ax-ink); cursor: pointer; transition: border-color .12s ease, background .12s ease; }
-.ax-chain__card:hover { border-color: var(--ax-line-strong, var(--ax-line)); background: var(--ax-surface-2); }
+/* ── thinking chain — Claude-Science-style step rows + dark code cells ── */
+.ax-chain { display: flex; flex-direction: column; gap: 3px; }
+.ax-chain__step { display: flex; flex-direction: column; gap: 2px; }
+.ax-chain__narr { margin: 8px 2px 6px; font-size: 14px; line-height: 1.62; color: var(--ax-ink); }
+.ax-chain__card { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 7px 8px; border: none; border-radius: 8px; background: transparent;
+  color: var(--ax-ink); cursor: pointer; transition: background .12s ease; }
+.ax-chain__card:hover { background: var(--ax-surface-2); }
 .ax-chain__card.is-static { cursor: default; }
-.ax-chain__card.is-static:hover { border-color: var(--ax-line); background: var(--ax-surface); }
-.ax-chain__ic { flex: none; width: 14px; height: 14px; border-radius: 50%; display: grid; place-items: center; color: #fff; }
+.ax-chain__card.is-static:hover { background: transparent; }
+.ax-chain__ic { flex: none; width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center; color: #fff; }
 .ax-chain__ic.is-ok { background: var(--ax-lamp-green); }
 .ax-chain__ic.is-err { background: var(--ax-lamp-red); }
-.ax-chain__title { flex: 1; min-width: 0; font-size: 11.5px; font-weight: 550; overflow: hidden;
+.ax-chain__title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 500; color: var(--ax-ink); overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
-.ax-chain__count { flex: none; font-size: 10px; color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
+.ax-chain__count { flex: none; font-size: 12px; color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
 .ax-chain__chev { flex: none; color: var(--ax-ink-faint); transition: transform .15s ease; }
 .ax-chain__chev.is-open { transform: rotate(90deg); }
-.ax-chain__body { margin: 2px 2px 4px 8px; padding: 10px 12px; border-left: 2px solid var(--ax-line);
-  font-size: 12.5px; overflow-x: auto; }
+.ax-chain__sub { margin-left: 7px; padding-left: 10px; border-left: 1px solid var(--ax-line); display: flex; flex-direction: column; gap: 2px; }
+.ax-chain__step.is-nested .ax-chain__card { padding: 5px 8px; }
+.ax-chain__step.is-nested .ax-chain__title { font-size: 12.5px; }
+.ax-chain__body { margin: 2px 4px 6px 24px; font-size: 13.5px; overflow-x: auto; color: var(--ax-ink); }
+
+/* dark code cell (matches Claude Science: LANG · ENV header, syntax highlight, Show output) */
+.ax-code { margin: 4px 4px 8px 24px; border-radius: 10px; overflow: hidden; border: 1px solid #2a2a3a;
+  background: #1b1b26; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+.ax-code__head { display: flex; align-items: center; justify-content: space-between; padding: 7px 13px;
+  background: #16161f; border-bottom: 1px solid #2a2a3a; }
+.ax-code__lang { font-size: 10.5px; letter-spacing: .07em; font-weight: 700; color: #8b8fa3; }
+.ax-code__env { font-size: 10.5px; color: #5f6377; letter-spacing: .02em; }
+.ax-code__src { margin: 0; padding: 13px 15px; overflow-x: auto; background: #1b1b26;
+  font-family: var(--ax-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  font-size: 12.5px; line-height: 1.58; color: #d6deeb; -webkit-text-size-adjust: 100%; }
+.ax-code__src code { font-family: inherit; white-space: pre; }
+.ax-code__src .tk-kw  { color: #c792ea; }   /* import/from/as/def/for/if… */
+.ax-code__src .tk-str { color: #ecc48d; }   /* strings */
+.ax-code__src .tk-num { color: #f78c6c; }   /* numbers */
+.ax-code__src .tk-fn  { color: #82aaff; }   /* function calls */
+.ax-code__src .tk-bi  { color: #7fdbca; }   /* builtins / np / plt */
+.ax-code__src .tk-com { color: #637777; font-style: italic; }
+.ax-code__src .tk-dec { color: #ffcb6b; }   /* @decorators */
+.ax-code__src .tk-id  { color: #d6deeb; }
+.ax-code__out { border-top: 1px solid #2a2a3a; }
+.ax-code__outtoggle { display: flex; align-items: center; gap: 5px; width: 100%; text-align: left;
+  padding: 8px 13px; background: none; border: none; color: #8b8fa3; font-size: 12px; cursor: pointer;
+  font-family: var(--ax-sans); }
+.ax-code__outtoggle:hover { color: #b4b8c9; }
+.ax-code__chev { transition: transform .15s ease; }
+.ax-code__chev.is-open { transform: rotate(90deg); }
+.ax-code__outbody { margin: 0; padding: 4px 15px 13px; overflow-x: auto; white-space: pre-wrap;
+  font-family: var(--ax-mono, ui-monospace, "SF Mono", Menlo, monospace); font-size: 12px;
+  line-height: 1.5; color: #a7b0c0; background: #1b1b26; }
 
 /* ── in-thread live thinking chain (ThreadActivity) ────────────────── */
 .ax-tact { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
