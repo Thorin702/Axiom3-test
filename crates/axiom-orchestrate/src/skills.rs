@@ -20,7 +20,7 @@ pub const SKILLS: &[Skill] = &[
         card: "# Single-cell RNA-seq (scanpy)\n\
             Install: `pip_install scanpy anndata leidenalg igraph` (and `harmonypy` for batch integration).\n\
             Pipeline (build up in the kernel step by step):\n\
-            1. Load into AnnData (sc.read_csv / read_10x_mtx / read_h5ad); orient cells × genes.\n\
+            1. Load into AnnData (sc.read_csv / read_10x_mtx / read_h5ad); orient cells × genes. If >~2000 cells, SUBSAMPLE FIRST so the pipeline is fast: `adata = adata[np.random.choice(adata.n_obs, 800, replace=False)].copy()`.\n\
             2. QC: sc.pp.calculate_qc_metrics; filter cells (min_genes) and genes (min_cells); threshold pct-mito.\n\
             3. Normalize: sc.pp.normalize_total(target_sum=1e4); sc.pp.log1p.\n\
             4. HVG: sc.pp.highly_variable_genes(n_top_genes=2000); subset.\n\

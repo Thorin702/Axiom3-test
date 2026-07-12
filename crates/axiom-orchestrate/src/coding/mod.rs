@@ -249,6 +249,13 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              Use python to COMPUTE results and figures from real data — never state a number, table, \
              or trend you did not actually compute. In your final answer, describe what the computed \
              results and figures show; the figures themselves are attached automatically.\n\
+             BUDGET RULE — you have a FIXED step budget, shown each turn as [budget] step N of M. \
+             Steps are scarce; get to a FIRST computed figure FAST, then refine. Concretely: prefer \
+             the small/simulated dataset a task offers; if you fetch real data and it does not load \
+             cleanly within ~2 steps, SUBSAMPLE it to the size the task names (e.g. ~800 cells) or \
+             simulate that size, and move on. Spend early steps locating + loading; RESERVE the last \
+             few steps to compute the core result, draw the figure, and finish with {\"final\":…}. \
+             Do not re-run a search, re-read a file, or re-download something you already have.\n\
              STATISTICAL RIGOR — when the analysis involves statistics, hold yourself to: (1) CORRECT \
              for multiple testing (Benjamini-Hochberg / FDR via statsmodels.stats.multitest) whenever \
              you test many hypotheses, and report adjusted p-values; (2) never present an IN-SAMPLE \
@@ -356,6 +363,8 @@ pub async fn run_coding_agent(
     const MAX_MALFORMED: u32 = 3;
     let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
     let mut searched: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup repeated skill searches
+    let mut skill_searched = false; // once true, HARD-block further search_skills until a load_skill (force-commit)
+    let mut seen_reads: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup verbatim read_file/list_dir/glob
     // Snapshot the workspace so we can report the files the agent produces (per-file artifacts).
     let start_files = snapshot_files(sandbox.root());
     for n in 1..=budget.max_steps {
@@ -366,7 +375,19 @@ pub async fn run_coding_agent(
         if cancel.is_cancelled() {
             return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
         }
-        let user = format!("{transcript}\nNext action (one JSON object only):");
+        // Budget meter: the model has no other way to know how many steps remain, so it can't
+        // triage. Show step N/total and, in the final ~20%, an explicit wrap-up order so it stops
+        // exploring and computes the deliverable instead of getting truncated mid-wrangle.
+        let remaining = budget.max_steps.saturating_sub(n - 1);
+        let warn = if remaining <= (budget.max_steps / 5).max(3) {
+            "\n[budget] Few steps left — STOP exploring. Compute the core result/figure NOW and finish with {\"final\":\"…\"} (a native figure block + a short honest paragraph)."
+        } else {
+            ""
+        };
+        let user = format!(
+            "{transcript}\n[budget] step {n} of {} ({remaining} left).{warn}\nNext action (one JSON object only):",
+            budget.max_steps
+        );
         // Model calls over a long transcript occasionally time out or hit a transient provider
         // error; a single such blip should NOT kill a multi-minute analysis run. Retry a few times
         // with a short backoff before giving up (cancellation still wins immediately).
@@ -395,10 +416,25 @@ pub async fn run_coding_agent(
             Some(j) => reply.replacen(j, "", 1).trim().to_string(),
             None => String::new(),
         };
-        // No JSON object at all → the model answered in prose; take that as the final answer.
+        // No JSON object at all → the model may be DONE (prose answer) OR it "thought out loud" and
+        // forgot the action envelope. Don't silently end the run: nudge it (bounded, shares the
+        // malformed budget) to emit one JSON object; only accept the prose as FINAL after the nudge
+        // budget is spent. A strong model that narrates its plan then forgets `{...}` used to kill
+        // the whole run here.
         let action = match &json {
             Some(j) => j.clone(),
-            None => return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) },
+            None => {
+                if malformed < MAX_MALFORMED {
+                    malformed += 1;
+                    transcript.push_str(
+                        "\n[system] I couldn't find a JSON action in your reply. If you're still \
+                         working, respond with EXACTLY ONE JSON object — a tool call, or \
+                         {\"final\":\"…\"} only when the analysis is truly complete (with its figure).\n",
+                    );
+                    continue;
+                }
+                return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
+            }
         };
         // Weaker models routinely emit a valid-INTENT tool call whose JSON is technically
         // invalid — a multi-line `code`/`content`/`new` value with RAW newlines/tabs (JSON forbids
@@ -471,17 +507,25 @@ pub async fn run_coding_agent(
             }
             "read_file" => {
                 let p = arg_str(&v, "path");
-                (p.to_string(), sandbox.read_file(p).unwrap_or_else(|e| format!("ERROR: {e}")))
+                if !seen_reads.insert(format!("read:{p}")) {
+                    (p.to_string(), format!("(already read '{p}' earlier — its contents are in the transcript above; don't re-read, act on it)"))
+                } else {
+                    (p.to_string(), sandbox.read_file(p).unwrap_or_else(|e| format!("ERROR: {e}")))
+                }
             }
             "list_dir" => {
                 let p = arg_str(&v, "path");
-                (p.to_string(), sandbox.list_dir(p).unwrap_or_else(|e| format!("ERROR: {e}")))
+                if !seen_reads.insert(format!("ls:{p}")) {
+                    (p.to_string(), format!("(already listed '{p}' earlier — see the transcript; don't re-list)"))
+                } else {
+                    (p.to_string(), sandbox.list_dir(p).unwrap_or_else(|e| format!("ERROR: {e}")))
+                }
             }
             "write_file" => {
                 let p = arg_str(&v, "path").to_string();
                 let content = arg_str(&v, "content");
                 let obs = match sandbox.write_file(&p, content) {
-                    Ok(()) => format!("wrote {p} ({} bytes)", content.len()),
+                    Ok(()) => { seen_reads.clear(); format!("wrote {p} ({} bytes)", content.len()) } // workspace changed → let reads/lists refresh
                     Err(e) => format!("ERROR: {e}"),
                 };
                 (p, obs)
@@ -491,15 +535,19 @@ pub async fn run_coding_agent(
                 let old = arg_str(&v, "old");
                 let new = arg_str(&v, "new");
                 let obs = match sandbox.edit_file(&p, old, new) {
-                    Ok(()) => format!("edited {p} (1 replacement)"),
+                    Ok(()) => { seen_reads.clear(); format!("edited {p} (1 replacement)") } // re-reading the edited file must work
                     Err(e) => format!("ERROR: {e}"),
                 };
                 (p, obs)
             }
             "glob" => {
                 let pat = arg_str(&v, "pattern").to_string();
-                let obs = sandbox.glob(&pat).unwrap_or_else(|e| format!("ERROR: {e}"));
-                (pat, obs)
+                if !seen_reads.insert(format!("glob:{pat}")) {
+                    (pat.clone(), format!("(already globbed '{pat}' earlier — see the transcript; don't repeat)"))
+                } else {
+                    let obs = sandbox.glob(&pat).unwrap_or_else(|e| format!("ERROR: {e}"));
+                    (pat, obs)
+                }
             }
             "search" => {
                 let q = arg_str(&v, "query").to_string();
@@ -520,14 +568,17 @@ pub async fn run_coding_agent(
             }
             "search_skills" => {
                 let q = arg_str(&v, "query");
-                // Guard against the model re-running the SAME search over and over (observed
-                // burning 4–8 steps): once searched, tell it to stop searching and load a skill.
-                let obs = if !searched.insert(q.to_string()) {
+                // FORCE-COMMIT: after the FIRST search (any query), hard-block every further
+                // search_skills until a load_skill happens — the flagship traces burned 4–10 steps
+                // re-searching (often the identical query). One search is enough to pick a skill.
+                let obs = if skill_searched || !searched.insert(q.to_string()) {
                     format!(
-                        "You already searched '{q}' — the matching skills are in the transcript above. \
-                         Do NOT search again; call load_skill with the skill NAME to proceed."
+                        "You already searched the skill registry — the matching skills are in the \
+                         transcript above. STOP searching; call load_skill with a skill NAME now \
+                         (or, if none fit, proceed without a skill)."
                     )
                 } else {
+                    skill_searched = true;
                     let hits = skills::search(q);
                     if hits.is_empty() {
                         format!("(no skill matched '{q}') Available skills:\n{}\nPick one and call load_skill.", skills::catalogue())
@@ -540,8 +591,16 @@ pub async fn run_coding_agent(
             }
             "load_skill" => {
                 let name = arg_str(&v, "name");
+                skill_searched = false; // committed to a skill — allow a fresh search later if truly needed
                 let obs = match skills::get(name) {
-                    Some(s) => s.card.to_string(),
+                    // Every card carries the same budget discipline: a first figure fast on a small
+                    // slice, then scale — the flagship traces show over-scoping to full real data is
+                    // what stops runs from ever reaching the deliverable.
+                    Some(s) => format!(
+                        "{}\n\nBUDGET RULE: reach a FIRST computed figure on a small/simulated slice within ~6 steps, then scale. \
+                         If real data doesn't load cleanly in ≤2 steps, SUBSAMPLE to the size the task names (or simulate it) and proceed — don't get stuck perfecting the load.",
+                        s.card
+                    ),
                     None => format!("(no skill named '{name}') Available skills:\n{}", skills::catalogue()),
                 };
                 (name.to_string(), obs)
@@ -637,6 +696,7 @@ pub async fn run_coding_agent(
                     // the tight shell `cmd_timeout_s`: a slow-but-finite parse must finish and keep
                     // its loaded state rather than trip a kernel restart that wipes every dataframe.
                     let timeout = Duration::from_secs(budget.cell_timeout_s.max(60));
+                    seen_reads.clear(); // a cell may write output files → let subsequent list/read refresh
                     let obs = match tokio::task::spawn_blocking(move || k.exec(&code, timeout)).await {
                         Ok(Ok(cell)) => {
                             step_figures = cell.figures;
