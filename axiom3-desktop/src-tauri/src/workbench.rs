@@ -2042,6 +2042,18 @@ fn workflow_model_for(provider: &str) -> String {
     .to_string()
 }
 
+/// Prepend a domain skill card to the goal so the agent follows that exact playbook (packages,
+/// pipeline, native figure block, rigor pitfalls) — the real wiring behind the `/技能` picker.
+fn prepend_skill(goal: String, skill: Option<String>) -> String {
+    match skill.as_deref().and_then(axiom_orchestrate::skills::get) {
+        Some(s) => format!(
+            "使用「{}」技能:严格按下面的流程与严谨要求执行(需要的包用 pip_install / conda_install 安装)。\n\n{}\n\n———\n用户任务:\n{goal}",
+            s.name, s.card
+        ),
+        None => goal,
+    }
+}
+
 /// Run a dynamic multi-agent WORKFLOW: a supervisor decomposes the goal into sub-agents,
 /// runs them concurrently against the provider, streams each one's lifecycle on the
 /// `run_event` channel, and folds the outputs. The frontend supplies a fresh `runid` so
@@ -2061,10 +2073,12 @@ pub async fn run_workflow(
     analyze: Option<bool>,
     attachments: Option<Vec<String>>,
     mode: Option<String>,
+    skill: Option<String>,
 ) -> Result<Run, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }
+    let goal = prepend_skill(goal, skill); // /技能 picker: inject the chosen skill card up front
     let _mode = mode.unwrap_or_else(|| "auto".into()); // composer mode; drives thinking/tool routing (see #4 wiring)
     let deep_search = search == Some(true);
     // Resolve provider/connection + model: explicit → primary connection → DeepSeek default.
@@ -2267,7 +2281,9 @@ pub async fn coding_run(
     provider: Option<String>,
     model: Option<String>,
     require_plan_approval: Option<bool>,
+    skill: Option<String>,
 ) -> Result<CodingRunResult, String> {
+    let goal = prepend_skill(goal, skill);
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }

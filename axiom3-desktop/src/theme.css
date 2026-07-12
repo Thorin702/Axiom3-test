@@ -695,6 +695,7 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-home { max-width: 680px; margin: 13vh auto 0; }
 .ax-home__greeting { font-family: var(--ax-serif); font-size: 26px; color: var(--ax-ink); text-align: center; margin: 0; line-height: 1.2; letter-spacing: -0.01em; }
 .ax-home__sub { font-size: 12px; color: var(--ax-ink-faint); text-align: center; margin: 6px auto 18px; white-space: nowrap; }
+.ax-chip--skill { background: var(--ax-accent-soft); border-color: transparent; color: var(--ax-accent); font-weight: 600; }
 .ax-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--ax-line);
   background: var(--ax-surface); border-radius: var(--ax-radius); padding: 6px 12px; cursor: pointer;
   font-family: var(--ax-sans); font-size: 12.5px; color: var(--ax-ink-soft);

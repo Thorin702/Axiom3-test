@@ -169,6 +169,7 @@ function App() {
   const [mode, setMode] = useState<ModeKey>(() => (localStorage.getItem("axiom3.mode") as ModeKey) || "auto");
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [skillMenu, setSkillMenu] = useState(false); // /技能 picker open
+  const [pendingSkill, setPendingSkill] = useState<string | null>(null); // skill key to inject into the next run
   // When a session is forked, the next session created inherits this lineage (then clears).
   const [forkOrigin, setForkOrigin] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>(() => {
@@ -779,8 +780,8 @@ function App() {
       synthesis: string | null;
       review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
-    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode }));
-    if (!appendTo) setCodeAttachments([]);
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode, skill: pendingSkill || undefined }));
+    if (!appendTo) { setCodeAttachments([]); setPendingSkill(null); }
     const steps = r?.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model }));
     setTasks((ts) =>
       ts.map((x) => {
@@ -829,9 +830,10 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string; trace?: AgentStepView[] }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || undefined })
     );
     setCodeAttachments([]);
+    setPendingSkill(null);
     setTasks((ts) =>
       ts.map((x) =>
         x.id === runid
@@ -960,6 +962,7 @@ function App() {
   function pickSkill(s: (typeof SKILLS)[number]) {
     setSkillMenu(false);
     setMode("analysis");
+    setPendingSkill(s.key); // the backend injects this skill's card into the run
     const label = lang === "zh" ? s.zh : s.en;
     setSlash(lang === "zh" ? `用「${label}」技能分析:` : `Analyze with the ${label} skill: `);
   }
@@ -1014,8 +1017,14 @@ function App() {
               rows={3}
               placeholder={t(lang, "composer_ph")}
             />
-            {codeAttachments.length > 0 && (
+            {(codeAttachments.length > 0 || pendingSkill) && (
               <div className="ax-toolrow" style={{ flexWrap: "wrap", padding: "2px 6px 0" }}>
+                {pendingSkill && (
+                  <span className="ax-chip ax-chip--skill" title={lang === "zh" ? "本次运行将使用此技能" : "this skill will guide the run"}>
+                    🧭 {(() => { const s = SKILLS.find((x) => x.key === pendingSkill); return s ? (lang === "zh" ? s.zh : s.en) : pendingSkill; })()}
+                    <button className="ax-chip__x" onClick={() => setPendingSkill(null)} aria-label="remove skill">×</button>
+                  </span>
+                )}
                 {codeAttachments.map((p) => {
                   const name = p.split(/[/\\]/).pop() || p;
                   return (
