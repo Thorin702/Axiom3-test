@@ -129,6 +129,12 @@ impl CodingModel for ProviderModel {
 /// slow bioconda create/install as a DETACHED background job (conda solves are minutes-long), and
 /// pre-wire the env's bin onto the kernel PATH so the binaries resolve once the job finishes.
 /// `__PKGS__` → a python list literal; `__ID__` → the job id.
+// Snapshot / reload picklable kernel globals — used by the checkpoint/restore tools AND by the
+// loop's AUTOMATIC resilience (checkpoint after an expensive cell, restore after a state-wiping
+// kernel reset), so a slow real-data step can no longer cost the whole session its loaded state.
+const CHECKPOINT_CODE: &str = "import pickle as _pk\n_ck = {}\nfor _k, _v in list(globals().items()):\n    if _k.startswith('_'): continue\n    try:\n        _pk.dumps(_v)\n        _ck[_k] = _v\n    except Exception:\n        pass\n_pk.dump(_ck, open('.axiom_ckpt.pkl', 'wb'))\nprint('checkpointed', len(_ck), 'objects:', sorted(_ck.keys()))\n";
+const RESTORE_CODE: &str = "import pickle as _pk, os\nif os.path.exists('.axiom_ckpt.pkl'):\n    _ck = _pk.load(open('.axiom_ckpt.pkl', 'rb'))\n    globals().update(_ck)\n    print('restored', len(_ck), 'objects:', sorted(_ck.keys()))\nelse:\n    print('no checkpoint found (.axiom_ckpt.pkl missing)')\n";
+
 const CONDA_INSTALL: &str = r#"import os, sys, subprocess, platform, tarfile, io, requests
 ROOT = os.path.expanduser('~/.axiom3'); MM = os.path.join(ROOT, 'bin', 'micromamba'); ENV = os.path.join(ROOT, 'bioenv')
 os.makedirs(os.path.join(ROOT, 'bin'), exist_ok=True); os.makedirs('.axiom_jobs', exist_ok=True)
@@ -161,7 +167,7 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
          {\"tool\":\"plan\",\"todos\":[\"[ ] first step\",\"[ ] second step\"]}   (for a multi-step \
          task, list 3-7 TODOs; RE-SEND the whole list each time you update it, marking finished items \
          [x], so the plan stays current)\n\
-         {\"tool\":\"read_file\",\"path\":\"<relative path>\"}\n\
+         {\"tool\":\"read_file\",\"path\":\"<relative path>\"}   (or {\"paths\":[\"a\",\"b\"]} to read several in ONE step)\n\
          {\"tool\":\"list_dir\",\"path\":\"<relative path>\"}\n\
          {\"tool\":\"glob\",\"pattern\":\"<glob, e.g. src/**/*.rs>\"}   (find files by name/pattern)\n\
          {\"tool\":\"search\",\"query\":\"<text to grep for>\"}\n",
@@ -364,7 +370,8 @@ pub async fn run_coding_agent(
     let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
     let mut searched: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup repeated skill searches
     let mut skill_searched = false; // once true, HARD-block further search_skills until a load_skill (force-commit)
-    let mut seen_reads: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup verbatim read_file/list_dir/glob
+    let mut fig_seen: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup identical figures (re-run plots)
+    let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     // Snapshot the workspace so we can report the files the agent produces (per-file artifacts).
     let start_files = snapshot_files(sandbox.root());
     for n in 1..=budget.max_steps {
@@ -384,8 +391,12 @@ pub async fn run_coding_agent(
         } else {
             ""
         };
+        // Compact the context so input tokens don't grow ~quadratically over a long run (the
+        // full transcript was re-sent verbatim every turn — the bloat that timed out flagship 03).
+        // Keep the GOAL header + the most recent steps; elide the middle.
+        let ctx = compact_transcript(&transcript, 26_000);
         let user = format!(
-            "{transcript}\n[budget] step {n} of {} ({remaining} left).{warn}\nNext action (one JSON object only):",
+            "{ctx}\n[budget] step {n} of {} ({remaining} left).{warn}\nNext action (one JSON object only):",
             budget.max_steps
         );
         // Model calls over a long transcript occasionally time out or hit a transient provider
@@ -506,26 +517,35 @@ pub async fn run_coding_agent(
                 (detail, if rendered.is_empty() { "(empty plan)".to_string() } else { rendered })
             }
             "read_file" => {
-                let p = arg_str(&v, "path");
-                if !seen_reads.insert(format!("read:{p}")) {
-                    (p.to_string(), format!("(already read '{p}' earlier — its contents are in the transcript above; don't re-read, act on it)"))
+                // Accept `{"paths":[…]}` to read several files in ONE step (or the single `path`).
+                let mut paths: Vec<String> = v.get("paths").and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                    .unwrap_or_default();
+                if paths.is_empty() {
+                    let p = arg_str(&v, "path");
+                    if !p.is_empty() { paths.push(p.to_string()); }
+                }
+                if paths.is_empty() {
+                    ("read_file".to_string(), "ERROR: read_file needs a `path` (or a non-empty `paths` array)".to_string())
+                } else if paths.len() > 1 {
+                    let obs = paths.iter()
+                        .map(|p| format!("=== {p} ===\n{}", sandbox.read_file(p).unwrap_or_else(|e| format!("ERROR: {e}"))))
+                        .collect::<Vec<_>>().join("\n\n");
+                    (paths.join(", "), obs)
                 } else {
-                    (p.to_string(), sandbox.read_file(p).unwrap_or_else(|e| format!("ERROR: {e}")))
+                    let p = &paths[0];
+                    (p.clone(), sandbox.read_file(p).unwrap_or_else(|e| format!("ERROR: {e}")))
                 }
             }
             "list_dir" => {
                 let p = arg_str(&v, "path");
-                if !seen_reads.insert(format!("ls:{p}")) {
-                    (p.to_string(), format!("(already listed '{p}' earlier — see the transcript; don't re-list)"))
-                } else {
-                    (p.to_string(), sandbox.list_dir(p).unwrap_or_else(|e| format!("ERROR: {e}")))
-                }
+                (p.to_string(), sandbox.list_dir(p).unwrap_or_else(|e| format!("ERROR: {e}")))
             }
             "write_file" => {
                 let p = arg_str(&v, "path").to_string();
                 let content = arg_str(&v, "content");
                 let obs = match sandbox.write_file(&p, content) {
-                    Ok(()) => { seen_reads.clear(); format!("wrote {p} ({} bytes)", content.len()) } // workspace changed → let reads/lists refresh
+                    Ok(()) => format!("wrote {p} ({} bytes)", content.len()),
                     Err(e) => format!("ERROR: {e}"),
                 };
                 (p, obs)
@@ -535,19 +555,17 @@ pub async fn run_coding_agent(
                 let old = arg_str(&v, "old");
                 let new = arg_str(&v, "new");
                 let obs = match sandbox.edit_file(&p, old, new) {
-                    Ok(()) => { seen_reads.clear(); format!("edited {p} (1 replacement)") } // re-reading the edited file must work
-                    Err(e) => format!("ERROR: {e}"),
+                    Ok(()) => format!("edited {p} (1 replacement)"),
+                    // Recovery hint instead of a bare error: the classic thrash is resending a
+                    // slightly-different `new` — the real fix is to re-read and widen `old`.
+                    Err(e) => format!("ERROR: {e}\n[hint] `old` must match EXACTLY ONE place in the file. Re-read the file, then copy a longer unique `old` snippet — don't just resend a different `new`."),
                 };
                 (p, obs)
             }
             "glob" => {
                 let pat = arg_str(&v, "pattern").to_string();
-                if !seen_reads.insert(format!("glob:{pat}")) {
-                    (pat.clone(), format!("(already globbed '{pat}' earlier — see the transcript; don't repeat)"))
-                } else {
-                    let obs = sandbox.glob(&pat).unwrap_or_else(|e| format!("ERROR: {e}"));
-                    (pat, obs)
-                }
+                let obs = sandbox.glob(&pat).unwrap_or_else(|e| format!("ERROR: {e}"));
+                (pat, obs)
             }
             "search" => {
                 let q = arg_str(&v, "query").to_string();
@@ -692,11 +710,10 @@ pub async fn run_coding_agent(
                     let code = arg_str(&v, "code").to_string();
                     let label: String = code.lines().next().unwrap_or("").chars().take(60).collect();
                     let k = k.clone();
-                    // Blocking kernel call off the async worker. Use the generous CELL timeout, NOT
-                    // the tight shell `cmd_timeout_s`: a slow-but-finite parse must finish and keep
-                    // its loaded state rather than trip a kernel restart that wipes every dataframe.
+                    // Blocking kernel call off the async worker. Use the generous CELL timeout (NOT
+                    // the tight shell `cmd_timeout_s`) so a slow-but-finite parse finishes and keeps
+                    // its loaded state instead of tripping a kernel restart that wipes every dataframe.
                     let timeout = Duration::from_secs(budget.cell_timeout_s.max(60));
-                    seen_reads.clear(); // a cell may write output files → let subsequent list/read refresh
                     let obs = match tokio::task::spawn_blocking(move || k.exec(&code, timeout)).await {
                         Ok(Ok(cell)) => {
                             step_figures = cell.figures;
@@ -801,7 +818,7 @@ pub async fn run_coding_agent(
                 // Snapshot the kernel's picklable globals to disk, so a later restart (or crash) can
                 // reload them with `restore` instead of losing all in-memory state.
                 Some(k) => {
-                    let code = "import pickle as _pk\n_ck = {}\nfor _k, _v in list(globals().items()):\n    if _k.startswith('_'): continue\n    try:\n        _pk.dumps(_v)\n        _ck[_k] = _v\n    except Exception:\n        pass\n_pk.dump(_ck, open('.axiom_ckpt.pkl', 'wb'))\nprint('checkpointed', len(_ck), 'objects:', sorted(_ck.keys()))\n";
+                    let code = CHECKPOINT_CODE;
                     let k = k.clone();
                     let obs = match tokio::task::spawn_blocking(move || k.exec(code, Duration::from_secs(60))).await {
                         Ok(Ok(cell)) => { let mut o = cell.stdout; if let Some(e) = cell.error { o.push_str(&e); } o }
@@ -814,7 +831,7 @@ pub async fn run_coding_agent(
             },
             "restore" => match &kernel {
                 Some(k) => {
-                    let code = "import pickle as _pk, os\nif os.path.exists('.axiom_ckpt.pkl'):\n    _ck = _pk.load(open('.axiom_ckpt.pkl', 'rb'))\n    globals().update(_ck)\n    print('restored', len(_ck), 'objects:', sorted(_ck.keys()))\nelse:\n    print('no checkpoint found (.axiom_ckpt.pkl missing)')\n";
+                    let code = RESTORE_CODE;
                     let k = k.clone();
                     let obs = match tokio::task::spawn_blocking(move || k.exec(code, Duration::from_secs(60))).await {
                         Ok(Ok(cell)) => { let mut o = cell.stdout; if let Some(e) = cell.error { o.push_str(&e); } o }
@@ -878,8 +895,27 @@ pub async fn run_coding_agent(
             }
             other => (other.to_string(), format!("ERROR: unknown tool '{other}'")),
         };
+        // Figure dedup: re-running a plot cell (common while tuning) would append duplicate PNGs to
+        // the report — keep only figures we haven't already captured this run.
+        step_figures.retain(|f| fig_seen.insert(f.clone()));
         all_figures.extend(step_figures.iter().cloned());
-        let obs = truncate(&observation, 4000);
+        // Error memory: if this observation repeats a failure we saw recently (same signature — the
+        // exception line), flag it so the model changes approach instead of blindly retrying (the
+        // flagship hit the identical UnicodeDecodeError 3×). Decide BEFORE truncating, and append the
+        // nudge AFTER truncation so it can't be cut off the end of a long traceback.
+        let repeat_err = match error_signature(&observation) {
+            Some(sig) => {
+                let rep = recent_errs.iter().any(|s| *s == sig);
+                recent_errs.push(sig);
+                if recent_errs.len() > 4 { recent_errs.remove(0); }
+                rep
+            }
+            None => false,
+        };
+        let mut obs = truncate(&observation, 4000);
+        if repeat_err {
+            obs.push_str("\n[repeat] This is the SAME error you already hit — do NOT resend a near-identical call. Fix the actual cause (encoding, path, query field, dtype) or take a different route.");
+        }
         // The full tool input, for the execution log (detail is only a short label).
         let input = match tool.as_str() {
             "python" => arg_str(&v, "code").to_string(),
@@ -1028,6 +1064,40 @@ fn collect_artifacts(root: &Path, start: &HashMap<String, u64>) -> Vec<ArtifactF
 
 fn arg_str<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(|x| x.as_str()).unwrap_or("")
+}
+
+/// Bound the context re-sent to the model each turn: if the transcript is longer than
+/// `budget_chars`, keep the GOAL header + the most RECENT chars and elide the middle. char-based
+/// (never splits a UTF-8 codepoint). Recent steps carry the live state the model needs next; the
+/// deep middle is rarely load-bearing, and the final artifact is built from the real trace anyway.
+fn compact_transcript(t: &str, budget_chars: usize) -> String {
+    let total = t.chars().count();
+    if total <= budget_chars {
+        return t.to_string();
+    }
+    // Keep a generous head so the FULL goal (and usually the first plan) survives verbatim, plus a
+    // large recent tail; only the deep middle is elided.
+    let head_n = 2200usize.min(budget_chars / 3);
+    let tail_n = budget_chars.saturating_sub(head_n);
+    let head: String = t.chars().take(head_n).collect();
+    let tail: String = t.chars().skip(total.saturating_sub(tail_n)).collect();
+    format!(
+        "{head}\n\n[... {} earlier characters elided to stay within context — the goal above and the recent steps below are kept verbatim ...]\n{tail}",
+        total.saturating_sub(head_n + tail_n)
+    )
+}
+
+/// If `obs` reads as an error, return a stable signature (the Python exception line, e.g.
+/// `UnicodeDecodeError: …`, else the first line) so the loop can detect the SAME failure recurring.
+/// None when it isn't an error.
+fn error_signature(obs: &str) -> Option<String> {
+    let is_err = obs.starts_with("ERROR") || obs.contains("Traceback (most recent call last)");
+    if !is_err {
+        return None;
+    }
+    // The last "Error:" line in a traceback is the actual exception — the most specific signature.
+    let line = obs.lines().rev().find(|l| l.contains("Error:")).or_else(|| obs.lines().next());
+    line.map(|l| l.trim().chars().take(80).collect())
 }
 
 fn truncate(s: &str, n: usize) -> String {
