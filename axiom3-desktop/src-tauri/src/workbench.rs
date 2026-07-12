@@ -2447,7 +2447,13 @@ pub async fn coding_run(
     });
 
     let model = ProviderModel { provider: provider.clone(), model: model_id, timeout_s: 90 };
-    let budget = CodingBudget::default();
+    // Analysis runs (real data download + a full domain pipeline + figures) need more headroom
+    // than a read-only code task; give the analyze path a larger step budget.
+    let budget = if analyze.unwrap_or(false) {
+        CodingBudget { max_steps: 40, per_call_timeout_s: 120, cmd_timeout_s: 120 }
+    } else {
+        CodingBudget::default()
+    };
     let mut trace: Vec<CodingStepOut> = Vec::new(); // auditable execution log
     let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &pause, &budget, kernel, |step| {
         let think: String = step.reasoning.chars().take(600).collect();

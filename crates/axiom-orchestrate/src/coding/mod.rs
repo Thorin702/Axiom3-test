@@ -314,6 +314,7 @@ pub async fn run_coding_agent(
     let mut malformed = 0u32; // consecutive un-parseable JSON envelopes (bounded retry, not a fatal "done")
     const MAX_MALFORMED: u32 = 3;
     let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
+    let mut searched: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup repeated skill searches
     // Snapshot the workspace so we can report the files the agent produces (per-file artifacts).
     let start_files = snapshot_files(sandbox.root());
     for n in 1..=budget.max_steps {
@@ -325,9 +326,27 @@ pub async fn run_coding_agent(
             return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
         }
         let user = format!("{transcript}\nNext action (one JSON object only):");
-        let reply = match model.complete(&sys, &user, cancel).await {
-            Ok(r) => r,
-            Err(e) => return CodingResult { status: "failed".into(), summary: format!("model error: {e}"), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) },
+        // Model calls over a long transcript occasionally time out or hit a transient provider
+        // error; a single such blip should NOT kill a multi-minute analysis run. Retry a few times
+        // with a short backoff before giving up (cancellation still wins immediately).
+        let reply = {
+            let mut attempt = 0u32;
+            loop {
+                match model.complete(&sys, &user, cancel).await {
+                    Ok(r) => break r,
+                    Err(e) => {
+                        attempt += 1;
+                        if attempt > 3 || cancel.is_cancelled() {
+                            return CodingResult { status: "failed".into(), summary: format!("model error after {attempt} attempts: {e}"), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
+                        }
+                        // brief backoff, but bail out fast if cancelled during the wait
+                        for _ in 0..(attempt * 5) {
+                            if cancel.is_cancelled() { break; }
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                        }
+                    }
+                }
+            }
         };
         let json = extract_json(&reply);
         // The model's reasoning = its reply minus the JSON action it chose this turn.
@@ -460,12 +479,21 @@ pub async fn run_coding_agent(
             }
             "search_skills" => {
                 let q = arg_str(&v, "query");
-                let hits = skills::search(q);
-                let obs = if hits.is_empty() {
-                    format!("(no skill matched '{q}') Available skills:\n{}", skills::catalogue())
+                // Guard against the model re-running the SAME search over and over (observed
+                // burning 4–8 steps): once searched, tell it to stop searching and load a skill.
+                let obs = if !searched.insert(q.to_string()) {
+                    format!(
+                        "You already searched '{q}' — the matching skills are in the transcript above. \
+                         Do NOT search again; call load_skill with the skill NAME to proceed."
+                    )
                 } else {
-                    let list = hits.iter().map(|s| format!("- {} — {}", s.name, s.summary)).collect::<Vec<_>>().join("\n");
-                    format!("{list}\n\nLoad one with load_skill.")
+                    let hits = skills::search(q);
+                    if hits.is_empty() {
+                        format!("(no skill matched '{q}') Available skills:\n{}\nPick one and call load_skill.", skills::catalogue())
+                    } else {
+                        let list = hits.iter().map(|s| format!("- {} — {}", s.name, s.summary)).collect::<Vec<_>>().join("\n");
+                        format!("{list}\n\nNow call load_skill with one of these NAMES (do not search again).")
+                    }
                 };
                 (q.to_string(), obs)
             }
