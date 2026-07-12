@@ -788,10 +788,10 @@ function App() {
     const paths = Array.isArray(sel) ? sel : typeof sel === "string" ? [sel] : [];
     if (paths.length) setCodeAttachments((a) => [...new Set([...a, ...paths])]);
   }
-  async function runCoding(goal: string) {
+  async function runCoding(goal: string, forceAnalyze = false) {
     const g = goal.trim();
     if (!g) return;
-    const doAnalyze = codeAnalyze || cmd === "analyze";
+    const doAnalyze = forceAnalyze || codeAnalyze || cmd === "analyze";
     if (!codeWs && !doAnalyze) return; // code mode needs a folder; analyze can use a scratch dir
     const runid = `run-${crypto.randomUUID()}`;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
@@ -949,9 +949,13 @@ function App() {
     const at = tasks.find((x) => x.id === activeId);
     if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → iterate the artifact (v2…)
     else if (at?.type === "code" && (codeWs || codeAnalyze)) runCoding(text);
-    // Route by composer mode: 研究 / 分析 (and attachments) go to the multi-agent + kernel run;
-    // 自动 with plain prose runs a grounded check/answer (the backend still escalates as needed).
-    else if (mode === "research" || mode === "analysis" || codeAttachments.length > 0) runWorkflow(text);
+    // 分析 = CODE-FIRST: a single agent starts a real Python kernel, runs the data, and the
+    // artifact IS the computed result (volcano/tables from actual numbers) — same shape as
+    // Claude Science. Previously 分析 went to the multi-agent TEXT workflow, which could
+    // synthesize plausible-but-uncomputed results (the reviewer then flagged them); code-first
+    // grounds every number in a real run instead. 研究 stays multi-agent (search + review).
+    else if (mode === "analysis") runCoding(text, true);
+    else if (mode === "research" || codeAttachments.length > 0) runWorkflow(text);
     else runCheckDraft(text);
     return true;
   }

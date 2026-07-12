@@ -1619,6 +1619,55 @@ fn ca_bundle() -> Option<&'static str> {
     None
 }
 
+/// Ensure the managed venv exists AND has the scientific stack seeded (numpy/pandas/scipy/
+/// matplotlib/statsmodels/scikit-learn/requests), returning the venv python. Idempotent:
+/// once the `.sci_ready` marker matches the current revision this is a cheap no-op check.
+/// BLOCKING (runs pip) — call from `spawn_blocking`. This is what makes the analysis agent's
+/// prompt ("numpy/pandas … are already installed") TRUE on a clean install; previously the
+/// analyze path started a BARE venv (ensure_kernel_env only), `kernel_prepare` had no caller,
+/// and the agent had to self-recover via the pip_install tool at run time (or fabricate).
+fn seed_sci_stack(base: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let py = ensure_kernel_env(base)?;
+    if sci_ready(base) {
+        return Ok(py); // fast path: already seeded at the current revision
+    }
+    // Serialize seeding so two concurrent analysis runs don't run pip on the same venv at once.
+    static SCI_SEED: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _seed = SCI_SEED.lock().unwrap_or_else(|p| p.into_inner());
+    if sci_ready(base) {
+        return Ok(py); // another caller finished while we waited on the lock
+    }
+    let cert = ca_bundle();
+    let pip = |args: &[&str]| -> Result<(), String> {
+        let mut cmd = std::process::Command::new(&py);
+        cmd.args(["-m", "pip"]).args(args);
+        // Only set a trust store if the environment hasn't already; the python.org macOS
+        // build otherwise fails HTTPS to PyPI (CERTIFICATE_VERIFY_FAILED).
+        if std::env::var_os("SSL_CERT_FILE").is_none() {
+            if let Some(c) = cert {
+                cmd.env("SSL_CERT_FILE", c);
+            }
+        }
+        let out = cmd
+            .output()
+            .map_err(|e| format!("pip 无法启动 · pip failed to spawn: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).into_owned())
+        }
+    };
+    pip(&["install", "--upgrade", "pip", "--quiet", "--disable-pip-version-check"])?;
+    // Seed the standard analysis stack in one resolve so shared deps (scipy underpins
+    // statsmodels and scikit-learn) are pinned consistently.
+    pip(&[
+        "install", "--quiet", "--disable-pip-version-check",
+        "numpy", "pandas", "scipy", "matplotlib", "statsmodels", "scikit-learn", "requests",
+    ])?;
+    std::fs::write(base.join("notebook").join(".venv").join(".sci_ready"), SCI_MARKER_REV).ok();
+    Ok(py)
+}
+
 /// Run one notebook cell on the live Python kernel (started lazily). State persists across
 /// cells. Returns stdout + the last expression's repr + any matplotlib figures (base64 PNG).
 #[tauri::command]
@@ -1668,36 +1717,7 @@ pub fn kernel_reset(state: tauri::State<'_, AppState>) {
 pub async fn kernel_prepare(app: tauri::AppHandle) -> Result<String, String> {
     let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
     tauri::async_runtime::spawn_blocking(move || {
-        let py = ensure_kernel_env(&base)?;
-        let cert = ca_bundle();
-        let pip = |args: &[&str]| -> Result<(), String> {
-            let mut cmd = std::process::Command::new(&py);
-            cmd.args(["-m", "pip"]).args(args);
-            // Only set a trust store if the environment hasn't already; the python.org
-            // macOS build otherwise fails HTTPS to PyPI (CERTIFICATE_VERIFY_FAILED).
-            if std::env::var_os("SSL_CERT_FILE").is_none() {
-                if let Some(c) = cert {
-                    cmd.env("SSL_CERT_FILE", c);
-                }
-            }
-            let out = cmd
-                .output()
-                .map_err(|e| format!("pip 无法启动 · pip failed to spawn: {e}"))?;
-            if out.status.success() {
-                Ok(())
-            } else {
-                Err(String::from_utf8_lossy(&out.stderr).into_owned())
-            }
-        };
-        pip(&["install", "--upgrade", "pip", "--quiet", "--disable-pip-version-check"])?;
-        // Seed the standard analysis stack in one resolve so shared deps (scipy underpins
-        // statsmodels and scikit-learn) are pinned consistently. The agent relies on these
-        // being present — it cannot install packages itself at run time.
-        pip(&[
-            "install", "--quiet", "--disable-pip-version-check",
-            "numpy", "pandas", "scipy", "matplotlib", "statsmodels", "scikit-learn", "requests",
-        ])?;
-        std::fs::write(base.join("notebook").join(".venv").join(".sci_ready"), SCI_MARKER_REV).ok();
+        seed_sci_stack(&base)?;
         Ok::<String, String>(
             "科学环境已就绪 · numpy · pandas · scipy · matplotlib · statsmodels · scikit-learn · requests".into(),
         )
@@ -2205,7 +2225,11 @@ async fn compute_figures_for_report(
             }
         }
     }
-    let py = ensure_kernel_env(&base)?;
+    // Seed the scientific stack before the compute kernel starts (same rationale as coding_run).
+    let base_seed = base.clone();
+    let py = tauri::async_runtime::spawn_blocking(move || seed_sci_stack(&base_seed))
+        .await
+        .map_err(|e| e.to_string())??;
     let kernel = Arc::new(PyKernel::start(&py.to_string_lossy(), sandbox.root()).map_err(|e| e.to_string())?);
     let data_note = if names.is_empty() {
         String::new()
@@ -2373,7 +2397,12 @@ pub async fn coding_run(
     // run keeps it isolated from the user's notebook.
     let kernel = if analyze.unwrap_or(false) {
         let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
-        let py = ensure_kernel_env(&base)?;
+        // Seed the scientific stack into the managed venv BEFORE starting the kernel — the
+        // agent's prompt promises numpy/pandas/… are installed and it cannot pip-install under
+        // the sandbox allowlist. Idempotent + fast once seeded; blocking pip → spawn_blocking.
+        let py = tauri::async_runtime::spawn_blocking(move || seed_sci_stack(&base))
+            .await
+            .map_err(|e| e.to_string())??;
         Some(Arc::new(PyKernel::start(&py.to_string_lossy(), sandbox.root()).map_err(|e| e.to_string())?))
     } else {
         None
