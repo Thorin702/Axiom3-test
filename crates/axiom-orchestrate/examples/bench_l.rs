@@ -30,7 +30,7 @@ async fn main() {
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("kernel"));
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 150 };
-    let budget = CodingBudget { max_steps: 18, per_call_timeout_s: 150, cmd_timeout_s: 120 };
+    let budget = CodingBudget { max_steps: 18, per_call_timeout_s: 150, cmd_timeout_s: 120, cell_timeout_s: 600 };
 
     println!("=== #2 验证:skills 注册表 (model={model_id}) ===");
     let (mut searched, mut loaded, mut loaded_name) = (false, false, String::new());

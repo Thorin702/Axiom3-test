@@ -21,7 +21,7 @@ async fn main() {
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("kernel"));
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 150 };
-    let budget = CodingBudget { max_steps: 14, per_call_timeout_s: 150, cmd_timeout_s: 120 };
+    let budget = CodingBudget { max_steps: 14, per_call_timeout_s: 150, cmd_timeout_s: 120, cell_timeout_s: 600 };
 
     println!("=== P0#3 验证:kernel 联网取真实数据 (model={model_id}) ===");
     let res = run_coding_agent(

@@ -39,7 +39,7 @@ async fn main() {
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("kernel"));
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 120 };
-    let budget = CodingBudget { max_steps: 16, per_call_timeout_s: 120, cmd_timeout_s: 90 };
+    let budget = CodingBudget { max_steps: 16, per_call_timeout_s: 120, cmd_timeout_s: 90, cell_timeout_s: 600 };
 
     println!("=== P0#1 验证:未点名下的领域块选择 (model={model_id}) ===");
     let res = run_coding_agent(

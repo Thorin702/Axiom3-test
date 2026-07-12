@@ -44,7 +44,7 @@ async fn main() {
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let sb = Sandbox::with_mode(&dir, SandboxMode::ReadWrite).unwrap();
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 120 };
-    let budget = CodingBudget { max_steps: 22, per_call_timeout_s: 120, cmd_timeout_s: 40 };
+    let budget = CodingBudget { max_steps: 22, per_call_timeout_s: 120, cmd_timeout_s: 40, cell_timeout_s: 600 };
 
     println!("=== 场景B 多文件代码库 (model={model_id}) on {} ===", dir.display());
     let (mut plan, mut edit, mut glob, mut search, mut edits) = (false, false, false, false, 0);

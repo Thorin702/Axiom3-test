@@ -24,11 +24,18 @@ use std::time::Duration;
 pub struct CodingBudget {
     pub max_steps: u32,
     pub per_call_timeout_s: u64,
+    /// Timeout for a SHELL command (`run`) — kept tight; a hung shell should die fast.
     pub cmd_timeout_s: u64,
+    /// Timeout for a PYTHON KERNEL cell. Distinct from `cmd_timeout_s` and much more generous:
+    /// a slow-but-finite analysis cell (e.g. parsing a 126MB dirty dataframe) must be allowed to
+    /// FINISH and keep its state, not be killed at a tight bound — a kernel restart wipes every
+    /// loaded dataframe/import and forces the agent to redo work. Only a truly wedged cell should
+    /// ever hit this.
+    pub cell_timeout_s: u64,
 }
 impl Default for CodingBudget {
     fn default() -> Self {
-        Self { max_steps: 24, per_call_timeout_s: 90, cmd_timeout_s: 45 }
+        Self { max_steps: 24, per_call_timeout_s: 90, cmd_timeout_s: 45, cell_timeout_s: 600 }
     }
 }
 
@@ -201,7 +208,9 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              urllib, or pandas.read_csv(url) — e.g. from GEO, UniProt, Ensembl, or a raw GitHub URL. \
              When you fetch real data, INSPECT it before parsing (peek at the first lines/columns) and \
              handle messy reality — wrong encodings (fall back to latin-1), extra header rows, trailing \
-             delimiters that shift columns.)\n\
+             delimiters that shift columns. For a LARGE or dirty file, sniff the shape on a small slice \
+             first (nrows=/usecols=/chunksize=) to get the parse right in ONE pass, then load the full \
+             frame and immediately `checkpoint` — so a later slow step can never cost you the load.)\n\
              {\"tool\":\"pip_install\",\"packages\":[\"biopython\",\"dendropy\"]}   (install more Python \
              packages ON DEMAND into this kernel — pip, so pure-Python / wheels work: biopython, \
              dendropy, scikit-bio, umap-learn, statsmodels extras, etc. They become importable in the \
@@ -592,8 +601,10 @@ pub async fn run_coding_agent(
                     let code = arg_str(&v, "code").to_string();
                     let label: String = code.lines().next().unwrap_or("").chars().take(60).collect();
                     let k = k.clone();
-                    // Blocking kernel call off the async worker; generous timeout for analysis.
-                    let timeout = Duration::from_secs(budget.cmd_timeout_s.max(60));
+                    // Blocking kernel call off the async worker. Use the generous CELL timeout, NOT
+                    // the tight shell `cmd_timeout_s`: a slow-but-finite parse must finish and keep
+                    // its loaded state rather than trip a kernel restart that wipes every dataframe.
+                    let timeout = Duration::from_secs(budget.cell_timeout_s.max(60));
                     let obs = match tokio::task::spawn_blocking(move || k.exec(&code, timeout)).await {
                         Ok(Ok(cell)) => {
                             step_figures = cell.figures;

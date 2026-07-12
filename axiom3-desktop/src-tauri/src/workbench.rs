@@ -2506,7 +2506,7 @@ pub async fn coding_run(
     // Analysis runs (real data download + a full domain pipeline + figures) need more headroom
     // than a read-only code task; give the analyze path a larger step budget.
     let budget = if analyze.unwrap_or(false) {
-        CodingBudget { max_steps: 40, per_call_timeout_s: 120, cmd_timeout_s: 120 }
+        CodingBudget { max_steps: 40, per_call_timeout_s: 120, cmd_timeout_s: 120, cell_timeout_s: 600 }
     } else {
         CodingBudget::default()
     };

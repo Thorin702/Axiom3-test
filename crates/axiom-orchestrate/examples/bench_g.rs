@@ -30,7 +30,7 @@ async fn main() {
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("kernel"));
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 180 };
-    let budget = CodingBudget { max_steps: 14, per_call_timeout_s: 180, cmd_timeout_s: 300 };
+    let budget = CodingBudget { max_steps: 14, per_call_timeout_s: 180, cmd_timeout_s: 300, cell_timeout_s: 600 };
 
     println!("=== P1 验证:pip_install 按需装领域库 (model={model_id}) ===");
     let mut used_pip = false;

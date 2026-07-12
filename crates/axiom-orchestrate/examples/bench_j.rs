@@ -21,7 +21,7 @@ async fn main() {
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("kernel"));
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 120 };
-    let budget = CodingBudget { max_steps: 16, per_call_timeout_s: 120, cmd_timeout_s: 60 };
+    let budget = CodingBudget { max_steps: 16, per_call_timeout_s: 120, cmd_timeout_s: 60, cell_timeout_s: 600 };
 
     println!("=== P2 验证:后台作业 job_start/job_status (model={model_id}) ===");
     let (mut started, mut saw_done) = (false, false);

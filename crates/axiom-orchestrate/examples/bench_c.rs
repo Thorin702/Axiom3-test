@@ -34,7 +34,7 @@ async fn main() {
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("kernel"));
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 150 };
-    let budget = CodingBudget { max_steps: 24, per_call_timeout_s: 150, cmd_timeout_s: 90 };
+    let budget = CodingBudget { max_steps: 24, per_call_timeout_s: 150, cmd_timeout_s: 90, cell_timeout_s: 600 };
 
     println!("=== 场景C 组学差异表达 (model={model_id}) ===");
     let (mut plan, mut py_steps) = (false, 0);

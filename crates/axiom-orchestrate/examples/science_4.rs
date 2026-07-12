@@ -120,7 +120,7 @@ async fn main() {
         let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 120 };
         // Post-optimization budget: matches the app's analyze path (40 steps) so a re-run is
         // representative of what "分析" mode now does after the search-dedup + budget fixes.
-        let budget = CodingBudget { max_steps: 40, per_call_timeout_s: 120, cmd_timeout_s: 180 };
+        let budget = CodingBudget { max_steps: 40, per_call_timeout_s: 120, cmd_timeout_s: 180, cell_timeout_s: 600 };
         let steps: Arc<Mutex<Vec<StepOut>>> = Arc::new(Mutex::new(Vec::new()));
         let steps_cb = steps.clone();
         let res = run_coding_agent(

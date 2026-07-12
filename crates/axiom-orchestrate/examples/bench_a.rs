@@ -34,7 +34,7 @@ async fn main() {
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("kernel"));
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 120 };
-    let budget = CodingBudget { max_steps: 20, per_call_timeout_s: 120, cmd_timeout_s: 90 };
+    let budget = CodingBudget { max_steps: 20, per_call_timeout_s: 120, cmd_timeout_s: 90, cell_timeout_s: 600 };
 
     println!("=== 场景A 端到端数据分析 (model={model_id}) ===");
     let (mut used_plan, mut used_edit, mut py_steps) = (false, false, 0);

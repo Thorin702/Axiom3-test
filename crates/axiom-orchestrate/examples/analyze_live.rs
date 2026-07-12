@@ -33,7 +33,7 @@ async fn main() {
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("start kernel"));
     let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
     let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 90 };
-    let budget = CodingBudget { max_steps: 12, per_call_timeout_s: 90, cmd_timeout_s: 60 };
+    let budget = CodingBudget { max_steps: 12, per_call_timeout_s: 90, cmd_timeout_s: 60, cell_timeout_s: 600 };
 
     println!("=== analysis agent (model={model_id}) ===");
     let res = run_coding_agent(
