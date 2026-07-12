@@ -20,6 +20,11 @@ pub enum RunEventBody {
     PhaseChanged { phase: String, index: usize, total: usize },
     AgentSpawned { agent_id: String, role: String, model: String, vendor: String, phase: String },
     AgentProgress { agent_id: String, step: u32, tokens_in: u64, tokens_out: u64, note: Option<String> },
+    /// A fully-structured step for a rich, live thinking chain: the step's title, the agent's
+    /// reasoning narration, and the markdown `output` body (which for a code step contains the
+    /// VERBATIM code it ran + the result). Streamed alongside `AgentProgress` so the frontend
+    /// can render the actual code live, not just a short note. Mirrors `CodingStepOut`.
+    AgentStep { agent_id: String, step: u32, role: String, status: String, title: String, reasoning: String, output: String, lines: usize },
     AgentFinished { agent_id: String, outcome: String, tokens_in: u64, tokens_out: u64, error: Option<String>, summary: Option<String> },
     RunProgress { agents_done: usize, agents_total: usize, agents_running: usize, agents_queued: usize },
     RunFinished { status: String, agents_total: usize, agents_ok: usize, agents_err: usize, error: Option<String> },

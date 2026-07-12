@@ -4,7 +4,7 @@
 // carrying its own rigor. Scoped to workflow / coding sessions (the generated artifacts);
 // draft-check sessions keep their claim-by-claim flow in the thread.
 import { useEffect, useRef, useState } from "react";
-import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Check, Maximize2, Minimize2 } from "lucide-react";
+import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Check, Maximize2, Minimize2, Palette } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
@@ -15,6 +15,16 @@ import { buildReportHtml } from "../lib/exportReport";
 
 type Tab = "artifact" | "messages" | "review" | "provenance";
 
+// Mainstream plotting libraries the analysis agent can redraw with. matplotlib + seaborn are
+// pre-seeded; the others the agent pip-installs on demand and exports to PNG.
+const PLOT_TOOLS: { k: string; label: string; zh: string; en: string }[] = [
+  { k: "matplotlib", label: "Matplotlib", zh: "默认 · 稳定", en: "default · stable" },
+  { k: "seaborn", label: "Seaborn", zh: "统计美化", en: "statistical style" },
+  { k: "plotly", label: "Plotly", zh: "交互风格", en: "interactive style" },
+  { k: "altair", label: "Altair", zh: "声明式", en: "declarative" },
+  { k: "pandas", label: "pandas.plot", zh: "快速", en: "quick" },
+];
+
 export function ArtifactPane({
   lang,
   task,
@@ -22,6 +32,7 @@ export function ArtifactPane({
   onExport,
   onSaveReport,
   onClose,
+  onRedraw,
   expanded,
   onToggleExpand,
   busy,
@@ -32,6 +43,7 @@ export function ArtifactPane({
   onExport: () => void;
   onSaveReport?: (html: string, defaultName: string) => void;
   onClose: () => void;
+  onRedraw?: (tool: string) => void; // re-run the analysis, drawing figures with a chosen library
   expanded?: boolean;
   onToggleExpand?: () => void;
   busy?: boolean;
@@ -81,6 +93,7 @@ export function ArtifactPane({
   ];
 
   const [tab, setTab] = useState<Tab>("artifact");
+  const [toolsOpen, setToolsOpen] = useState(false);
   // reset to the artifact tab whenever a different session is shown
   useEffect(() => setTab("artifact"), [task.id]);
 
@@ -142,6 +155,32 @@ export function ArtifactPane({
       <div className="ax-artpane__body">
         {tab === "artifact" && (
           <>
+            {/* redraw the figures with a different plotting library (re-runs the analysis) */}
+            {onRedraw && isRun && (
+              <div className="ax-redraw">
+                <button className="ax-redraw__head" onClick={() => setToolsOpen((o) => !o)} aria-expanded={toolsOpen}>
+                  <Palette size={13} aria-hidden />
+                  {zh ? "绘图工具 · 重绘" : "Plotting tool · redraw"}
+                  <ChevronRight size={14} className={`ax-redraw__chev ${toolsOpen ? "is-open" : ""}`} aria-hidden />
+                </button>
+                {toolsOpen && (
+                  <div className="ax-redraw__grid">
+                    {PLOT_TOOLS.map((pt) => (
+                      <button
+                        key={pt.k}
+                        className="ax-redraw__opt"
+                        disabled={busy}
+                        onClick={() => { onRedraw(pt.k); setToolsOpen(false); }}
+                        title={zh ? pt.zh : pt.en}
+                      >
+                        <b>{pt.label}</b>
+                        <span>{zh ? pt.zh : pt.en}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
             {versions.length > 1 && (
               <p className="ax-hint" style={{ marginBottom: 10 }}>
                 {zh ? `第 ${vIdx + 1} 版 · 目标:${ver.goal}` : `Version ${vIdx + 1} · goal: ${ver.goal}`}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -10,6 +10,9 @@ import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
 import { ReviewerPanel } from "./components/ReviewerPanel";
 import { AgentSteps } from "./components/AgentSteps";
+import { ThreadActivity } from "./components/ThreadActivity";
+import { RunStatusPill } from "./components/RunStatusPill";
+import { runStore } from "./lib/runStore";
 import { ArtifactBody } from "./components/artifact/ArtifactBody";
 import { ArtifactPane } from "./components/ArtifactPane";
 import { OnboardingWizard } from "./components/OnboardingWizard";
@@ -136,9 +139,12 @@ function App() {
     () => localStorage.getItem("axiom3.draft") ?? "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
   );
   const [references, setReferences] = useState(() => localStorage.getItem("axiom3.references") ?? "");
-  const [codeWs, setCodeWs] = useState<string | null>(null);
   // The session's project directory (working folder on disk). A new session must pick one.
   const [projectDir, setProjectDir] = useState<string | null>(() => localStorage.getItem("axiom3.projectDir"));
+  // The agent's working folder. Defaults to the persisted project dir so a restart anchors
+  // analysis/coding to the SAME directory the UI shows (else analyze fell back to a hidden
+  // scratch dir while the composer still displayed the project path).
+  const [codeWs, setCodeWs] = useState<string | null>(() => localStorage.getItem("axiom3.projectDir"));
   const [newSessionOpen, setNewSessionOpen] = useState(false); // the "pick a project directory" dialog
   const [pickingDir, setPickingDir] = useState<string | null>(null); // dir chosen inside that dialog
   const projectName = (dir: string | null) => (dir ? dir.split(/[/\\]/).filter(Boolean).pop() || dir : "");
@@ -187,6 +193,34 @@ function App() {
   const [cmd, setCmd] = useState<string | null>(null);
   const [slash, setSlash] = useState("");
   const [slashIdx, setSlashIdx] = useState(0);
+  const slashRef = useRef<HTMLTextAreaElement>(null);
+  // Composer auto-grows from a single line. Keyed on `slash` so it also SHRINKS back after a
+  // programmatic clear (submit / new-session / fork all call setSlash("")), which a pure
+  // onChange handler would miss. First set height:auto so scrollHeight reflects content.
+  useLayoutEffect(() => {
+    const el = slashRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+  }, [slash]);
+  // A run the user tried to start before choosing a project directory: stashed as a plain
+  // descriptor (NOT a closure — a closure would capture projectDir=null and re-trigger the gate
+  // forever). Once the new-session dialog writes projectDir, the effect below re-dispatches with
+  // the preserved text, and the FRESH run function (projectDir now set) sails past its own gate.
+  const [pendingRun, setPendingRun] = useState<
+    null | { run: "free" | "check" | "workflow" | "coding"; text: string; forceAnalyze?: boolean; appendTo?: string }
+  >(null);
+  useEffect(() => {
+    if (!projectDir || !pendingRun) return;
+    const pr = pendingRun;
+    setPendingRun(null);
+    if (pr.run === "free") submitFreeText(pr.text);
+    else if (pr.run === "check") runCheckDraft(pr.text);
+    else if (pr.run === "workflow") runWorkflow(pr.text, pr.appendTo);
+    else if (pr.run === "coding") runCoding(pr.text, pr.forceAnalyze);
+  }, [projectDir, pendingRun]);
+  // Live orchestration runs (module-level store) — feeds the in-thread thinking chain.
+  const liveRuns = useSyncExternalStore(runStore.subscribe, runStore.snapshot);
   const [notableOnly, setNotableOnly] = useState(true);
   const [reviewed, setReviewed] = useState<Record<string, boolean>>(() => {
     try {
@@ -552,6 +586,13 @@ function App() {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir === "string") setPickingDir(dir);
   }
+  // Abandon the new-session dialog. Crucially clears any pendingRun stashed by the project
+  // gate — otherwise a cancelled "type → gate → cancel" would silently fire the next time a
+  // project dir gets set. (confirmNewSession deliberately does NOT clear it: it re-fires it.)
+  function closeNewSession() {
+    setNewSessionOpen(false);
+    setPendingRun(null);
+  }
   // Confirm the project directory, then start a fresh session anchored to it.
   function confirmNewSession() {
     const dir = pickingDir;
@@ -686,6 +727,7 @@ function App() {
   async function runCheckDraft(draftText?: string) {
     const useDraft = (draftText ?? draft).trim();
     if (!useDraft) return;
+    if (!projectDir) { setPendingRun({ run: "check", text: useDraft }); newTask(); return; }
     const proj = await ensureProject();
     if (!proj) return;
     const id = `t${Date.now()}`;
@@ -730,17 +772,20 @@ function App() {
   async function runWorkflow(goal: string, appendTo?: string) {
     const g = goal.trim();
     if (!g) return;
+    if (!projectDir) { setPendingRun({ run: "workflow", text: g, appendTo }); newTask(); return; }
     const proj = await ensureProject();
     if (!proj) return;
     const runid = `run-${crypto.randomUUID()}`;
     const sessionId = appendTo ?? runid;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
     if (appendTo) {
-      setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running" } : x)));
+      // Point the live chain at THIS run (a fresh runid ≠ the session id) and drop the prior
+      // version's steps so the stale v1 log isn't shown as if it were the live v2 stream.
+      setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running", liveRunId: runid, steps: undefined } : x)));
       setActiveId(appendTo);
       pushTab(appendTo);
     } else {
-      setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: mode === "research", forkedFrom: forkOrigin ?? undefined }, ...ts]);
+      setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: mode === "research", forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
       setForkOrigin(null);
       setActiveId(runid);
       pushTab(runid);
@@ -791,11 +836,12 @@ function App() {
   async function runCoding(goal: string, forceAnalyze = false) {
     const g = goal.trim();
     if (!g) return;
+    if (!projectDir) { setPendingRun({ run: "coding", text: g, forceAnalyze }); newTask(); return; }
     const doAnalyze = forceAnalyze || codeAnalyze || cmd === "analyze";
     if (!codeWs && !doAnalyze) return; // code mode needs a folder; analyze can use a scratch dir
     const runid = `run-${crypto.randomUUID()}`;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
-    setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined }, ...ts]);
+    setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
     setForkOrigin(null);
     setActiveId(runid);
     pushTab(runid);
@@ -943,9 +989,16 @@ function App() {
     setSlash(lang === "zh" ? `用「${label}」技能分析:` : `Analyze with the ${label} skill: `);
   }
 
-  function submitFreeText(): boolean {
-    const text = slash.trim();
+  function submitFreeText(textArg?: string): boolean {
+    const text = (textArg ?? slash).trim();
     if (!text || text.startsWith("/")) return false;
+    // A new session must pick a project directory first. Stash this run, open the picker, and
+    // re-fire (with the preserved text) once projectDir is set — see the pendingRun effect.
+    if (!projectDir) {
+      setPendingRun({ run: "free", text });
+      newTask();
+      return false;
+    }
     const at = tasks.find((x) => x.id === activeId);
     if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → iterate the artifact (v2…)
     else if (at?.type === "code" && (codeWs || codeAnalyze)) runCoding(text);
@@ -964,11 +1017,15 @@ function App() {
   // surfaces task types; picking one swaps in that task's inputs (only /校对 runs today).
   function composerBlock() {
     return (
+      <>
+      {/* running indicator sits right above the input box (renders nothing when idle) */}
+      <RunStatusPill lang={lang} />
       <div className="ax-composer">
         {cmd === null ? (
           <>
             <textarea
-              className="ax-textarea"
+              className="ax-textarea ax-textarea--grow"
+              ref={slashRef}
               value={slash}
               onChange={(e) => {
                 setSlash(e.currentTarget.value);
@@ -994,7 +1051,7 @@ function App() {
                   submitFreeText();
                 }
               }}
-              rows={3}
+              rows={1}
               placeholder={t(lang, "composer_ph")}
             />
             {(codeAttachments.length > 0 || pendingSkill) && (
@@ -1300,6 +1357,16 @@ function App() {
           </>
         )}
       </div>
+      {/* project name + path, tight under the composer (home AND thread), so the working
+          directory is always visible once a session is anchored to one. */}
+      {projectDir && (
+        <p className="ax-proj-line" title={projectDir}>
+          <FolderOpen size={12} aria-hidden />
+          <b>{projectName(projectDir)}</b>
+          <span>{projectDir}</span>
+        </p>
+      )}
+      </>
     );
   }
 
@@ -1313,7 +1380,7 @@ function App() {
       )}
       {/* New session must pick a project directory first (Claude-style). */}
       {newSessionOpen && (
-        <div className="ax-set-overlay" onClick={() => setNewSessionOpen(false)}>
+        <div className="ax-set-overlay" onClick={closeNewSession}>
           <div className="ax-newsess" onClick={(e) => e.stopPropagation()}>
             <p className="ax-newsess__title">{lang === "zh" ? "新建会话 · 选择项目目录" : "New session · pick a project folder"}</p>
             <p className="ax-newsess__hint">{lang === "zh" ? "会话在这个目录里工作:数据、产物、代码都在此。" : "The session works inside this folder — its data, artifacts, and code live here."}</p>
@@ -1329,7 +1396,7 @@ function App() {
               )}
             </button>
             <div className="ax-newsess__actions">
-              <button className="ax-btn" onClick={() => setNewSessionOpen(false)}>{lang === "zh" ? "取消" : "Cancel"}</button>
+              <button className="ax-btn" onClick={closeNewSession}>{lang === "zh" ? "取消" : "Cancel"}</button>
               <button className="ax-btn ax-btn--primary" onClick={confirmNewSession} disabled={!pickingDir}>
                 {lang === "zh" ? "开始" : "Start"}
               </button>
@@ -1553,7 +1620,7 @@ function App() {
             {/* Command palette button removed — still reachable via ⌘K. */}
             <button
               className={`ax-iconbtn ax-bell ${nav === "notifications" ? "is-active" : ""}`}
-              onClick={() => setNav("notifications")}
+              onClick={() => setNav(nav === "notifications" ? "tasks" : "notifications")}
               title={lang === "zh" ? "通知" : "Notifications"}
               aria-label={
                 unreadNotif > 0
@@ -1636,13 +1703,6 @@ function App() {
                 {lang === "zh" ? "输入任务开始,或用 / 唤出能力" : "Type a task, or use / for capabilities"}
               </p>
               {composerBlock()}
-              {projectDir && (
-                <p className="ax-proj-line" title={projectDir}>
-                  <FolderOpen size={12} aria-hidden />
-                  <b>{projectName(projectDir)}</b>
-                  <span>{projectDir}</span>
-                </p>
-              )}
 
               <details className="ax-dev" style={{ maxWidth: 700, margin: "26px auto 0" }}>
                 <summary>{t(lang, "dev_tools")}</summary>
@@ -1673,6 +1733,9 @@ function App() {
               {(() => {
                   const tk = tasks.find((x) => x.id === activeId);
                   if (!tk) return null;
+                  // Match the live run by the task's active run id (an append iteration mints a
+                  // fresh runid that differs from the session id).
+                  const liveRun = liveRuns.find((r) => r.id === (tk.liveRunId ?? tk.id));
                   return (
                     <>
                       <div className="ax-results__head">
@@ -1697,30 +1760,52 @@ function App() {
                         )}
                       </div>
 
-                      {tk.status === "running" &&
-                        (tk.type === "workflow" || tk.type === "code" ? (
-                          <div className="ax-progress">
-                            <span>{lang === "zh" ? "智能体运行中 · 见右侧活动栏 →" : "agents running · see the activity rail →"}</span>
-                            <button className="ax-iconbtn" onClick={() => invoke("cancel_run", { runid: tk.id })} title={t(lang, "cancel")} aria-label={t(lang, "cancel")}>
-                              <X size={14} aria-hidden />
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="ax-progress">
-                            <span>
-                              {t(lang, "checking")}
-                              {progress ? ` ${progress.done}/${progress.total}` : ""}
+                      {/* the user's own message — what they typed — pinned at the top of the thread */}
+                      {tk.goal && (
+                        <div className="ax-usermsg">
+                          <span className="ax-usermsg__who">{lang === "zh" ? "你" : "You"}</span>
+                          <p className="ax-usermsg__text">{tk.goal}</p>
+                        </div>
+                      )}
+
+                      {/* check-draft progress bar (workflow/code render the live thinking chain below) */}
+                      {tk.status === "running" && tk.type !== "workflow" && tk.type !== "code" && (
+                        <div className="ax-progress">
+                          <span>
+                            {t(lang, "checking")}
+                            {progress ? ` ${progress.done}/${progress.total}` : ""}
+                          </span>
+                          {progress && progress.total > 0 && (
+                            <span className="ax-progress__bar">
+                              <span className="ax-progress__fill" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
                             </span>
-                            {progress && progress.total > 0 && (
-                              <span className="ax-progress__bar">
-                                <span className="ax-progress__fill" style={{ width: `${Math.round((progress.done / progress.total) * 100)}%` }} />
-                              </span>
-                            )}
-                            <button className="ax-iconbtn" onClick={cancelCheck} title={t(lang, "cancel")} aria-label={t(lang, "cancel")}>
-                              <X size={14} aria-hidden />
-                            </button>
+                          )}
+                          <button className="ax-iconbtn" onClick={cancelCheck} title={t(lang, "cancel")} aria-label={t(lang, "cancel")}>
+                            <X size={14} aria-hidden />
+                          </button>
+                        </div>
+                      )}
+
+                      {/* live/persisted THINKING CHAIN for workflow/code — right above the composer:
+                          phases + each agent (launch animation + name/model) + its steps (verbatim
+                          code for coding/analysis), streamed live from runStore; falls back to the
+                          persisted tk.steps once the finished live run is cleared. */}
+                      {(tk.type === "workflow" || tk.type === "code") && (
+                        liveRun ? (
+                          <ThreadActivity
+                            run={liveRun}
+                            lang={lang}
+                            onCancel={tk.status === "running" ? () => invoke("cancel_run", { runid: tk.liveRunId ?? tk.id }) : undefined}
+                          />
+                        ) : tk.steps && tk.steps.length > 0 ? (
+                          <div className="ax-agents" style={{ marginTop: 12 }}>
+                            <p className="ax-block-label">{lang === "zh" ? `思考过程 · ${tk.steps.length} 步` : `Thinking · ${tk.steps.length} steps`}</p>
+                            <AgentSteps steps={tk.steps} lang={lang} />
                           </div>
-                        ))}
+                        ) : tk.status === "running" ? (
+                          <div className="ax-progress"><span>{lang === "zh" ? "智能体启动中…" : "spawning agent…"}</span></div>
+                        ) : null
+                      )}
 
                       {/* When the artifact pane is open, the result + agents + provenance live
                           THERE; the thread keeps the conversation (progress + reviewer). */}
@@ -1740,13 +1825,6 @@ function App() {
 
                       {/* the reviewer agent, inline — like Claude Science's Reviewer panel */}
                       {tk.review && <ReviewerPanel lang={lang} review={tk.review} />}
-
-                      {!showArtifactPane && tk.steps && tk.steps.length > 0 && (
-                        <div className="ax-agents" style={{ marginTop: 12 }}>
-                          <p className="ax-block-label">{lang === "zh" ? `思考过程 · ${tk.steps.length} 步` : `Thinking · ${tk.steps.length} steps`}</p>
-                          <AgentSteps steps={tk.steps} lang={lang} />
-                        </div>
-                      )}
 
                       {!tk.result && !tk.synthesis && tk.status !== "running" && (
                         <p className="ax-hint" style={{ marginTop: 14 }}>
@@ -1826,6 +1904,14 @@ function App() {
             forkedFromTitle={tasks.find((x) => x.id === activeTask.forkedFrom)?.title}
             onExport={exportProvenance}
             onSaveReport={saveReport}
+            onRedraw={(tool) => {
+              const g = (activeTask.goal || "").trim();
+              if (!g) return;
+              runCoding(
+                `${g}\n\n【重绘要求】请改用 ${tool} 重新绘制本次分析的全部图表:保持相同的数据、统计与结论,仅更换绘图库。若 ${tool} 不是 matplotlib,请先用 pip_install 安装它,再把图导出为 PNG 展示。`,
+                true
+              );
+            }}
             expanded={artifactExpanded}
             onToggleExpand={() => setArtifactExpanded((e) => !e)}
             onClose={() => {

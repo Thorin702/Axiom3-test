@@ -33,6 +33,13 @@ function reduce(runs: RunView[], ev: RunEvent): RunView[] {
           : a
       );
       break;
+    case "agent_step":
+      r.agents = r.agents.map((a) =>
+        a.id === ev.agent_id
+          ? { ...a, rich: [...(a.rich ?? []), { role: ev.role, status: ev.status, output: ev.output, title: ev.title, reasoning: ev.reasoning, lines: ev.lines }] }
+          : a
+      );
+      break;
     case "agent_finished":
       r.agents = r.agents.map((a) =>
         a.id === ev.agent_id

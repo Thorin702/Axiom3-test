@@ -62,6 +62,7 @@ export type RunEvent = { run_id: string; seq: number; ts: number } & (
   | { kind: "phase_changed"; phase: string; index: number; total: number }
   | { kind: "agent_spawned"; agent_id: string; role: string; model: string; vendor: string; phase: string }
   | { kind: "agent_progress"; agent_id: string; step: number; tokens_in: number; tokens_out: number; note: string | null }
+  | { kind: "agent_step"; agent_id: string; step: number; role: string; status: string; title: string; reasoning: string; output: string; lines: number }
   | { kind: "agent_finished"; agent_id: string; outcome: string; tokens_in: number; tokens_out: number; error: string | null; summary: string | null }
   | { kind: "run_progress"; agents_done: number; agents_total: number; agents_running: number; agents_queued: number }
   | { kind: "run_finished"; status: string; agents_total: number; agents_ok: number; agents_err: number; error: string | null }
@@ -79,6 +80,7 @@ export type AgentView = {
   summary?: string;
   error?: string;
   steps: string[]; // live per-step notes (reasoning + tool action) — the streamed transcript
+  rich?: AgentStepView[]; // fully-structured live steps (title + reasoning + code body) — coding/analysis
   startedMs?: number; // spawn time — for the per-agent Time column
   finishedMs?: number;
 };
@@ -139,5 +141,9 @@ export type Task = {
   review?: string; // the reviewer agent's critique/findings (never a verdict)
   steps?: AgentStepView[]; // workflow runs: each sub-agent's output
   versions?: ArtifactVersion[]; // artifact history (v1…vN); present once iterated
+  // The run id of the CURRENT/last orchestration run for this session. Differs from `id` on a
+  // follow-up iteration (append), where a fresh run id is minted — the live thinking chain
+  // matches runStore by THIS id, not the session id.
+  liveRunId?: string;
   error?: string;
 };

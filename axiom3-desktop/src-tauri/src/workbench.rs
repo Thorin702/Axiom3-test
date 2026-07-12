@@ -1499,6 +1499,16 @@ pub async fn save_report_html(path: String, html: String) -> Result<(), String> 
         .map_err(|e| e.to_string())?
 }
 
+/// Write a computed figure's PNG bytes to a user-chosen path (the frontend decodes the base64
+/// and hands us the raw bytes). A `data:` `<a download>` needs a WKDownloadDelegate we don't
+/// register, so it silently fails in the packaged app — this native path is why download works.
+#[tauri::command]
+pub async fn save_png(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || atomic_export_write(&path, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Export the latest draft check's provenance record to `path` (chosen by the OS save
 /// dialog). The record is rebuilt from the hash-chained log and written as JSON — one
 /// purpose-built sink, not a general file-write primitive: the only content it ever
@@ -2502,13 +2512,27 @@ pub async fn coding_run(
             };
             t.chars().take(90).collect()
         };
+        let lines = obs_full.lines().count();
+        let reasoning = think.trim().to_string();
+        // Stream the fully-structured step (verbatim code + result) for the live in-thread
+        // thinking chain, then keep an identical entry in the final trace.
+        em.emit(RunEventBody::AgentStep {
+            agent_id: "coder".into(),
+            step: step.n,
+            role: step.tool.clone(),
+            status: status.into(),
+            title: title.clone(),
+            reasoning: reasoning.clone(),
+            output: out.clone(),
+            lines,
+        });
         trace.push(CodingStepOut {
             role: step.tool.clone(),
             status: status.into(),
             title,
-            reasoning: think.trim().to_string(),
+            reasoning,
             output: out,
-            lines: obs_full.lines().count(),
+            lines,
         });
         em.emit(RunEventBody::AgentProgress {
             agent_id: "coder".into(),

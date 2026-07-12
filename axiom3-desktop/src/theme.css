@@ -370,6 +370,9 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   transition: border-color 0.15s ease, box-shadow 0.15s ease; }
 .ax-composer:focus-within { border-color: var(--ax-ink-faint); }
 .ax-composer > .ax-textarea, .ax-composer > * > .ax-textarea { border: none; background: transparent; padding: 8px 9px; resize: none; }
+/* main composer starts at one line (rows=1) and auto-grows (JS sets height); cap + scroll here.
+   Scoped to --grow so the taller command-mode textareas (/校对 rows=9 etc.) aren't clipped. */
+.ax-composer > .ax-textarea--grow { max-height: 200px; overflow-y: auto; }
 .ax-composer .ax-textarea:focus { box-shadow: none; border: none; }
 .ax-composer .ax-toolrow { padding: 2px 6px 2px; }
 .ax-send { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px;
@@ -409,6 +412,58 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-chain__chev.is-open { transform: rotate(90deg); }
 .ax-chain__body { margin: 2px 2px 4px 8px; padding: 10px 12px; border-left: 2px solid var(--ax-line);
   font-size: 12.5px; overflow-x: auto; }
+
+/* ── in-thread live thinking chain (ThreadActivity) ────────────────── */
+.ax-tact { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+/* phase strip */
+.ax-tact__phases { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
+  padding: 7px 10px; border: 1px solid var(--ax-line); border-radius: var(--ax-radius);
+  background: var(--ax-surface-2); }
+.ax-tact__ph { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ax-ink-faint); }
+.ax-tact__ph .ax-tact__phdot { width: 6px; height: 6px; border-radius: 50%; background: var(--ax-line-strong, var(--ax-ink-faint)); flex: none; }
+.ax-tact__ph.is-past { color: var(--ax-ink-soft); }
+.ax-tact__ph.is-past .ax-tact__phdot { background: var(--ax-lamp-green, #35b46a); }
+.ax-tact__ph.is-now { color: var(--ax-lamp-amber); font-weight: 600; }
+.ax-tact__ph.is-now .ax-tact__phdot { background: var(--ax-lamp-amber); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ax-lamp-amber) 22%, transparent); animation: ax-pulse 1.1s ease-in-out infinite; }
+.ax-tact__spacer { flex: 1 1 auto; }
+.ax-tact__runmeta { font-size: 11.5px; color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
+.ax-tact__cancel { flex: none; }
+/* one agent's card — animates in when it spawns */
+.ax-tact__agent { display: flex; flex-direction: column; gap: 7px; padding: 11px 12px;
+  border: 1px solid var(--ax-line); border-radius: var(--ax-radius); background: var(--ax-surface);
+  animation: ax-agent-in .28s ease both; }
+.ax-tact__ahead { display: flex; align-items: center; gap: 8px; }
+.ax-tact__arole { display: inline-flex; align-items: center; gap: 5px; font-size: 13px; font-weight: 600; color: var(--ax-ink); }
+.ax-tact__amodel { font-size: 11.5px; color: var(--ax-ink-faint); padding: 1px 7px; border-radius: 999px; background: var(--ax-surface-2); border: 1px solid var(--ax-line); }
+.ax-tact__ameta { font-size: 11.5px; color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
+.ax-tact__notes { display: flex; flex-direction: column; gap: 4px; }
+.ax-tact__note { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--ax-ink-soft); white-space: pre-wrap; }
+.ax-tact__note--muted { color: var(--ax-ink-faint); font-style: italic; }
+.ax-tact__summary { margin: 0; font-size: 12.5px; line-height: 1.55; color: var(--ax-ink-soft); }
+.ax-tact__err { margin: 0; font-size: 12px; color: var(--ax-lamp-red); white-space: pre-wrap; }
+@keyframes ax-agent-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+/* the user's own message, pinned atop the thread */
+.ax-usermsg { margin: 2px 0 14px; padding: 10px 14px; border-radius: var(--ax-radius);
+  background: color-mix(in srgb, var(--ax-accent) 8%, var(--ax-surface-2)); border: 1px solid var(--ax-line); }
+.ax-usermsg__who { font-size: 11px; font-weight: 700; color: var(--ax-accent); letter-spacing: 0.04em; }
+.ax-usermsg__text { margin: 3px 0 0; font-size: 13.5px; line-height: 1.6; color: var(--ax-ink); white-space: pre-wrap; }
+
+/* ── global running status pill (sits right above the composer) ─────── */
+/* left-aligned with the composer (proj-line uses the same 2px), persists after the run ends */
+.ax-runpill { display: flex; align-items: center; gap: 9px; height: 28px; padding: 0 13px 0 9px;
+  margin: 0 2px 6px; border-radius: 999px; border: 1px solid var(--ax-line); background: var(--ax-surface-2);
+  font-size: 12px; color: var(--ax-ink-soft); font-variant-numeric: tabular-nums; white-space: nowrap;
+  width: max-content; max-width: 100%; align-self: flex-start; animation: ax-agent-in .3s ease both; }
+.ax-runpill.is-done { opacity: 0.82; }
+.ax-runpill__t { display: inline-flex; align-items: center; gap: 6px; }
+.ax-runpill__time { color: var(--ax-accent); font-weight: 600; }
+.ax-runpill__sep { color: var(--ax-ink-faint); }
+/* the app-icon knowledge graph (no background) — nodes pulse while running, hold static when done */
+.ax-runpill__mark { flex: none; display: block; color: var(--ax-ink); overflow: visible; }
+.ax-runpill__edges { fill: none; stroke: currentColor; stroke-opacity: 0.5; stroke-width: 2; stroke-linecap: round; }
+.ax-runpill__node { fill: currentColor; opacity: 0.9; transform-box: fill-box; transform-origin: center; }
+.ax-runpill__mark.is-pulsing .ax-runpill__node { animation: ax-node-pulse 1.4s ease-in-out infinite; }
+@keyframes ax-node-pulse { 0%, 100% { opacity: 0.3; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.12); } }
 
 /* ── new-session: pick a project directory ─────────────────────────── */
 .ax-newsess { width: min(440px, 92vw); background: var(--ax-surface); border: 1px solid var(--ax-line);
@@ -804,6 +859,39 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-fig__kind { color: var(--ax-accent); background: var(--ax-accent-soft); border: 0.5px solid var(--ax-accent);
   border-radius: 999px; padding: 1.5px 8px; font-size: 10px; flex: none; }
 .ax-fig__smiles { font-family: var(--ax-mono, ui-monospace, Menlo, monospace); word-break: break-all; }
+/* figure hover tools (download / enlarge) + click-to-zoom lightbox */
+.ax-fig__frame { position: relative; }
+.ax-fig__tools { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity .15s ease; }
+.ax-fig__frame:hover .ax-fig__tools { opacity: 1; }
+.ax-fig__tool { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px;
+  border-radius: 7px; border: 1px solid var(--ax-line); background: var(--ax-surface); color: var(--ax-ink-soft);
+  cursor: pointer; box-shadow: var(--ax-shadow-sm, 0 1px 2px rgba(0,0,0,0.12)); }
+.ax-fig__tool:hover { color: var(--ax-accent); border-color: var(--ax-accent); }
+.ax-lightbox { position: fixed; inset: 0; z-index: 80; display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,0.74); padding: 40px; cursor: zoom-out; animation: ax-splash-fade .18s ease both; }
+.ax-lightbox__img { max-width: 94vw; max-height: 88vh; object-fit: contain; border-radius: 8px; background: #fff;
+  cursor: default; box-shadow: 0 12px 48px rgba(0,0,0,0.5); }
+.ax-lightbox__close { position: absolute; top: 18px; right: 20px; width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid rgba(255,255,255,0.25); background: rgba(0,0,0,0.4); color: #fff; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; }
+.ax-lightbox__dl { position: absolute; bottom: 22px; left: 50%; transform: translateX(-50%); display: inline-flex;
+  align-items: center; gap: 6px; padding: 7px 14px; border-radius: 999px; background: var(--ax-accent); color: #fff;
+  font-size: 12.5px; text-decoration: none; border: none; cursor: pointer; }
+
+/* ── redraw with a different plotting tool (artifact pane) ──────────── */
+.ax-redraw { margin: 0 0 12px; border: 1px solid var(--ax-line); border-radius: var(--ax-radius); background: var(--ax-surface-2); overflow: hidden; }
+.ax-redraw__head { display: flex; align-items: center; gap: 7px; width: 100%; padding: 8px 11px; background: none;
+  border: none; cursor: pointer; font-size: 12.5px; color: var(--ax-ink-soft); text-align: left; }
+.ax-redraw__head:hover { color: var(--ax-accent); }
+.ax-redraw__chev { margin-left: auto; transition: transform .15s ease; color: var(--ax-ink-faint); }
+.ax-redraw__chev.is-open { transform: rotate(90deg); }
+.ax-redraw__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 6px; padding: 0 10px 10px; }
+.ax-redraw__opt { display: flex; flex-direction: column; gap: 1px; padding: 7px 9px; border: 1px solid var(--ax-line);
+  border-radius: 8px; background: var(--ax-surface); cursor: pointer; text-align: left; }
+.ax-redraw__opt:hover:not(:disabled) { border-color: var(--ax-accent); }
+.ax-redraw__opt:disabled { opacity: 0.5; cursor: default; }
+.ax-redraw__opt b { font-size: 12px; color: var(--ax-ink); font-weight: 600; }
+.ax-redraw__opt span { font-size: 10.5px; color: var(--ax-ink-faint); }
 
 /* ── right-side artifact pane (Claude-Science-style) ── */
 .ax-artpane { border-left: 0.5px solid var(--ax-line); background: var(--ax-surface);
