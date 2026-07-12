@@ -8,6 +8,7 @@ import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Che
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
+import { AgentSteps } from "./AgentSteps";
 import { ArtifactProvenance } from "./ArtifactProvenance";
 import { ArtifactInspector } from "./ArtifactInspector";
 import { buildReportHtml } from "../lib/exportReport";
@@ -157,18 +158,7 @@ export function ArtifactPane({
             <p className="ax-hint">{zh ? (isRun ? "此会话没有执行步骤。" : "此会话没有子智能体消息。") : (isRun ? "No execution steps in this session." : "No sub-agent messages in this session.")}</p>
           ) : (
             <div className="ax-artpane__msgs">
-              {steps.map((s, i) => (
-                <div className="ax-msg" key={i}>
-                  <div className="ax-msg__head">
-                    <span className={`ax-adot ${s.status === "ok" ? "is-fin" : s.status === "failed" ? "is-err" : "is-fin"}`} />
-                    <span className="ax-msg__role">{s.role}</span>
-                    {s.model && <span className="ax-msg__model">{s.model}</span>}
-                  </div>
-                  <div className="ax-msg__body">
-                    <ArtifactBody text={s.output || (zh ? "(无输出)" : "(no output)")} />
-                  </div>
-                </div>
-              ))}
+              <AgentSteps steps={steps} lang={lang} />
             </div>
           )
         )}

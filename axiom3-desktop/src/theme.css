@@ -389,6 +389,27 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-slash-head { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
   color: var(--ax-ink-faint); padding: 4px 10px 6px; }
 
+/* ── thinking chain (Claude-Science-style narration + collapsible step cards) ─── */
+.ax-chain { display: flex; flex-direction: column; gap: 6px; }
+.ax-chain__step { display: flex; flex-direction: column; gap: 5px; }
+.ax-chain__narr { margin: 6px 2px 1px; font-size: 13.5px; line-height: 1.6; color: var(--ax-ink-soft); }
+.ax-chain__card { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
+  padding: 8px 11px; border: 0.5px solid var(--ax-line); border-radius: 10px; background: var(--ax-surface);
+  color: var(--ax-ink); cursor: pointer; transition: border-color .12s ease, background .12s ease; }
+.ax-chain__card:hover { border-color: var(--ax-line-strong, var(--ax-line)); background: var(--ax-surface-2); }
+.ax-chain__card.is-static { cursor: default; }
+.ax-chain__card.is-static:hover { border-color: var(--ax-line); background: var(--ax-surface); }
+.ax-chain__ic { flex: none; width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center; color: #fff; }
+.ax-chain__ic.is-ok { background: var(--ax-lamp-green); }
+.ax-chain__ic.is-err { background: var(--ax-lamp-red); }
+.ax-chain__title { flex: 1; min-width: 0; font-size: 13px; font-weight: 550; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.ax-chain__count { flex: none; font-size: 11.5px; color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
+.ax-chain__chev { flex: none; color: var(--ax-ink-faint); transition: transform .15s ease; }
+.ax-chain__chev.is-open { transform: rotate(90deg); }
+.ax-chain__body { margin: 2px 2px 4px 8px; padding: 10px 12px; border-left: 2px solid var(--ax-line);
+  font-size: 12.5px; overflow-x: auto; }
+
 /* ── new-session: pick a project directory ─────────────────────────── */
 .ax-newsess { width: min(440px, 92vw); background: var(--ax-surface); border: 1px solid var(--ax-line);
   border-radius: var(--ax-radius-lg); box-shadow: var(--ax-shadow); padding: 22px; }

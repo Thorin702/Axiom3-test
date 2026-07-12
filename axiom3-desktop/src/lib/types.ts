@@ -106,7 +106,18 @@ export type TaskStatus = "running" | "done" | "failed" | "cancelled";
 // One sub-agent's rolled-up result from a workflow run (persisted so the per-agent output
 // is readable after reload, not just as an ephemeral 120-char rail summary). `model` is
 // kept so an artifact can state which model produced each part (provenance).
-export type AgentStepView = { role: string; status: string; output: string; model?: string };
+// A thinking-chain step (Claude-Science-style): a short natural `title` + `reasoning` narration +
+// the collapsible `output` body + an output line count. title/reasoning/lines are present for
+// coding/analysis steps; workflow sub-agent steps carry only role/status/output/model.
+export type AgentStepView = {
+  role: string;
+  status: string;
+  output: string;
+  model?: string;
+  title?: string;
+  reasoning?: string;
+  lines?: number;
+};
 // One version of a session's artifact — a follow-up run iterates the artifact (v1 → v2 …)
 // rather than spawning a new session (forking does that). The task's top-level
 // synthesis/review/steps mirror the LATEST version.

@@ -2235,12 +2235,17 @@ pub struct CodingRunResult {
     pub trace: Vec<CodingStepOut>,
 }
 
-/// One step of the coding/analysis agent, for the artifact's execution log.
+/// One step of the coding/analysis agent, for the artifact's execution log. Shaped for a
+/// Claude-Science-style thinking chain: a short natural TITLE + a line-count, the agent's
+/// narration (reasoning) shown as a paragraph, and the full code/result in the collapsible body.
 #[derive(Serialize, Clone)]
 pub struct CodingStepOut {
-    pub role: String,   // the tool used (python / run / write_file / …)
-    pub status: String, // "ok" | "failed"
-    pub output: String, // markdown: the code/command + its result
+    pub role: String,      // the tool used (python / run / write_file / …)
+    pub status: String,    // "ok" | "failed"
+    pub title: String,     // short natural-language label for the step card
+    pub reasoning: String, // the agent's narration for this step (shown above the card)
+    pub output: String,    // markdown: the code/command + its result (collapsible body)
+    pub lines: usize,      // output line count → "N 行输出"
 }
 
 /// Run a READ-ONLY coding agent over a chosen workspace: a bounded tool-use loop that
@@ -2371,7 +2376,7 @@ pub async fn coding_run(
         // Build the execution-log entry: show what the agent actually ran + its result, as
         // markdown (python code in a fenced block so the artifact renders it verbatim).
         let obs_full = step.observation.trim();
-        let mut out = match step.tool.as_str() {
+        let out = match step.tool.as_str() {
             "plan" => format!("**📋 计划 · {}**\n\n{}", step.detail, obs_full),
             "python" => format!("```python\n{}\n```\n\n```\n{}\n```", step.input.trim(), obs_full),
             "run" => format!("`$ {}`\n\n```\n{}\n```", step.input, obs_full),
@@ -2390,11 +2395,40 @@ pub async fn coding_run(
             "read_file" | "list_dir" | "search" => format!("`{} {}`", step.tool, step.input),
             _ => format!("**{}** {}\n\n{}", step.tool, step.detail, obs_full),
         };
-        if !think.trim().is_empty() {
-            out = format!("_{}_\n\n{out}", think.trim());
-        }
+        // reasoning is now a separate field (the narration paragraph) — not baked into the body.
         let status = if obs_full.starts_with("ERROR") || obs_full.contains("Traceback (most recent call last)") { "failed" } else { "ok" };
-        trace.push(CodingStepOut { role: step.tool.clone(), status: status.into(), output: out });
+        let title: String = {
+            let t = match step.tool.as_str() {
+                "plan" => format!("📋 计划 · {}", step.detail),
+                "python" => "▶ 运行代码".to_string(),
+                "run" => format!("$ {}", step.input),
+                "read_file" => format!("📄 读取 {}", step.input),
+                "list_dir" => format!("📁 列目录 {}", step.input),
+                "search" => format!("🔍 搜索 {}", step.input),
+                "glob" => format!("🔍 查找 {}", step.input),
+                "edit" => format!("✎ 编辑 {}", step.input),
+                "write_file" => format!("✎ 写入 {}", step.input),
+                "litsearch" => format!("📚 文献检索 · {}", step.input),
+                "search_skills" => format!("🧭 检索技能 · {}", step.input),
+                "load_skill" => format!("📖 加载技能 · {}", step.input),
+                "pip_install" => format!("📦 安装依赖 · {}", step.detail),
+                "conda_install" => format!("🧬 安装工具 · {}", step.detail),
+                "job_start" => "🚀 后台作业".to_string(),
+                "job_status" => format!("⏳ 作业状态 · {}", step.input),
+                "checkpoint" => "💾 检查点".to_string(),
+                "restore" => "♻️ 恢复检查点".to_string(),
+                other => format!("{other} {}", step.detail),
+            };
+            t.chars().take(90).collect()
+        };
+        trace.push(CodingStepOut {
+            role: step.tool.clone(),
+            status: status.into(),
+            title,
+            reasoning: think.trim().to_string(),
+            output: out,
+            lines: obs_full.lines().count(),
+        });
         em.emit(RunEventBody::AgentProgress {
             agent_id: "coder".into(),
             step: step.n,

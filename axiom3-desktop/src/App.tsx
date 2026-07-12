@@ -9,6 +9,7 @@ import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
 import { ReviewerPanel } from "./components/ReviewerPanel";
+import { AgentSteps } from "./components/AgentSteps";
 import { ArtifactBody } from "./components/artifact/ArtifactBody";
 import { ArtifactPane } from "./components/ArtifactPane";
 import { OnboardingWizard } from "./components/OnboardingWizard";
@@ -28,7 +29,7 @@ import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
-  Command, Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
+  Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
   MoreHorizontal, Pencil, Mic, ChevronDown, Info, type LucideIcon,
 } from "lucide-react";
 
@@ -1560,15 +1561,7 @@ function App() {
             )}
           </div>
           <div className="ax-topbar__actions">
-            <button
-              className="ax-iconbtn"
-              onClick={() => setPaletteOpen(true)}
-              title={lang === "zh" ? "命令面板" : "Command palette"}
-              aria-label={lang === "zh" ? "命令面板" : "Command palette"}
-            >
-              <Command size={15} aria-hidden />
-              <span className="ax-kbd">⌘K</span>
-            </button>
+            {/* Command palette button removed — still reachable via ⌘K. */}
             <button
               className={`ax-iconbtn ax-bell ${nav === "notifications" ? "is-active" : ""}`}
               onClick={() => setNav("notifications")}
@@ -1769,24 +1762,10 @@ function App() {
                       {tk.review && <ReviewerPanel lang={lang} review={tk.review} />}
 
                       {!showArtifactPane && tk.steps && tk.steps.length > 0 && (
-                        <details className="ax-agents" style={{ marginTop: 12 }}>
-                          <summary className="ax-block-label" style={{ cursor: "pointer" }}>
-                            {lang === "zh" ? `各智能体输出 · ${tk.steps.length}` : `Per-agent output · ${tk.steps.length}`}
-                          </summary>
-                          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 10 }}>
-                            {tk.steps.map((st, i) => (
-                              <div className="ax-card ax-card--pad" key={i}>
-                                <div className="ax-row" style={{ border: "none", padding: 0, marginBottom: 6 }}>
-                                  <span className={`ax-lamp ${st.status === "ok" ? "is-green" : st.status === "failed" ? "is-red" : "is-neutral"}`} />
-                                  <div className="ax-row__title">{st.role}</div>
-                                </div>
-                                <div className="ax-synth__body" style={{ fontSize: 13 }}>
-                                  {st.output || (lang === "zh" ? "(无输出)" : "(no output)")}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </details>
+                        <div className="ax-agents" style={{ marginTop: 12 }}>
+                          <p className="ax-block-label">{lang === "zh" ? `思考过程 · ${tk.steps.length} 步` : `Thinking · ${tk.steps.length} steps`}</p>
+                          <AgentSteps steps={tk.steps} lang={lang} />
+                        </div>
                       )}
 
                       {!tk.result && !tk.synthesis && tk.status !== "running" && (
