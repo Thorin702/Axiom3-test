@@ -47,8 +47,8 @@ async fn main() {
     let venv = std::path::PathBuf::from(std::env::var_os("HOME").unwrap())
         .join("Library/Application Support/com.axiom3.desktop/notebook/.venv/bin/python");
     let py = if venv.exists() { venv.to_string_lossy().into_owned() } else { "python3".into() };
-    let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".into());
-    let model = ProviderModel { provider: "deepseek".into(), model: model_id.clone(), timeout_s: 120 };
+    let model_id = std::env::var("AXIOM_MODEL").unwrap_or_else(|_| "glm-5.2".into());
+    let model = ProviderModel { provider: "zhipu".into(), model: model_id.clone(), timeout_s: 180 };
 
     // ── reframe: casual → rigorous directive (what the app's analysis mode now does) ──
     println!("CASUAL: {CASUAL}\n--- reframing ---");

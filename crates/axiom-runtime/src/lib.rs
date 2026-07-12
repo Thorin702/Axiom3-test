@@ -32,10 +32,15 @@ pub enum Provider {
     Gemini,
     /// Alibaba Qwen via the DashScope OpenAI-compatible endpoint (Chat Completions).
     Qwen,
+    /// Zhipu GLM (智谱, e.g. glm-5.2 / glm-5-turbo) via the BigModel OpenAI-compatible endpoint.
+    Zhipu,
 }
 
 /// DashScope's OpenAI-compatible base URL (Chat Completions API), used for Qwen.
 const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
+/// Zhipu BigModel's OpenAI-compatible base URL (Chat Completions API), used for GLM.
+const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
 
 /// Canonical OpenAI base URL — PINNED. rig's `openai::Client::from_env()` honors an
 /// `OPENAI_BASE_URL` env override; if that pointed the `openai` family at a shared
@@ -56,6 +61,7 @@ impl Provider {
             "deepseek" => Some(Provider::DeepSeek),
             "gemini" | "google" => Some(Provider::Gemini),
             "qwen" | "dashscope" => Some(Provider::Qwen),
+            "zhipu" | "glm" | "bigmodel" => Some(Provider::Zhipu),
             _ => None,
         }
     }
@@ -67,6 +73,7 @@ impl Provider {
             Provider::DeepSeek => "deepseek",
             Provider::Gemini => "gemini",
             Provider::Qwen => "qwen",
+            Provider::Zhipu => "zhipu",
         }
     }
     /// The env var its API key is read from.
@@ -77,6 +84,7 @@ impl Provider {
             Provider::DeepSeek => "DEEPSEEK_API_KEY",
             Provider::Gemini => "GEMINI_API_KEY",
             Provider::Qwen => "QWEN_API_KEY",
+            Provider::Zhipu => "ZHIPU_API_KEY",
         }
     }
 }
@@ -131,6 +139,19 @@ pub async fn complete_with(provider: Provider, req: &Request) -> anyhow::Result<
                 openai::CompletionsClient::builder()
                     .api_key(&key)
                     .base_url(QWEN_BASE_URL)
+                    .build()
+                    .map_err(anyerr)?,
+                req
+            )
+        }
+        // OpenAI-compatible (Chat Completions) at Zhipu BigModel's endpoint (GLM).
+        Provider::Zhipu => {
+            let key = std::env::var(Provider::Zhipu.env_var())
+                .map_err(|_| anyhow::anyhow!("{} not set", Provider::Zhipu.env_var()))?;
+            run_provider_agent!(
+                openai::CompletionsClient::builder()
+                    .api_key(&key)
+                    .base_url(ZHIPU_BASE_URL)
                     .build()
                     .map_err(anyerr)?,
                 req

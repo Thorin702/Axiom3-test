@@ -95,10 +95,12 @@ const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGr
 // Model choices offered in the task control bar (the connected provider is DeepSeek).
 // "" = auto (the app's default per provider). deepseek-reasoner emits a real chain-of-thought.
 const MODELS: { id: string; label: string }[] = [
-  { id: "", label: "自动 · Auto" },
-  { id: "deepseek-chat", label: "DeepSeek Chat" },
-  { id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
-  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+  { id: "", label: "自动 · Auto (GLM)" },
+  { id: "glm-5.2", label: "GLM-5.2 · 深度推理" },
+  { id: "glm-5-turbo", label: "GLM Turbo · 快" },
+  { id: "glm-4.6", label: "GLM-4.6" },
+  { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash · 备选" },
+  { id: "deepseek-reasoner", label: "DeepSeek Reasoner · 备选" },
 ];
 // Target agent count for /工作流 (0 = auto). >8 triggers deep two-level orchestration
 // (top × sub), so tens of agents queue through the pool.

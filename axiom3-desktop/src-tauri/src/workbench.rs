@@ -113,6 +113,7 @@ fn fleet_from_env() -> Vec<FleetMember> {
         (Provider::DeepSeek, "deepseek-v4-flash"),
         (Provider::Gemini, "gemini-1.5-flash"),
         (Provider::Qwen, "qwen-plus"),
+        (Provider::Zhipu, "glm-5-turbo"),
     ];
     candidates
         .iter()
@@ -134,6 +135,7 @@ fn search_arms_from_env() -> Vec<ModelArm> {
         (Provider::DeepSeek, "deepseek-v4-flash"),
         (Provider::Gemini, "gemini-2.5-flash"),
         (Provider::Qwen, "qwen-plus"),
+        (Provider::Zhipu, "glm-5-turbo"),
     ];
     candidates
         .iter()
@@ -1043,12 +1045,13 @@ pub async fn vector_self_test(state: tauri::State<'_, AppState>) -> Result<Strin
 
 /// The five cloud families the fleet can dispatch to (the unit of cross-vendor
 /// independence). Local engines (Ollama/vLLM) are a separate family handled elsewhere.
-const CLOUD_PROVIDERS: [Provider; 5] = [
+const CLOUD_PROVIDERS: [Provider; 6] = [
     Provider::Anthropic,
     Provider::OpenAi,
     Provider::DeepSeek,
     Provider::Gemini,
     Provider::Qwen,
+    Provider::Zhipu,
 ];
 
 /// Keychain entry name for a provider's BYO key (under [`KEYCHAIN_SERVICE`]).
@@ -1400,8 +1403,29 @@ fn find_connection(app: &tauri::AppHandle, label: &str) -> Option<Conn> {
 /// The built-in provider's THINKING model (chain-of-thought), if it has one.
 fn thinking_model_for(provider: &str) -> Option<&'static str> {
     match provider {
+        "zhipu" | "glm" | "bigmodel" => Some("glm-5.2"), // flagship reasoning tier (GLM5.2)
         "deepseek" => Some("deepseek-reasoner"),
         _ => None,
+    }
+}
+/// Infer the provider family from a bare model name, so a model picked without an explicit
+/// provider (glm-5.2, deepseek-v4-flash, qwen-plus, …) routes to the endpoint that serves it.
+fn provider_from_model(model: &str) -> Option<&'static str> {
+    let m = model.to_lowercase();
+    if m.starts_with("glm") {
+        Some("zhipu")
+    } else if m.starts_with("deepseek") {
+        Some("deepseek")
+    } else if m.starts_with("qwen") {
+        Some("qwen")
+    } else if m.starts_with("gpt") || m.starts_with("o1") || m.starts_with("o3") {
+        Some("openai")
+    } else if m.starts_with("claude") {
+        Some("anthropic")
+    } else if m.starts_with("gemini") {
+        Some("gemini")
+    } else {
+        None
     }
 }
 /// Does a connection's model NAME look like a reasoning/thinking model?
@@ -1443,6 +1467,16 @@ fn resolve_model(
         }
         return Ok((prov.clone(), model.unwrap_or_else(|| default_model_for(&prov, want_thinking))));
     }
+    // No explicit provider, but a model was named — infer its provider from the name so a picked
+    // glm-*/deepseek-*/qwen-* model reaches the right endpoint (whose key must be set in env).
+    if let Some(m) = &model {
+        if let Some(prov) = provider_from_model(m) {
+            let key_set = Provider::parse(prov).map(|p| std::env::var(p.env_var()).is_ok()).unwrap_or(false);
+            if key_set {
+                return Ok((prov.to_string(), m.clone()));
+            }
+        }
+    }
     // No explicit provider. For thinking modes, prefer a reasoning-looking connection.
     if want_thinking {
         if let Ok(base) = app.path().app_data_dir() {
@@ -1454,7 +1488,11 @@ fn resolve_model(
     if let Some((label, m)) = primary_connection(app) {
         return Ok((label, model.unwrap_or(m)));
     }
-    // Built-in DeepSeek fallback.
+    // Built-in fallback: prefer GLM (Zhipu) when its key is set — the user's primary domestic
+    // model — otherwise DeepSeek.
+    if std::env::var("ZHIPU_API_KEY").is_ok() {
+        return Ok(("zhipu".to_string(), model.unwrap_or_else(|| default_model_for("zhipu", want_thinking))));
+    }
     let key_ok = std::env::var("DEEPSEEK_API_KEY").is_ok() || (deep && !search_arms_from_env().is_empty());
     if !key_ok {
         return Err(NO_MODEL_ERR.into());
@@ -2159,6 +2197,7 @@ impl EventSink for TauriSink {
 /// Default model per provider for a workflow run's decomposer + synthesis.
 fn workflow_model_for(provider: &str) -> String {
     match provider {
+        "zhipu" | "glm" | "bigmodel" => "glm-5-turbo", // fast tier (GLMturbo)
         "deepseek" => "deepseek-v4-flash",
         "qwen" | "dashscope" => "qwen-plus",
         "anthropic" => "claude-haiku-4-5-20251001",
