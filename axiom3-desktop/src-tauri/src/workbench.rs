@@ -2466,7 +2466,15 @@ predictions; a ranked comparison; a decision with its justification).\n\
 explanations via litsearch — DIVERSE queries, not variations of one — before committing to any.\n\
 - COMPETING HYPOTHESES: require at least 2-3 genuinely different hypotheses/approaches, each weighed \
 against the evidence, then an explicit, justified choice of the strongest.\n\
-- SELF-CRITIQUE: require naming the chosen answer's weaknesses and what would falsify it.\n\
+- NOVELTY POSITIONING: require the agent to FIRST establish what is already known / standard in the \
+field, then deliberately target the GAP and propose something genuinely under-explored — say plainly \
+what makes it new versus the existing work.\n\
+- CROSS-DOMAIN TRANSFER: encourage borrowing a mechanism/approach from an ADJACENT field that has not \
+yet been applied here (the strongest novel hypotheses often come from such a transfer), and to state the \
+analogy explicitly.\n\
+- SELF-CRITIQUE: require naming the chosen answer's weaknesses and what would falsify it (for an empirical \
+claim, a verification plan that climbs from correlation → causal, incl. a gain-of-function/sufficiency \
+test and the key negative controls).\n\
 - GROUNDING + HONESTY: ground key claims in REAL literature via litsearch and cite; separate clearly \
 what is supported from what is speculative.\n\
 - USE THE STEP BUDGET FOR DEPTH: do not stop at the first plausible answer; keep going until the space \

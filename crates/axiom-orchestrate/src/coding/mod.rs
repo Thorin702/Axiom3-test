@@ -204,10 +204,21 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              'font.size':11,'axes.titlesize':12.5,'axes.labelsize':11,'axes.spines.top':False,\
              'axes.spines.right':False,'axes.grid':True,'grid.alpha':0.22,'legend.frameon':False,\
              'figure.autolayout':True})` — then label axes WITH UNITS, give a concise title, add a legend \
-             for >=2 series, and use a restrained colorblind-safe palette (tab10 / a seaborn palette; \
-             seaborn is fine to pip_install for nicer defaults). Use ENGLISH text ON plots — matplotlib \
-             ships no CJK font, so Chinese axis/legend labels render as empty boxes; keep any Chinese in \
-             your prose, never on the figure. numpy, pandas, scipy, matplotlib, statsmodels and scikit-learn are \
+             for >=2 series, and use a restrained colorblind-safe palette (tab10 / a seaborn palette). \
+             LABELS IN THE USER'S LANGUAGE: for Chinese/CJK labels set a CJK font FIRST — \
+             `mpl.rcParams['font.sans-serif']=['PingFang SC','Heiti TC','Arial Unicode MS','DejaVu Sans']; \
+             mpl.rcParams['axes.unicode_minus']=False` — then verify no missing-glyph boxes; only if no CJK \
+             font is available fall back to English on the figure. \
+             MECHANISM / PATHWAY figures: don't settle for an abstract node-graph — DRAW A REAL SCHEMATIC \
+             (cells as shapes, molecules/receptors as boxes, +/- arrows, a legend; multi-panel if it \
+             clarifies) with patches/FancyArrowPatch, the way a paper's figure looks. \
+             ITERATE ON THE FIGURE: after a plotting cell, CHECK it actually ran (no Traceback) and LOOK at \
+             the result — if labels overlap, glyphs are boxes, or it errored, FIX and redraw (1-2 refine \
+             passes) before finishing; a good figure is iterated, never one-shot. \
+             CODE-QUOTING: in Python string LABELS, use double quotes or triple quotes when the text \
+             contains an apostrophe (e.g. \"don't eat me\") — an apostrophe inside a single-quoted string \
+             breaks parsing (a common cause of a figure cell failing). \
+             numpy, pandas, scipy, matplotlib, statsmodels and scikit-learn are \
              already installed, plus requests — use them directly (e.g. scipy.stats / statsmodels \
              for tests, confidence intervals and regression; scikit-learn for models). The kernel HAS \
              NETWORK access: DOWNLOAD a public dataset straight into the workspace with requests, \
