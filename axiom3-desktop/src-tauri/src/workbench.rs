@@ -2240,11 +2240,22 @@ pub async fn run_workflow(
     attachments: Option<Vec<String>>,
     mode: Option<String>,
     skill: Option<String>,
+    // Prior round's findings (a follow-up continuing the same research topic) — so the multi-agent
+    // team builds on established results instead of restarting. Enables multi-round deep research.
+    prior: Option<String>,
 ) -> Result<Run, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }
     let goal = prepend_skill(goal, skill); // /技能 picker: inject the chosen skill card up front
+    // A follow-up carrying prior findings CONTINUES the investigation — prepend them as settled context.
+    let goal = match prior.as_ref().map(|p| p.trim()).filter(|p| !p.is_empty()) {
+        Some(p) => format!(
+            "You are CONTINUING an ongoing research investigation. Prior round(s) established the following — treat it as settled, do NOT redo it:\n\n=== PRIOR FINDINGS ===\n{}\n=== END PRIOR FINDINGS ===\n\nThe user's follow-up:\n{goal}\n\nBuild directly on the prior findings — go deeper, address the new question, and produce an updated deliverable.",
+            p.chars().take(8000).collect::<String>()
+        ),
+        None => goal,
+    };
     let mode = mode.unwrap_or_else(|| "auto".into()); // composer mode → thinking vs fast model
     let deep_search = search == Some(true) || mode == "research";
     // Resolve provider/connection + model, mode-aware (研究/分析 → thinking model).
@@ -2526,6 +2537,9 @@ pub async fn coding_run(
     model: Option<String>,
     require_plan_approval: Option<bool>,
     skill: Option<String>,
+    // Prior round's findings (a follow-up in the SAME research session) — carried in so the agent
+    // CONTINUES the investigation instead of starting over. Enables multi-round deep research.
+    prior: Option<String>,
 ) -> Result<CodingRunResult, String> {
     let goal = prepend_skill(goal, skill);
     if goal.trim().is_empty() {
@@ -2573,15 +2587,25 @@ pub async fn coding_run(
             }
         }
     }
-    // Silent auto-expansion: turn a casual request into a rigorous research directive (with the
-    // depth requirements baked in) before the agent runs. Kept for the emit below to stream it.
-    let reframed = if is_analyze {
+    // A CONTINUATION (follow-up carrying prior findings) is NOT reframed — the new message is an
+    // instruction to go deeper, not a fresh casual ask. A first-round request IS reframed into a
+    // rigorous research directive.
+    let prior_ctx = prior.as_ref().map(|p| p.trim()).filter(|p| !p.is_empty());
+    let reframed = if is_analyze && prior_ctx.is_none() {
         reframe_goal(&provider, &model_id, &goal, &Cancel::new()).await
     } else {
         None
     };
     let base_goal = reframed.clone().unwrap_or_else(|| goal.clone());
-    let goal = format!("{base_goal}{data_note}");
+    // Prepend the prior round's findings so the agent CONTINUES the same investigation — build on
+    // what's established, don't re-derive it — realizing multi-round deep research on one topic.
+    let goal = match prior_ctx {
+        Some(p) => format!(
+            "You are CONTINUING an ongoing research investigation. Here is what you established in the previous round(s) — treat it as settled context, do NOT redo it:\n\n=== PRIOR FINDINGS ===\n{}\n=== END PRIOR FINDINGS ===\n\nThe user's follow-up now:\n{base_goal}\n\nBuild directly on the prior findings: go deeper, fill the gaps you named, run the next experiments/searches, refine the mechanism/figure, or answer the new question — and produce an updated, self-contained deliverable.{data_note}",
+            p.chars().take(8000).collect::<String>()
+        ),
+        None => format!("{base_goal}{data_note}"),
+    };
     // Analysis mode: give the agent a PERSISTENT Python kernel (numpy/pandas/scipy/
     // matplotlib/statsmodels/scikit-learn from the managed venv), cwd = the workspace so
     // files it writes and code it runs

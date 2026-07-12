@@ -226,7 +226,7 @@ function App() {
     if (pr.run === "free") submitFreeText(pr.text);
     else if (pr.run === "check") runCheckDraft(pr.text);
     else if (pr.run === "workflow") runWorkflow(pr.text, pr.appendTo);
-    else if (pr.run === "coding") runCoding(pr.text, pr.forceAnalyze);
+    else if (pr.run === "coding") runCoding(pr.text, pr.forceAnalyze, pr.appendTo);
   }, [projectDir, pendingRun]);
   // Live orchestration runs (module-level store) — feeds the in-thread thinking chain.
   const liveRuns = useSyncExternalStore(runStore.subscribe, runStore.snapshot);
@@ -794,6 +794,7 @@ function App() {
     const runid = `run-${crypto.randomUUID()}`;
     const sessionId = appendTo ?? runid;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
+    const priorSynth = appendTo ? tasks.find((x) => x.id === appendTo)?.synthesis : undefined; // continue prior research
     if (appendTo) {
       // Point the live chain at THIS run (a fresh runid ≠ the session id) and drop the prior
       // version's steps so the stale v1 log isn't shown as if it were the live v2 stream.
@@ -817,7 +818,7 @@ function App() {
       synthesis: string | null;
       review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
-    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode, skill: pendingSkill || sessionCfg.specialist || undefined }));
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode, skill: pendingSkill || sessionCfg.specialist || undefined, prior: priorSynth || undefined }));
     if (!appendTo) { setCodeAttachments([]); setPendingSkill(null); }
     const steps = r?.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model }));
     setTasks((ts) =>
@@ -849,18 +850,29 @@ function App() {
     const paths = Array.isArray(sel) ? sel : typeof sel === "string" ? [sel] : [];
     if (paths.length) setCodeAttachments((a) => [...new Set([...a, ...paths])]);
   }
-  async function runCoding(goal: string, forceAnalyze = false) {
+  // `appendTo` = a follow-up in the SAME analysis session → continue the research (prior findings
+  // fed back in) and append the result as a new version (v2, v3 …), for multi-round deep research.
+  async function runCoding(goal: string, forceAnalyze = false, appendTo?: string) {
     const g = goal.trim();
     if (!g) return;
-    if (!projectDir) { setPendingRun({ run: "coding", text: g, forceAnalyze }); newTask(); return; }
+    if (!projectDir) { setPendingRun({ run: "coding", text: g, forceAnalyze, appendTo }); newTask(); return; }
     const doAnalyze = forceAnalyze || codeAnalyze || cmd === "analyze";
     if (!codeWs && !doAnalyze) return; // code mode needs a folder; analyze can use a scratch dir
     const runid = `run-${crypto.randomUUID()}`;
+    const sessionId = appendTo ?? runid;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
-    setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
-    setForkOrigin(null);
-    setActiveId(runid);
-    pushTab(runid);
+    // Prior round's findings → carried into the run so the agent continues the investigation.
+    const prior = appendTo ? tasks.find((x) => x.id === appendTo)?.synthesis : undefined;
+    if (appendTo) {
+      setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running", liveRunId: runid, steps: undefined } : x)));
+      setActiveId(appendTo);
+      pushTab(appendTo);
+    } else {
+      setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
+      setForkOrigin(null);
+      setActiveId(runid);
+      pushTab(runid);
+    }
     setNav("tasks");
     setView("thread");
     setCmd(null);
@@ -868,18 +880,23 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string; trace?: AgentStepView[] }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined })
     );
-    setCodeAttachments([]);
+    if (!appendTo) { setCodeAttachments([]); }
     setPendingSkill(null);
     setTasks((ts) =>
-      ts.map((x) =>
-        x.id === runid
-          ? r
-            ? { ...x, status: r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed", synthesis: r.synthesis, steps: r.trace ?? [] }
-            : { ...x, status: "failed", error: "failed" }
-          : x
-      )
+      ts.map((x) => {
+        if (x.id !== sessionId) return x;
+        if (!r) return { ...x, status: "failed" as const, error: "failed" };
+        const status = r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed";
+        const steps = r.trace ?? [];
+        if (appendTo) {
+          const prior = x.versions ?? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }];
+          const newVer = { synthesis: r.synthesis, steps, ts: Date.now(), goal: g };
+          return { ...x, status, synthesis: r.synthesis, steps, goal: g, versions: [...prior, newVer] };
+        }
+        return { ...x, status, synthesis: r.synthesis, steps };
+      })
     );
   }
 
@@ -1033,8 +1050,8 @@ function App() {
       return false;
     }
     const at = tasks.find((x) => x.id === activeId);
-    if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → iterate the artifact (v2…)
-    else if (at?.type === "code" && (codeWs || codeAnalyze)) runCoding(text);
+    if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → continue the research (v2…)
+    else if (at?.type === "code") runCoding(text, true, at.id); // follow-up → continue the same analysis session (build on prior findings)
     // 分析 = CODE-FIRST: a single agent starts a real Python kernel, runs the data, and the
     // artifact IS the computed result (volcano/tables from actual numbers) — same shape as
     // Claude Science. Previously 分析 went to the multi-agent TEXT workflow, which could
