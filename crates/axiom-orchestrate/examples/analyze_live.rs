@@ -54,6 +54,7 @@ async fn main() {
             let figs = if step.figures.is_empty() { String::new() } else { format!(" [+{} fig]", step.figures.len()) };
             println!("  [step {}] {} {}{} → {}", step.n, step.tool, step.detail, figs, obs1);
         },
+        |_, _| {},
     )
     .await;
 

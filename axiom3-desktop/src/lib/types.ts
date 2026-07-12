@@ -66,7 +66,22 @@ export type RunEvent = { run_id: string; seq: number; ts: number } & (
   | { kind: "agent_finished"; agent_id: string; outcome: string; tokens_in: number; tokens_out: number; error: string | null; summary: string | null }
   | { kind: "run_progress"; agents_done: number; agents_total: number; agents_running: number; agents_queued: number }
   | { kind: "run_finished"; status: string; agents_total: number; agents_ok: number; agents_err: number; error: string | null }
+  | { kind: "ask_user"; agent_id: string; card_id: string; card: string }
 );
+
+// A structured clarifying question the agent asks mid-run (the `ask_user` tool) — rendered as an
+// AskUserQuestion-style card. `card` on the event is the JSON of { card_id, questions:[…] }.
+export type AskOption = { label: string; description?: string; consequence?: string; convention?: boolean };
+export type AskQuestion = {
+  header?: string;
+  question: string;
+  kind?: "intent" | "fork" | "permission" | "integrity" | "scope" | "cost";
+  multiSelect?: boolean;
+  allowOther?: boolean;
+  why_it_matters?: string;
+  options: AskOption[];
+};
+export type AskCard = { cardId: string; questions: AskQuestion[] };
 
 export type AgentView = {
   id: string;
@@ -99,6 +114,7 @@ export type RunView = {
   startedMs: number;
   finishedMs?: number;
   error?: string;
+  pendingAsk?: AskCard; // set while the agent is parked on an ask_user question; cleared on answer/next step
 };
 
 // A unit of work the platform runs. Today check_draft + workflow execute; the others

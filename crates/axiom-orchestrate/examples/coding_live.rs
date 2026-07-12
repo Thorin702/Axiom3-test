@@ -55,6 +55,7 @@ async fn main() {
             let obs1: String = step.observation.lines().next().unwrap_or("").chars().take(90).collect();
             println!("  [step {}] {} {} → {}", step.n, step.tool, step.detail, obs1);
         },
+        |_, _| {},
     )
     .await;
     println!("=== used `plan`: {} · used `edit`: {} ===", if used_plan { "YES ✓" } else { "no" }, if used_edit { "YES ✓" } else { "no" });

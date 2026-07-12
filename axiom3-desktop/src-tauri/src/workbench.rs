@@ -887,6 +887,11 @@ impl AppState {
             p.resume();
         }
     }
+    fn answer_run(&self, run_id: &str, answer: String) {
+        if let Some((_, p)) = self.runs.lock().unwrap_or_else(|g| g.into_inner()).get(run_id) {
+            p.set_answer(answer);
+        }
+    }
 }
 
 /// RAII reservation of an orchestration run's slot in [`AppState::runs`]. Mirrors
@@ -2319,10 +2324,13 @@ async fn compute_figures_for_report(
     let model = ProviderModel { provider: provider.into(), model: model_id.into(), timeout_s: 90 };
     let budget = CodingBudget::default();
     let pause = Pause::new();
+    // This is a headless figure-recomputation step: its pause is not the run's registered one and it
+    // renders no card, so `ask_user` must NOT park here — disable it so the model converges instead.
+    pause.disable_asks();
     let result = run_coding_agent(&goal, &sandbox, &model, cancel, &pause, &budget, Some(kernel), |step| {
         let note = format!("{} {}", step.tool, step.detail);
         em.emit(RunEventBody::AgentProgress { agent_id: "analyst".into(), step: step.n, tokens_in: 0, tokens_out: 0, note: Some(note) });
-    })
+    }, |_, _| {})
     .await;
     let outcome = if result.status == "done" { "ok" } else { "err" };
     em.emit(RunEventBody::AgentFinished {
@@ -2363,6 +2371,13 @@ pub fn pause_run(state: tauri::State<'_, AppState>, runid: String) {
 #[tauri::command]
 pub fn resume_run(state: tauri::State<'_, AppState>, runid: String) {
     state.resume_run(&runid);
+}
+
+/// Deliver the human's answer to a parked `ask_user` question — unblocks the run's tool loop,
+/// which feeds the answer back to the model as the tool result.
+#[tauri::command]
+pub fn answer_ask(state: tauri::State<'_, AppState>, runid: String, answer: String) {
+    state.answer_run(&runid, answer);
 }
 
 #[derive(Serialize)]
@@ -2603,6 +2618,9 @@ pub async fn coding_run(
             tokens_out: 0,
             note: Some(note),
         });
+    }, |card_id, card| {
+        // ask_user: the agent is parked waiting for the human — emit the question card to the UI.
+        em.emit(RunEventBody::AskUser { agent_id: "coder".into(), card_id, card });
     })
     .await;
 

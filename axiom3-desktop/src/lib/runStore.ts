@@ -39,6 +39,19 @@ function reduce(runs: RunView[], ev: RunEvent): RunView[] {
           ? { ...a, rich: [...(a.rich ?? []), { role: ev.role, status: ev.status, output: ev.output, title: ev.title, reasoning: ev.reasoning, lines: ev.lines }] }
           : a
       );
+      r.pendingAsk = undefined; // a step streamed → the pending question (if any) has been answered
+      break;
+    case "ask_user":
+      // The agent is parked on a structured question — surface the card. `card` is the JSON of
+      // { card_id, questions:[…] }; a malformed card is ignored rather than crashing the store.
+      try {
+        const parsed = JSON.parse(ev.card);
+        const qs = Array.isArray(parsed?.questions) ? parsed.questions : [];
+        // Only surface questions the card can actually render (a `question` string) — a card that
+        // filters down to nothing would park the run behind an invisible card.
+        const valid = qs.filter((q: { question?: string }) => q && typeof q.question === "string" && q.question.trim().length > 0);
+        if (valid.length > 0) r.pendingAsk = { cardId: ev.card_id, questions: valid };
+      } catch { /* malformed ask card — ignore */ }
       break;
     case "agent_finished":
       r.agents = r.agents.map((a) =>
@@ -51,6 +64,7 @@ function reduce(runs: RunView[], ev: RunEvent): RunView[] {
     case "run_finished":
       r.status = ev.status === "done" ? "done" : ev.status === "cancelled" ? "cancelled" : "failed";
       r.finishedMs = ev.ts; r.error = ev.error ?? undefined;
+      r.pendingAsk = undefined; // run ended → drop any unanswered card
       // Reconcile any agent still "running" (its finish event never arrived / it panicked) to
       // a terminal state so its dot and Time column resolve instead of freezing forever.
       r.agents = r.agents.map((a) =>

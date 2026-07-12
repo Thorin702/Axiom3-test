@@ -4,11 +4,13 @@
 // a launch animation + its name/model), and every step it takes — for coding/analysis runs that
 // includes the VERBATIM code and its result (via AgentSteps), streamed live as the agent works.
 import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { Square, Cpu } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { RunView } from "../lib/types";
 import { AgentSteps } from "./AgentSteps";
 import { WorkflowStarting } from "./WorkflowStarting";
+import { AskingCard } from "./AskingCard";
 import { phaseLabel } from "../lib/phaseLabels";
 
 function fmtDur(ms: number): string {
@@ -105,6 +107,15 @@ export function ThreadActivity({ run, lang, onCancel }: { run: RunView; lang: La
       })}
 
       {run.agents.length === 0 && live && <WorkflowStarting lang={lang} />}
+
+      {/* the agent is parked on a structured question — render the AskUserQuestion-style card */}
+      {live && run.pendingAsk && (
+        <AskingCard
+          card={run.pendingAsk}
+          lang={lang}
+          onSubmit={(answer) => { invoke("answer_ask", { runid: run.id, answer }).catch(() => {}); }}
+        />
+      )}
     </div>
   );
 }

@@ -230,6 +230,11 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              {\"tool\":\"checkpoint\"}   (snapshot the kernel's variables to disk before a risky or huge \
              step, so you can recover them.)  {\"tool\":\"restore\"}   (reload them after a kernel restart \
              or crash — in-memory state is otherwise lost when the kernel restarts.)\n\
+             {\"tool\":\"ask_user\",\"questions\":[{\"header\":\"<=12 chars\",\"question\":\"<neutral one-line choice>\",\
+             \"kind\":\"intent|fork|permission|integrity|scope|cost\",\"why_it_matters\":\"<how the branches change the verdict>\",\
+             \"multiSelect\":false,\"allowOther\":true,\"options\":[{\"label\":\"<=40 chars\",\"description\":\"what it does + the tradeoff\",\"convention\":false}]}]}   \
+             (ASK THE HUMAN a structured question and WAIT for the answer — the run pauses until they reply. Use 1-4 \
+             questions per card, 2-4 options each; batch related forks into ONE card. See the asking policy below.)\n\
              {\"tool\":\"search_skills\",\"query\":\"<domain/task>\"}   (search the domain SKILL library \
              for an expert playbook — e.g. single-cell, phylogenetics, differential expression, CRISPR \
              screen, protein engineering, GWAS. Returns matching skill names.)\n\
@@ -252,6 +257,30 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              unit to avoid pseudoreplication (e.g. per-sample, not per-cell); (4) report effect sizes \
              with confidence intervals, not p-values alone. Before finishing, re-check these and state \
              any caveat honestly — surfacing a limitation is worth more than an overclaimed result.\n\
+             ASKING THE HUMAN (ask_user) — you are a verification-first research agent, so you ask MORE \
+             than a generic coding assistant: in science a silent default is a hidden assumption that \
+             can invalidate a result. When a choice is genuinely FORKED and load-bearing you MUST call \
+             ask_user and wait — never silently pick the option you think is best (that is the failure \
+             this product exists to prevent). ASK at these moments: (1) INTAKE — once, at the start of a \
+             non-trivial run BEFORE downloading data or heavy compute, batch up to 4 questions confirming \
+             the research question, what a trustworthy answer looks like, and data provenance (attached vs \
+             fetched vs synthetic changes trust); (2) TARGET NUMBER — if the request names an expected \
+             result ('~150 genes'), ask if it's a hypothesis to TEST (report the honest number) or a hard \
+             expectation (you will NOT tune thresholds to hit it) — never reverse-engineer results to a \
+             target; (3) INTEGRITY — if the task as stated would need p-hacking/cherry-picking/overstating \
+             certainty, surface it as a choice, never silently comply or refuse; (4) PERMISSION — before \
+             network egress beyond curated sources, large downloads, long/background compute, or writing \
+             outside your scratch, state the exact size/cost; (5) A methodological FORK where alternatives \
+             are each defensible AND would plausibly move the conclusion: normalization/transform, the \
+             statistical test, multiple-testing correction + alpha, significance/effect cutoff, data source \
+             + VERSION/BUILD, QC/inclusion filters, batch correction, covariates, aggregation unit, \
+             reference/control, imputation, seed-when-it-matters. Do NOT ask about cosmetic/reversible \
+             choices or a truly-standard default whose alternative wouldn't change the conclusion — apply it \
+             and DISCLOSE it in your assumptions. Present options NEUTRALLY (never 'recommended'/'best'/\
+             'optimal'; mark at most one as the field `convention`); for a real fork pre-select NOTHING. \
+             Budget: after intake, at most ~3 discretionary fork cards per run (permission/integrity asks \
+             don't count) — when spent, fall back to conventions and DISCLOSE them so the run converges. \
+             After the human answers, use exactly their choice and record it in your methods/assumptions.\n\
              For a crisp, interactive figure in the report, you may instead emit a NATIVE figure block \
              in your final answer, filled with values you computed in python. Use these EXACT shapes: \
              ```chart bar = {\"type\":\"bar\",\"title\":..,\"xlabel\":..,\"ylabel\":..,\"data\":[{\"label\":\"Jan\",\"value\":12}, …]}; \
@@ -314,6 +343,9 @@ pub async fn run_coding_agent(
     budget: &CodingBudget,
     kernel: Option<Arc<PyKernel>>,
     mut on_step: impl FnMut(CodingStepRec),
+    // Called when the agent invokes `ask_user`: (card_id, card_json) — the shell emits an AskUser
+    // event so the UI can render the question card. The loop then parks until the answer arrives.
+    mut on_ask: impl FnMut(String, String),
 ) -> CodingResult {
     let sys = system_prompt(sandbox.mode(), kernel.is_some());
     let mut transcript = format!("GOAL:\n{goal}\n\nWorkspace root: {}\n", sandbox.root().display());
@@ -733,6 +765,57 @@ pub async fn run_coding_agent(
                 }
                 None => ("restore".to_string(), "ERROR: restore needs the analysis kernel".to_string()),
             },
+            "ask_user" if pause.asks_disabled() => {
+                // Headless/secondary step with no UI to answer a card — never park; converge instead.
+                ("ask_user".to_string(), "[clarifying questions are disabled in this background step — proceed with sensible, field-standard defaults and DISCLOSE each assumption]".to_string())
+            }
+            "ask_user" => {
+                // Surface a structured clarifying question to the human and PARK until they answer.
+                // The chosen answer becomes this tool's observation, feeding straight back to the model.
+                let card_id = {
+                    let c = arg_str(&v, "card_id");
+                    if c.is_empty() { format!("ask-{n}") } else { c.to_string() }
+                };
+                // Normalize into { questions: [...] } — accept either a `questions` array or a single
+                // top-level question, tolerating snake_case + camelCase keys from weaker models.
+                let questions = if let Some(qs) = v.get("questions").and_then(|x| x.as_array()) {
+                    serde_json::Value::Array(qs.clone())
+                } else {
+                    let multi = v.get("multi_select").or_else(|| v.get("multiSelect")).and_then(|x| x.as_bool()).unwrap_or(false);
+                    let other = v.get("allow_other").or_else(|| v.get("allowOther")).and_then(|x| x.as_bool()).unwrap_or(true);
+                    let mut q = serde_json::Map::new();
+                    q.insert("header".into(), v.get("header").cloned().unwrap_or_else(|| serde_json::Value::String(String::new())));
+                    q.insert("question".into(), serde_json::Value::String(arg_str(&v, "question").to_string()));
+                    q.insert("kind".into(), v.get("kind").cloned().unwrap_or_else(|| serde_json::Value::String("fork".into())));
+                    q.insert("options".into(), v.get("options").cloned().unwrap_or_else(|| serde_json::Value::Array(vec![])));
+                    q.insert("multiSelect".into(), serde_json::Value::Bool(multi));
+                    q.insert("allowOther".into(), serde_json::Value::Bool(other));
+                    if let Some(w) = v.get("why_it_matters") { q.insert("why_it_matters".into(), w.clone()); }
+                    serde_json::Value::Array(vec![serde_json::Value::Object(q)])
+                };
+                // Refuse to park on a card the UI can't render (no question with text) — otherwise
+                // the run would hang behind an invisible card. Nudge the model instead of blocking.
+                let renderable = questions.as_array().map(|qs| {
+                    qs.iter().any(|q| q.get("question").and_then(|s| s.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false))
+                }).unwrap_or(false);
+                if !renderable {
+                    ("ask_user".to_string(), "ERROR: ask_user needs at least one question with a non-empty \"question\" field (and 2-4 options). Re-emit a valid card, or proceed with sensible defaults and disclose them.".to_string())
+                } else {
+                    let card = serde_json::json!({ "card_id": card_id, "questions": questions }).to_string();
+                    on_ask(card_id.clone(), card); // shell emits AskUser → UI renders the card
+                    let _ = pause.take_answer(); // discard any stale answer
+                    // Park until the human answers; cancellation still wins immediately.
+                    let answer = loop {
+                        if cancel.is_cancelled() { break None; }
+                        if let Some(a) = pause.take_answer() { break Some(a); }
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                    };
+                    match answer {
+                        Some(a) => ("ask_user".to_string(), format!("The human answered your question:\n{a}\nUse exactly these choices and record them in the report's methods / assumptions.")),
+                        None => ("ask_user".to_string(), "[question dismissed — proceed with sensible, field-standard defaults and DISCLOSE each assumption you make; do NOT re-ask this]".to_string()),
+                    }
+                }
+            }
             other => (other.to_string(), format!("ERROR: unknown tool '{other}'")),
         };
         all_figures.extend(step_figures.iter().cloned());
@@ -944,7 +1027,7 @@ mod tests {
             ]),
         };
         let mut steps = 0;
-        let res = run_coding_agent("review main.rs", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| steps += 1).await;
+        let res = run_coding_agent("review main.rs", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| steps += 1, |_, _| {}).await;
         assert_eq!(res.status, "done");
         assert!(res.summary.contains("prints hi"));
         assert_eq!(steps, 2); // list_dir + read_file (final isn't a tool step)
@@ -965,7 +1048,7 @@ mod tests {
             ]),
         };
         let mut steps = 0;
-        let res = run_coding_agent("x", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| steps += 1).await;
+        let res = run_coding_agent("x", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| steps += 1, |_, _| {}).await;
         assert_eq!(res.status, "done", "summary: {}", res.summary);
         assert!(res.summary.contains("looked at the dir"), "must reach the post-nudge final, got: {}", res.summary);
         assert_eq!(steps, 1, "only the valid list_dir ran as a step (malformed reply executed nothing)");
@@ -1001,7 +1084,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
-        let res = run_coding_agent("x", &sb, &model, &Cancel::new(), &pause, &CodingBudget::default(), None, |_| {}).await;
+        let res = run_coding_agent("x", &sb, &model, &Cancel::new(), &pause, &CodingBudget::default(), None, |_| {}, |_, _| {}).await;
         watcher.await.unwrap();
         assert!(approved.load(Ordering::SeqCst), "the gate must have paused the run after the first plan");
         assert_eq!(res.status, "done", "summary: {}", res.summary);
@@ -1020,7 +1103,7 @@ mod tests {
                 r#"{"final":"created hello.txt"}"#.into(),
             ]),
         };
-        let res = run_coding_agent("make hello.txt", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| {}).await;
+        let res = run_coding_agent("make hello.txt", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| {}, |_, _| {}).await;
         assert_eq!(res.status, "done");
         assert_eq!(std::fs::read_to_string(root.join("hello.txt")).unwrap(), "hi there");
         let _ = std::fs::remove_dir_all(&root);
@@ -1036,7 +1119,7 @@ mod tests {
                 r#"{"final":"could not write"}"#.into(),
             ]),
         };
-        let res = run_coding_agent("try to write", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| {}).await;
+        let res = run_coding_agent("try to write", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| {}, |_, _| {}).await;
         assert_eq!(res.status, "done");
         assert!(!root.join("x.txt").exists(), "read-only sandbox must not create files");
         let _ = std::fs::remove_dir_all(&root);
@@ -1049,7 +1132,7 @@ mod tests {
         let model = ScriptModel { replies: Mutex::new(vec![r#"{"tool":"list_dir","path":"."}"#.into()]) };
         let cancel = Cancel::new();
         cancel.cancel();
-        let res = run_coding_agent("x", &sb, &model, &cancel, &Pause::new(), &CodingBudget::default(), None, |_| {}).await;
+        let res = run_coding_agent("x", &sb, &model, &cancel, &Pause::new(), &CodingBudget::default(), None, |_| {}, |_, _| {}).await;
         assert_eq!(res.status, "cancelled");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1078,6 +1161,7 @@ mod tests {
         let res = run_coding_agent(
             "compute", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(),
             Some(kernel), |s| { obs.push(s.observation); inputs.push(s.input); },
+            |_, _| {},
         )
         .await;
         assert_eq!(res.status, "done", "summary: {}", res.summary);

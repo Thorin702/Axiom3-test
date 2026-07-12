@@ -139,6 +139,7 @@ async fn main() {
                     figures: step.figures.len(),
                 });
             },
+        |_, _| {},
         )
         .await;
         let collected = steps.lock().unwrap().clone();

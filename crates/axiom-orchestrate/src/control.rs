@@ -3,12 +3,19 @@
 //! an opt-in plan-approval gate: when enabled, the loop pauses ONCE right after the first plan so
 //! the user can approve / edit / reject before anything executes (resume = approve; cancel = reject).
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
 struct Inner {
     paused: AtomicBool,
     require_approval: AtomicBool,
+    // When set, the `ask_user` tool does NOT park — it returns a proceed-on-defaults observation
+    // immediately. Used by headless/secondary steps (e.g. figure recomputation) that have no UI to
+    // surface a card and whose pause is not the one the `answer_ask` command can reach.
+    asks_disabled: AtomicBool,
+    // Answer channel for the `ask_user` tool: the parked tool polls `take_answer`; the UI fills it
+    // via the `answer_ask` command. One slot is enough — asks are strictly one-at-a-time per run.
+    answer: Mutex<Option<String>>,
 }
 
 #[derive(Clone, Default)]
@@ -33,5 +40,20 @@ impl Pause {
     }
     pub fn approval_required(&self) -> bool {
         self.0.require_approval.load(Ordering::Relaxed)
+    }
+    /// Deliver the human's answer to a parked `ask_user` tool call.
+    pub fn set_answer(&self, answer: String) {
+        *self.0.answer.lock().unwrap_or_else(|p| p.into_inner()) = Some(answer);
+    }
+    /// The parked tool polls this; returns Some once the human has answered (and clears the slot).
+    pub fn take_answer(&self) -> Option<String> {
+        self.0.answer.lock().unwrap_or_else(|p| p.into_inner()).take()
+    }
+    /// Disable interactive `ask_user` parking for this run (headless/secondary steps with no UI).
+    pub fn disable_asks(&self) {
+        self.0.asks_disabled.store(true, Ordering::Relaxed);
+    }
+    pub fn asks_disabled(&self) -> bool {
+        self.0.asks_disabled.load(Ordering::Relaxed)
     }
 }

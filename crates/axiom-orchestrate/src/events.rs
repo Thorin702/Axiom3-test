@@ -28,6 +28,11 @@ pub enum RunEventBody {
     AgentFinished { agent_id: String, outcome: String, tokens_in: u64, tokens_out: u64, error: Option<String>, summary: Option<String> },
     RunProgress { agents_done: usize, agents_total: usize, agents_running: usize, agents_queued: usize },
     RunFinished { status: String, agents_total: usize, agents_ok: usize, agents_err: usize, error: Option<String> },
+    /// The agent is PAUSED waiting for the human to answer a structured clarifying question
+    /// (the `ask_user` tool). `card` is the JSON the model passed — a `questions` array, each with
+    /// a header/question/options — which the UI renders as an AskUserQuestion-style card. The run
+    /// parks until `answer_ask` delivers the human's selection back into the loop.
+    AskUser { agent_id: String, card_id: String, card: String },
 }
 
 #[derive(Debug, Clone, Serialize)]

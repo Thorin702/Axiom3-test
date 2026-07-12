@@ -53,6 +53,7 @@ async fn main() {
             let o: String = s.observation.lines().next().unwrap_or("").chars().take(64).collect();
             println!("  [{}] {} {} → {}", s.n, s.tool, s.detail, o);
         },
+        |_, _| {},
     )
     .await;
 
