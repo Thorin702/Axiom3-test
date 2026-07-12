@@ -229,6 +229,10 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-resize::after { content: ""; position: absolute; inset: 0 0 0 50%; width: 1px; transform: translateX(-50%);
   background: transparent; transition: background .12s ease; }
 .ax-resize:hover::after, .ax-resize:active::after { background: var(--ax-accent); }
+/* transient confirmation toast (export done, project opened, …) — replaces the old dev-log */
+.ax-toast { position: fixed; bottom: 26px; left: 50%; transform: translateX(-50%); z-index: 90;
+  max-width: 460px; padding: 9px 16px; border-radius: 999px; background: var(--ax-ink); color: var(--ax-paper);
+  font-size: 12.5px; box-shadow: 0 6px 24px rgba(0,0,0,0.24); animation: ax-agent-in .25s ease both; }
 .ax-app.has-rail { grid-template-columns: 258px 1fr 360px; }
 
 /* ── boot splash ───────────────────────────────────────────────────── */
@@ -370,10 +374,14 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 
 /* ── task composer (slash commands) ────────────────────────────────── */
 /* the composer is one unified input card (Claude-like) — inner fields are seamless */
+/* Claude-style: the composer is an elevated card in a distinct colour (surface), floating on the
+   flat page (paper) — only the input box + its buttons stand out; the page stays plain. */
 .ax-composer { position: relative; margin-top: 8px; border: 1px solid var(--ax-line);
   border-radius: var(--ax-radius-lg); background: var(--ax-surface); padding: 6px 6px 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.05), 0 6px 20px rgba(0,0,0,0.06);
   transition: border-color 0.15s ease, box-shadow 0.15s ease; }
-.ax-composer:focus-within { border-color: var(--ax-ink-faint); }
+.ax-composer:focus-within { border-color: var(--ax-ink-faint);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06), 0 8px 26px rgba(0,0,0,0.09); }
 .ax-composer > .ax-textarea, .ax-composer > * > .ax-textarea { border: none; background: transparent; padding: 8px 9px; resize: none; }
 /* main composer starts at one line (rows=1) and auto-grows (JS sets height); cap + scroll here.
    Scoped to --grow so the taller command-mode textareas (/校对 rows=9 etc.) aren't clipped. */
@@ -386,6 +394,10 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-send:hover:not(:disabled) { filter: brightness(0.9); }
 .ax-send:disabled { background: var(--ax-surface-2); color: var(--ax-ink-faint); cursor: default;
   box-shadow: inset 0 0 0 1px var(--ax-line); }
+/* while a run is in flight the same button becomes a pause/resume control (accent-tinted) */
+.ax-send--run { background: var(--ax-accent); color: #fff; }
+.ax-send--run.is-paused { background: var(--ax-lamp-amber, var(--ax-accent)); }
+.ax-chip--queued { background: var(--ax-surface-2); border-color: var(--ax-line); color: var(--ax-ink-soft); }
 .ax-composer details { padding: 0 4px; }
 .ax-composer details .ax-textarea { border: 1px solid var(--ax-line-soft); background: var(--ax-surface-2); border-radius: var(--ax-radius); padding: 8px 10px; }
 .ax-composer__chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;

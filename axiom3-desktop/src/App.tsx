@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source, AgentStepView } from "./lib/types";
+import type { ProjectStatus, DraftCheck, ExportSummary, Task, Source, AgentStepView } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
@@ -26,13 +26,12 @@ import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { ActivityRail } from "./components/ActivityRail";
 import { Splash } from "./components/Splash";
-import { StatusBar } from "./components/StatusBar";
 import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
   Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
-  MoreHorizontal, Pencil, Mic, ChevronDown, Info, type LucideIcon,
+  MoreHorizontal, Pencil, Mic, ChevronDown, Info, Pause, Play, type LucideIcon,
 } from "lucide-react";
 
 // Composer modes (the icon-button popover, Claude-style). Each maps to backend behaviour:
@@ -131,11 +130,9 @@ function App() {
   langRef.current = lang;
 
   const [status, setStatus] = useState<ProjectStatus | null>(null);
-  const [actor, setActor] = useState("researcher");
-  const [op, setOp] = useState("note");
-  const [payload, setPayload] = useState('{"text":"hello"}');
-  const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState("");
+  const [toast, setToast] = useState(""); // transient confirmation (export done, project opened, …)
+  const noteTimer = useRef(0);
   const [busy, setBusy] = useState(false);
   const [draft, setDraft] = useState(
     () => localStorage.getItem("axiom3.draft") ?? "Water boils at 100 degrees Celsius at sea level. Therefore the treatment causes recovery."
@@ -231,6 +228,25 @@ function App() {
   }, [projectDir, pendingRun]);
   // Live orchestration runs (module-level store) — feeds the in-thread thinking chain.
   const liveRuns = useSyncExternalStore(runStore.subscribe, runStore.snapshot);
+  // Merged send/pause button: while the ACTIVE session's run is in flight, an EMPTY composer's
+  // button pauses it (coding runs only — the only path the backend can pause), and a NON-empty
+  // one QUEUES the text. queued/paused are keyed to a specific session/run (never global) so a
+  // mid-run session switch can't mis-target them.
+  const [queued, setQueued] = useState<string | null>(null);
+  const [queuedFor, setQueuedFor] = useState<string | null>(null); // the session the queued text belongs to
+  const [pausedRids, setPausedRids] = useState<Set<string>>(() => new Set());
+  // Auto-send the queued follow-up once ITS session's run finishes — routed to that session (not
+  // whichever is open now), keyed on the target task's status (not the imprecise global busy edge).
+  useEffect(() => {
+    if (queued == null || queuedFor == null) return;
+    const target = tasks.find((t) => t.id === queuedFor);
+    if (!target) { setQueued(null); setQueuedFor(null); return; }
+    if (target.status === "running") return; // still running — keep waiting
+    const text = queued;
+    setQueued(null); setQueuedFor(null);
+    if (target.type === "workflow") runWorkflow(text, target.id);
+    else runCoding(text, true);
+  }, [queued, queuedFor, tasks]);
   const [notableOnly, setNotableOnly] = useState(true);
   const [reviewed, setReviewed] = useState<Record<string, boolean>>(() => {
     try {
@@ -471,7 +487,9 @@ function App() {
   }, []);
 
   function note(line: string) {
-    setLog((l) => [line, ...l].slice(0, 30));
+    setToast(line);
+    window.clearTimeout(noteTimer.current);
+    noteTimer.current = window.setTimeout(() => setToast(""), 2800);
   }
 
   async function run<T>(fn: () => Promise<T>): Promise<T | undefined> {
@@ -632,26 +650,6 @@ function App() {
     const h = new Date().getHours();
     if (lang === "zh") return h < 5 ? "夜深了" : h < 11 ? "早上好" : h < 13 ? "中午好" : h < 18 ? "下午好" : "晚上好";
     return h < 5 ? "Still up?" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
-  }
-
-  async function appendEvent() {
-    const e = await run(() => invoke<EventInfo>("append_event", { actor, op, payload }));
-    if (e) {
-      note(`#${e.seq} ${e.actor}/${e.op} → ${e.entry_hash.slice(0, 12)}…`);
-      const s = await run(() => invoke<ProjectStatus>("project_status"));
-      if (s) setStatus(s);
-    }
-  }
-
-  async function verifyChain() {
-    const ok = await run(() => invoke<boolean>("verify_chain"));
-    if (ok !== undefined)
-      note(`${t(lang, "verify_chain")} → ${ok ? t(lang, "chain_intact") : t(lang, "chain_broken")}`);
-  }
-
-  async function vectorSelfTest() {
-    const r = await run(() => invoke<string>("vector_self_test"));
-    if (r) note(`${t(lang, "vector_self_test")} → ${r}`);
   }
 
   async function importInto(setter: (s: string) => void) {
@@ -1089,8 +1087,14 @@ function App() {
               rows={1}
               placeholder={t(lang, "composer_ph")}
             />
-            {(codeAttachments.length > 0 || pendingSkill || sessionCfg.specialist) && (
+            {(codeAttachments.length > 0 || pendingSkill || sessionCfg.specialist || (queued && queuedFor === activeId)) && (
               <div className="ax-toolrow" style={{ flexWrap: "wrap", padding: "2px 6px 0" }}>
+                {queued && queuedFor === activeId && (
+                  <span className="ax-chip ax-chip--queued" title={lang === "zh" ? "已排队 · 上次运行完成后自动发送" : "queued — auto-sends after the current run"}>
+                    ⏳ {queued.slice(0, 32)}{queued.length > 32 ? "…" : ""}
+                    <button className="ax-chip__x" onClick={() => { setQueued(null); setQueuedFor(null); }} aria-label="remove queued">×</button>
+                  </span>
+                )}
                 {pendingSkill && (
                   <span className="ax-chip ax-chip--skill" title={lang === "zh" ? "本次运行将使用此技能" : "this skill will guide the run"}>
                     🧭 {(() => { const s = SKILLS.find((x) => x.key === pendingSkill); return s ? (lang === "zh" ? s.zh : s.en) : pendingSkill; })()}
@@ -1182,15 +1186,41 @@ function App() {
                     </>
                   )}
                 </div>
-                <button
-                  className="ax-send"
-                  onClick={() => submitFreeText()}
-                  disabled={busy || !slash.trim() || slashOpen}
-                  title={t(lang, "task_run")}
-                  aria-label={t(lang, "task_run")}
-                >
-                  <ArrowUp size={16} aria-hidden />
-                </button>
+                {/* merged send / pause button: send → (while running) pause; typing + send while
+                    running queues the text to auto-send when the current run finishes. */}
+                {(() => {
+                  const hasText = slash.trim().length > 0;
+                  const activeRunning = activeTask?.status === "running";
+                  const runningCode = activeRunning && activeTask?.type === "code"; // only coding runs are pausable
+                  if (runningCode && !hasText) {
+                    const rid = activeTask!.liveRunId ?? activeTask!.id;
+                    const isPaused = pausedRids.has(rid);
+                    return (
+                      <button
+                        className={`ax-send ax-send--run ${isPaused ? "is-paused" : ""}`}
+                        onClick={() => {
+                          if (isPaused) { invoke("resume_run", { runid: rid }).catch(() => {}); setPausedRids((s) => { const n = new Set(s); n.delete(rid); return n; }); }
+                          else { invoke("pause_run", { runid: rid }).catch(() => {}); setPausedRids((s) => new Set(s).add(rid)); }
+                        }}
+                        title={isPaused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
+                        aria-label={isPaused ? "resume" : "pause"}
+                      >
+                        {isPaused ? <Play size={15} aria-hidden /> : <Pause size={15} aria-hidden />}
+                      </button>
+                    );
+                  }
+                  return (
+                    <button
+                      className="ax-send"
+                      onClick={() => { const txt = slash.trim(); if (!txt) return; if (activeRunning) { setQueued(txt); setQueuedFor(activeTask?.id ?? null); setSlash(""); } else submitFreeText(); }}
+                      disabled={!hasText || slashOpen}
+                      title={activeRunning ? (lang === "zh" ? "排队 · 上次完成后自动发送" : "Queue — sends after the current run") : t(lang, "task_run")}
+                      aria-label={t(lang, "task_run")}
+                    >
+                      <ArrowUp size={16} aria-hidden />
+                    </button>
+                  );
+                })()}
               </span>
             </div>
             {slashOpen && slashMatches.length > 0 && (
@@ -1458,6 +1488,7 @@ function App() {
           </div>
         </div>
       )}
+      {toast && <div className="ax-toast" role="status">{toast}</div>}
       <div
         className={`ax-app ${railOpen ? "has-rail" : ""} ${sidebarCollapsed ? "is-collapsed" : ""}`}
         style={{
@@ -1769,30 +1800,6 @@ function App() {
                 {lang === "zh" ? "输入任务开始,或用 / 唤出能力" : "Type a task, or use / for capabilities"}
               </p>
               {composerBlock()}
-
-              <details className="ax-dev" style={{ maxWidth: 700, margin: "26px auto 0" }}>
-                <summary>{t(lang, "dev_tools")}</summary>
-                <div style={{ marginTop: 10, display: "grid", gap: 6 }}>
-                  <div className="ax-toolrow">
-                    <input className="ax-input" style={{ width: 120 }} value={actor} onChange={(e) => setActor(e.currentTarget.value)} placeholder={t(lang, "actor")} />
-                    <input className="ax-input" style={{ width: 120 }} value={op} onChange={(e) => setOp(e.currentTarget.value)} placeholder={t(lang, "op")} />
-                    <input className="ax-input" style={{ flex: 1, minWidth: 160 }} value={payload} onChange={(e) => setPayload(e.currentTarget.value)} placeholder={t(lang, "payload")} />
-                  </div>
-                  <div className="ax-toolrow">
-                    <button className="ax-btn" onClick={appendEvent} disabled={busy}>{t(lang, "append_event")}</button>
-                    <button className="ax-btn" onClick={verifyChain} disabled={busy}>{t(lang, "verify_chain")}</button>
-                    <button className="ax-btn" onClick={vectorSelfTest} disabled={busy}>{t(lang, "vector_self_test")}</button>
-                  </div>
-                  {status && <div className="ax-hint">{status.root}</div>}
-                  {log.length > 0 && (
-                    <ul className="ax-log">
-                      {log.map((l, i) => (
-                        <li key={i}>{l}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              </details>
             </div>
           ) : (
             <div className="ax-thread">
@@ -1962,7 +1969,6 @@ function App() {
             </div>
           )}
         </div>
-        <StatusBar lang={lang} status={status} />
       </main>
       {railOpen &&
         (showArtifactPane && activeTask ? (

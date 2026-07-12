@@ -2,7 +2,7 @@
 // provider_status). Descriptive counts of what was processed/checked, never a quality score.
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { BarChart3, Activity, FileText, ShieldCheck, KeyRound } from "lucide-react";
+import { BarChart3, Activity, FileText, ShieldCheck, KeyRound, Layers } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { EventInfo, ProjectStatus, Task } from "../lib/types";
 
@@ -15,6 +15,7 @@ const S = {
     checks: "校对任务",
     providers: "已连接模型",
     integrity: "完整性",
+    independence: "独立性",
     intact: "连续", broken: "异常", none: "—",
     recentLabel: "近期活动",
     empty: "还没有活动 — 打开项目并运行一次校对。",
@@ -28,6 +29,7 @@ const S = {
     checks: "Checks run",
     providers: "Models connected",
     integrity: "Integrity",
+    independence: "Independence",
     intact: "Intact", broken: "Broken", none: "—",
     recentLabel: "Recent activity",
     empty: "No activity yet — open a project and run a check.",
@@ -115,6 +117,20 @@ export function MetricsView({ lang, tasks }: { lang: Lang; tasks: Task[] }) {
               {!status ? s.none : status.chain_ok ? s.intact : s.broken}
             </div>
             <div className="ax-stat__label">{s.integrity}</div>
+          </div>
+        </div>
+        {/* cross-vendor independence — moved here from the bottom status bar */}
+        <div className="ax-card">
+          <div className="ax-card__head">
+            <Layers size={15} />
+            <span className="ax-card__title">{s.independence}</span>
+          </div>
+          <div className="ax-stat">
+            <div className="ax-stat__num">
+              <span className={`ax-lamp ${providers >= 2 ? "is-green" : "is-amber"}`} style={{ marginRight: 8 }} />
+              {Math.min(providers, 2)}/2
+            </div>
+            <div className="ax-stat__label">{s.independence}</div>
           </div>
         </div>
       </div>
