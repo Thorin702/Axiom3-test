@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source, RunEvent, AgentStepView } from "./lib/types";
+import type { ProjectStatus, EventInfo, DraftCheck, ExportSummary, Task, Source, AgentStepView } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
@@ -16,9 +16,6 @@ import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
 import { ReadingView } from "./components/ReadingView";
 import { ProjectsView } from "./components/ProjectsView";
-import { SearchView } from "./components/SearchView";
-import { NotebookView } from "./components/NotebookView";
-import { FleetMonitor } from "./components/FleetMonitor";
 import { MetricsView } from "./components/MetricsView";
 import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
@@ -240,7 +237,6 @@ function App() {
   const recognitionRef = useRef<any>(null);
   const [booting, setBooting] = useState(true);
   const [dropping, setDropping] = useState(false);
-  const [fleetAgg, setFleetAgg] = useState({ runs: 0, spawned: 0, finished: 0 });
   const [lastSeenNotif, setLastSeenNotif] = useState(() => {
     const v = localStorage.getItem("axiom3.notifSeen");
     return v ? parseInt(v, 10) || 0 : Date.now(); // first run: don't flag pre-existing tasks
@@ -416,26 +412,6 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Fleet aggregate lives at App level (always mounted) so it accrues across navigation —
-  // the Fleet view is a pure display of it. A view-local counter would reset on every
-  // unmount and miss events emitted while the user was on another surface.
-  useEffect(() => {
-    const un = listen<RunEvent>("run_event", (e) => {
-      const ev = e.payload;
-      setFleetAgg((a) =>
-        ev.kind === "run_started"
-          ? { ...a, runs: a.runs + 1 }
-          : ev.kind === "agent_spawned"
-          ? { ...a, spawned: a.spawned + 1 }
-          : ev.kind === "agent_finished"
-          ? { ...a, finished: a.finished + 1 }
-          : a
-      );
-    });
-    return () => {
-      un.then((f) => f());
-    };
-  }, []);
 
   useEffect(() => {
     const un = listen<{ done: number; total: number }>("check_progress", (e) => setProgress(e.payload));
@@ -1638,17 +1614,8 @@ function App() {
               {nav === "reading" && (
                 <ReadingView lang={lang} sources={sources} onImport={importSource} onOpen={openSource} onRemove={removeSource} />
               )}
-              {nav === "search" && (
-                <SearchView
-                  lang={lang}
-                  tasks={tasks}
-                  onOpenTask={openTask}
-                />
-              )}
-              {/* 证据 / 护盾 / 溯源 / 完整性 are no longer destinations — they are the
-                  artifact's own inspector tabs (see ArtifactInspector in the session view). */}
-              {nav === "notebook" && <NotebookView lang={lang} />}
-              {nav === "fleet" && <FleetMonitor lang={lang} agg={fleetAgg} />}
+              {/* 检索 / 笔记本 / 舰队 removed (aggressive simplification); 证据/护盾/溯源/完整性
+                  live on the artifact's own inspector tabs, not the sidebar. */}
               {nav === "metrics" && <MetricsView lang={lang} tasks={tasks} />}
               {nav === "notifications" && (
                 <NotificationsView
