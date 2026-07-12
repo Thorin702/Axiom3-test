@@ -4,7 +4,7 @@
 // carrying its own rigor. Scoped to workflow / coding sessions (the generated artifacts);
 // draft-check sessions keep their claim-by-claim flow in the thread.
 import { useEffect, useRef, useState } from "react";
-import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Check, Maximize2, Minimize2, Palette } from "lucide-react";
+import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Check, Maximize2, Minimize2, Palette, Newspaper, Wand2 } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
@@ -33,6 +33,7 @@ export function ArtifactPane({
   onSaveReport,
   onClose,
   onRedraw,
+  onRelayout,
   expanded,
   onToggleExpand,
   busy,
@@ -44,6 +45,7 @@ export function ArtifactPane({
   onSaveReport?: (html: string, defaultName: string) => void;
   onClose: () => void;
   onRedraw?: (tool: string) => void; // re-run the analysis, drawing figures with a chosen library
+  onRelayout?: () => void; // re-run the analysis, reformatting the report as an academic paper
   expanded?: boolean;
   onToggleExpand?: () => void;
   busy?: boolean;
@@ -94,6 +96,7 @@ export function ArtifactPane({
 
   const [tab, setTab] = useState<Tab>("artifact");
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [paper, setPaper] = useState(() => localStorage.getItem("axiom3.paperLayout") === "1"); // academic-paper typography
   // reset to the artifact tab whenever a different session is shown
   useEffect(() => setTab("artifact"), [task.id]);
 
@@ -155,6 +158,23 @@ export function ArtifactPane({
       <div className="ax-artpane__body">
         {tab === "artifact" && (
           <>
+            {/* paper-style typography toggle + one-click re-layout (reformat the report) */}
+            {ver.synthesis && (
+              <div className="ax-artbar">
+                <button
+                  className={`ax-artbar__btn ${paper ? "is-on" : ""}`}
+                  onClick={() => { const n = !paper; setPaper(n); localStorage.setItem("axiom3.paperLayout", n ? "1" : "0"); }}
+                  title={zh ? "论文式排版(标题/分节/图注)" : "Academic-paper typography"}
+                >
+                  <Newspaper size={13} aria-hidden /> {zh ? "论文排版" : "Paper"}
+                </button>
+                {onRelayout && isRun && (
+                  <button className="ax-artbar__btn" disabled={busy} onClick={onRelayout} title={zh ? "让模型把报告重排成论文结构(重跑)" : "Re-run to reformat the report as a paper"}>
+                    <Wand2 size={13} aria-hidden /> {zh ? "一键重排" : "Re-layout"}
+                  </button>
+                )}
+              </div>
+            )}
             {/* redraw the figures with a different plotting library (re-runs the analysis) */}
             {onRedraw && isRun && (
               <div className="ax-redraw">
@@ -186,7 +206,7 @@ export function ArtifactPane({
                 {zh ? `第 ${vIdx + 1} 版 · 目标:${ver.goal}` : `Version ${vIdx + 1} · goal: ${ver.goal}`}
               </p>
             )}
-            <div ref={artifactRef}>
+            <div ref={artifactRef} className={paper ? "ax-artbody--paper" : ""}>
               {ver.synthesis ? <ArtifactBody text={ver.synthesis} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>}
             </div>
           </>

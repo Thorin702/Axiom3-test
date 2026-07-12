@@ -910,6 +910,25 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-redraw__opt b { font-size: 12px; color: var(--ax-ink); font-weight: 600; }
 .ax-redraw__opt span { font-size: 10.5px; color: var(--ax-ink-faint); }
 
+/* ── artifact toolbar: paper-layout toggle + one-click re-layout ────── */
+.ax-artbar { display: flex; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; }
+.ax-artbar__btn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 5px 11px;
+  border-radius: 999px; border: 1px solid var(--ax-line); background: var(--ax-surface); color: var(--ax-ink-soft); cursor: pointer; }
+.ax-artbar__btn:hover:not(:disabled) { border-color: var(--ax-accent); color: var(--ax-accent); }
+.ax-artbar__btn.is-on { background: var(--ax-accent); border-color: var(--ax-accent); color: #fff; }
+.ax-artbar__btn:disabled { opacity: 0.5; cursor: default; }
+/* academic-paper typography applied to the artifact body */
+.ax-artbody--paper { font-family: var(--ax-serif, Georgia, serif); line-height: 1.75; text-align: justify;
+  hyphens: auto; counter-reset: ax-sec; }
+.ax-artbody--paper h1 { text-align: center; font-size: 20px; font-weight: 600; margin: 4px 0 14px; }
+.ax-artbody--paper h2 { font-size: 15px; margin: 20px 0 8px; counter-increment: ax-sec; }
+.ax-artbody--paper h2::before { content: counter(ax-sec) ". "; color: var(--ax-ink-soft); }
+.ax-artbody--paper h3 { font-size: 13.5px; margin: 14px 0 6px; }
+.ax-artbody--paper p { margin: 9px 0; }
+.ax-artbody--paper table { margin: 12px auto; }
+.ax-artbody--paper .ax-fig { text-align: center; }
+.ax-artbody--paper .ax-fig__cap { justify-content: center; font-style: italic; }
+
 /* ── right-side artifact pane (Claude-Science-style) ── */
 .ax-artpane { border-left: 0.5px solid var(--ax-line); background: var(--ax-surface);
   display: flex; flex-direction: column; min-height: 0; height: 100vh; overflow: hidden; }
@@ -1089,6 +1108,26 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-modepick__txt { display: flex; flex-direction: column; min-width: 0; }
 .ax-modepick__txt b { font-size: 13px; font-weight: 600; line-height: 1.2; }
 .ax-modepick__txt span { font-size: 11px; color: var(--ax-ink-faint); }
+
+/* ── session settings popover (composer) ─────────────────────────── */
+.ax-cfg { position: relative; display: inline-flex; }
+.ax-cfg__scrim { position: fixed; inset: 0; z-index: 40; }
+.ax-cfg__menu { position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 41; min-width: 236px;
+  background: var(--ax-surface); border: 1px solid var(--ax-line); border-radius: var(--ax-radius);
+  box-shadow: var(--ax-shadow); padding: 5px; }
+.ax-cfg__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%;
+  padding: 8px 10px; border-radius: 8px; background: none; border: none; cursor: pointer; text-align: left; }
+.ax-cfg__row:hover { background: var(--ax-surface-2); }
+.ax-cfg__label { font-size: 13px; color: var(--ax-ink); }
+.ax-cfg__val { display: inline-flex; align-items: center; gap: 2px; font-size: 12.5px; color: var(--ax-ink-faint); }
+.ax-cfg__sep { height: 1px; background: var(--ax-line); margin: 4px 6px; }
+/* iOS-style switch */
+.ax-switch { width: 34px; height: 20px; border-radius: 999px; background: var(--ax-line-strong, var(--ax-line-soft));
+  position: relative; transition: background .15s ease; flex: none; }
+.ax-switch.is-on { background: var(--ax-accent); }
+.ax-switch__knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform .15s ease; }
+.ax-switch.is-on .ax-switch__knob { transform: translateX(14px); }
 
 /* ── open-tabs bar (multiple sessions open at once) ───────────────── */
 .ax-tabs { display: flex; align-items: stretch; gap: 2px; padding: 4px 10px 0;

@@ -13,6 +13,7 @@ import { AgentSteps } from "./components/AgentSteps";
 import { ThreadActivity } from "./components/ThreadActivity";
 import { RunStatusPill } from "./components/RunStatusPill";
 import { ResizeHandle } from "./components/ResizeHandle";
+import { SessionSettings, DEFAULT_CFG, type SessionCfg } from "./components/SessionSettings";
 import { runStore } from "./lib/runStore";
 import { ArtifactBody } from "./components/artifact/ArtifactBody";
 import { ArtifactPane } from "./components/ArtifactPane";
@@ -174,6 +175,14 @@ function App() {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [skillMenu, setSkillMenu] = useState(false); // /技能 picker open
   const [pendingSkill, setPendingSkill] = useState<string | null>(null); // skill key to inject into the next run
+  // Persistent run settings (the composer's settings popover). `specialist` maps to the skill
+  // registry and is applied to EVERY run until cleared (surfaced as a removable chip so it's
+  // never a silent override; an explicit /技能 pick wins over it). The other toggles persist as
+  // preferences — only `specialist` is wired into the run today.
+  const [sessionCfg, setSessionCfg] = useState<SessionCfg>(() => {
+    try { return { ...DEFAULT_CFG, ...JSON.parse(localStorage.getItem("axiom3.sessionCfg") || "{}") }; } catch { return DEFAULT_CFG; }
+  });
+  useEffect(() => { localStorage.setItem("axiom3.sessionCfg", JSON.stringify(sessionCfg)); }, [sessionCfg]);
   // When a session is forked, the next session created inherits this lineage (then clears).
   const [forkOrigin, setForkOrigin] = useState<string | null>(null);
   const [tasks, setTasks] = useState<Task[]>(() => {
@@ -808,7 +817,7 @@ function App() {
       synthesis: string | null;
       review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
-    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode, skill: pendingSkill || undefined }));
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode, skill: pendingSkill || sessionCfg.specialist || undefined }));
     if (!appendTo) { setCodeAttachments([]); setPendingSkill(null); }
     const steps = r?.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model }));
     setTasks((ts) =>
@@ -859,7 +868,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string; trace?: AgentStepView[] }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || undefined })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined })
     );
     setCodeAttachments([]);
     setPendingSkill(null);
@@ -1031,7 +1040,9 @@ function App() {
     // Claude Science. Previously 分析 went to the multi-agent TEXT workflow, which could
     // synthesize plausible-but-uncomputed results (the reviewer then flagged them); code-first
     // grounds every number in a real run instead. 研究 stays multi-agent (search + review).
-    else if (mode === "analysis") runCoding(text, true);
+    // 分析:默认单智能体代码优先(runCoding);会话设置里开「委派」则改派多智能体团队(runWorkflow,
+    // 带 compute 阶段真算图)。这两条是设置面板里目前真正接线生效的开关(specialist + delegation)。
+    else if (mode === "analysis") { if (sessionCfg.delegation) runWorkflow(text); else runCoding(text, true); }
     else if (mode === "research" || codeAttachments.length > 0) runWorkflow(text);
     else runCheckDraft(text);
     return true;
@@ -1078,12 +1089,20 @@ function App() {
               rows={1}
               placeholder={t(lang, "composer_ph")}
             />
-            {(codeAttachments.length > 0 || pendingSkill) && (
+            {(codeAttachments.length > 0 || pendingSkill || sessionCfg.specialist) && (
               <div className="ax-toolrow" style={{ flexWrap: "wrap", padding: "2px 6px 0" }}>
                 {pendingSkill && (
                   <span className="ax-chip ax-chip--skill" title={lang === "zh" ? "本次运行将使用此技能" : "this skill will guide the run"}>
                     🧭 {(() => { const s = SKILLS.find((x) => x.key === pendingSkill); return s ? (lang === "zh" ? s.zh : s.en) : pendingSkill; })()}
                     <button className="ax-chip__x" onClick={() => setPendingSkill(null)} aria-label="remove skill">×</button>
+                  </span>
+                )}
+                {/* the persistent Specialist from session settings — shown so it's never a silent
+                    prompt override; an explicit /技能 pick (pendingSkill) takes priority over it. */}
+                {!pendingSkill && sessionCfg.specialist && (
+                  <span className="ax-chip ax-chip--skill" title={lang === "zh" ? "会话设置中的专家 · 每次运行都会启用(点 × 关闭)" : "Specialist from settings — applied to every run"}>
+                    🧭 {(() => { const s = SKILLS.find((x) => x.key === sessionCfg.specialist); return s ? (lang === "zh" ? s.zh : s.en) : sessionCfg.specialist; })()}
+                    <button className="ax-chip__x" onClick={() => setSessionCfg((c) => ({ ...c, specialist: "" }))} aria-label="remove specialist">×</button>
                   </span>
                 )}
                 {codeAttachments.map((p) => {
@@ -1102,6 +1121,8 @@ function App() {
                 <button className="ax-iconbtn" onClick={pickDataFiles} title={lang === "zh" ? "附加数据 / 文档" : "Attach data / docs"} aria-label="attach">
                   <Paperclip size={15} aria-hidden />
                 </button>
+                {/* session settings popover — between attach and voice, per the reference design */}
+                <SessionSettings cfg={sessionCfg} onChange={setSessionCfg} lang={lang} skills={SKILLS} models={MODELS.map((m) => m.label)} />
                 <button
                   className={`ax-iconbtn ${listening ? "is-active" : ""}`}
                   onClick={toggleDictation}
@@ -1956,6 +1977,14 @@ function App() {
               if (!g) return;
               runCoding(
                 `${g}\n\n【重绘要求】请改用 ${tool} 重新绘制本次分析的全部图表:保持相同的数据、统计与结论,仅更换绘图库。若 ${tool} 不是 matplotlib,请先用 pip_install 安装它,再把图导出为 PNG 展示。`,
+                true
+              );
+            }}
+            onRelayout={() => {
+              const g = (activeTask.goal || "").trim();
+              if (!g) return;
+              runCoding(
+                `${g}\n\n【重排要求】把本次分析的最终报告重新组织成一篇学术论文的结构:标题、摘要(Abstract)、引言、方法、结果(含图表与统计)、讨论、(如有)参考文献。保持相同的数据、计算与结论,只调整叙述结构与排版,并复用/重绘必要的图表。`,
                 true
               );
             }}

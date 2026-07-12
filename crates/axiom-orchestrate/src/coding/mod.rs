@@ -186,7 +186,15 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              variables/dataframes/models stay in memory across python calls, so build up an analysis \
              step by step. stdout and the last expression's value come back to you; any matplotlib \
              figure you create is CAPTURED into the report — do `import matplotlib.pyplot as plt` and \
-             draw with it. numpy, pandas, scipy, matplotlib, statsmodels and scikit-learn are \
+             draw with it. For PUBLICATION-GRADE figures, set a clean style ONCE at the top of your first \
+             plotting cell — `import matplotlib as mpl; mpl.rcParams.update({'figure.dpi':140,'savefig.dpi':140,\
+             'font.size':11,'axes.titlesize':12.5,'axes.labelsize':11,'axes.spines.top':False,\
+             'axes.spines.right':False,'axes.grid':True,'grid.alpha':0.22,'legend.frameon':False,\
+             'figure.autolayout':True})` — then label axes WITH UNITS, give a concise title, add a legend \
+             for >=2 series, and use a restrained colorblind-safe palette (tab10 / a seaborn palette; \
+             seaborn is fine to pip_install for nicer defaults). Use ENGLISH text ON plots — matplotlib \
+             ships no CJK font, so Chinese axis/legend labels render as empty boxes; keep any Chinese in \
+             your prose, never on the figure. numpy, pandas, scipy, matplotlib, statsmodels and scikit-learn are \
              already installed, plus requests — use them directly (e.g. scipy.stats / statsmodels \
              for tests, confidence intervals and regression; scikit-learn for models). The kernel HAS \
              NETWORK access: DOWNLOAD a public dataset straight into the workspace with requests, \
