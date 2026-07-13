@@ -92,10 +92,44 @@ function renderMath(tex: string): string {
 // Turn `[Sn]` markers into clickable citation superscripts — ONLY for ids we actually have a source
 // for (an orphaned marker from a sub-agent stays plain text). Applied to already-sanitized HTML that
 // we then set ourselves, so the injected <sup> survives (data-sid isn't re-sanitized away).
+//
+// The scan is TAG- and CODE-AWARE: a blind string replace would (a) corrupt a marker that lands
+// inside a tag (`<td class="…[S3]…">`) and (b) wrongly "citify" a literal `[S3]` a report shows
+// INSIDE a code sample. So we replace only in real text, never inside `<…>` or `<code>/<pre>`.
 function injectCites(html: string, has: (id: number) => boolean): string {
-  return html.replace(/\[S(\d+)\]/g, (m, n) =>
-    has(Number(n)) ? `<sup class="ax-cite" data-sid="${n}" title="点击溯源">[${n}]</sup>` : m
-  );
+  const lower = html.toLowerCase();
+  let out = "";
+  let i = 0;
+  let inTag = false;   // between '<' and '>'
+  let codeDepth = 0;   // nesting depth of <code>/<pre>
+  while (i < html.length) {
+    const ch = html[i];
+    if (inTag) {
+      out += ch;
+      if (ch === ">") inTag = false;
+      i++;
+      continue;
+    }
+    if (ch === "<") {
+      if (lower.startsWith("<code", i) || lower.startsWith("<pre", i)) codeDepth++;
+      else if (lower.startsWith("</code", i) || lower.startsWith("</pre", i)) codeDepth = Math.max(0, codeDepth - 1);
+      inTag = true;
+      out += ch;
+      i++;
+      continue;
+    }
+    if (codeDepth === 0 && ch === "[" && html[i + 1] === "S") {
+      const m = /^\[S(\d+)\]/.exec(html.slice(i, i + 12));
+      if (m && has(Number(m[1]))) {
+        out += `<sup class="ax-cite" data-sid="${m[1]}" title="点击溯源">[${m[1]}]</sup>`;
+        i += m[0].length;
+        continue;
+      }
+    }
+    out += ch;
+    i++;
+  }
+  return out;
 }
 
 export function ArtifactBody({ text, sources }: { text: string; sources?: CiteSource[] }) {
@@ -151,9 +185,22 @@ export function ArtifactBody({ text, sources }: { text: string; sources?: CiteSo
   );
 }
 
+// Only ever hand http(s) URLs to the OS opener. Source urls are model-RETRIEVED (untrusted) data, and
+// the Tauri opener capability has no pre-configured scheme scope — so a poisoned "file:///…" or a
+// custom-scheme url would otherwise reach `open`. Returns the url iff it's a safe web link, else null.
+function safeHttpUrl(u: string): string | null {
+  try {
+    const p = new URL(u);
+    return p.protocol === "http:" || p.protocol === "https:" ? u : null;
+  } catch {
+    return null;
+  }
+}
+
 // Click a [Sn] marker → this popover shows the original source (title, link, the retrieved passage).
 function CitePopover({ source, onClose }: { source: CiteSource; onClose: () => void }) {
   const kind = source.kind === "paper" ? "📄 文献" : source.kind === "db" ? "🔬 数据库" : "🌐 网页";
+  const href = safeHttpUrl(source.url);
   return (
     <>
       <div className="ax-cite__scrim" onClick={onClose} />
@@ -163,9 +210,9 @@ function CitePopover({ source, onClose }: { source: CiteSource; onClose: () => v
           <button className="ax-cite__x" onClick={onClose} aria-label="关闭">×</button>
         </div>
         <div className="ax-cite__title">{source.title}</div>
-        {source.url && (
-          <button className="ax-cite__link" onClick={() => openUrl(source.url).catch(() => {})} title={source.url}>
-            {source.url}　↗
+        {href && (
+          <button className="ax-cite__link" onClick={() => openUrl(href).catch(() => {})} title={href}>
+            {href}　↗
           </button>
         )}
         <div className="ax-cite__excerpt">{source.excerpt}</div>

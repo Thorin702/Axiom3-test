@@ -1009,11 +1009,15 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   border-radius: 3px; }
 .ax-cite:hover { background: color-mix(in srgb, var(--ax-accent) 16%, transparent);
   color: var(--ax-accent-strong, var(--ax-accent)); }
-.ax-cite__scrim { position: fixed; inset: 0; z-index: 40; background: transparent; }
-.ax-cite__pop { position: absolute; left: 50%; transform: translateX(-50%); z-index: 41;
-  bottom: 8px; width: min(420px, 92%); max-height: 340px; overflow-y: auto;
+.ax-cite__scrim { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.04); }
+/* fixed to the VIEWPORT (not the report container, which can be very tall) so the popover is always
+   on-screen regardless of which marker was clicked or how far the report is scrolled. */
+.ax-cite__pop { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); z-index: 41;
+  width: min(440px, 92vw); max-height: min(50vh, 380px); overflow-y: auto;
   background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 12px;
-  box-shadow: 0 12px 40px -8px rgba(0,0,0,.28), 0 2px 8px rgba(0,0,0,.12); padding: 12px 14px; }
+  box-shadow: 0 16px 48px -8px rgba(0,0,0,.32), 0 2px 8px rgba(0,0,0,.14); padding: 13px 15px;
+  animation: axCiteIn .13s ease-out; }
+@keyframes axCiteIn { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
 .ax-cite__head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .ax-cite__kind { font-size: 11px; color: var(--ax-ink-soft); font-weight: 600; letter-spacing: .01em; }
 .ax-cite__x { border: none; background: none; color: var(--ax-ink-soft); font-size: 18px; line-height: 1;

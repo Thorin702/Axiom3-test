@@ -519,6 +519,40 @@ pub async fn run_delegate(model: &impl CodingModel, task: &str, cancel: &Cancel)
 /// callbacks are passed as `&mut (dyn FnMut + Send)` trait objects (so every level instantiates the
 /// SAME closure types — monomorphization converges) and the recursive call is `Box::pin`'d (so the
 /// future has a fixed size instead of containing itself). Returns (observation, sub-agent figures).
+/// Rewrite `[Sk]` markers to `[S(k+offset)]` (char-safe — Chinese text is multi-byte — and
+/// dependency-free). Lifts a delegated sub-agent's LOCAL source ids (which restart at 1 per
+/// sub-agent) into the parent's global `[Sn]` space, so the sub-agent's real retrieved sources
+/// become correctly-attributed, clickable citations in the report instead of colliding with the
+/// parent's (or sibling sub-agents') ids. A `[S…]` with no digit run or no closing `]` is left
+/// verbatim; `offset == 0` is a no-op (the local ids are already the global ids).
+fn remap_cite_markers(s: &str, offset: u32) -> String {
+    if offset == 0 {
+        return s.to_string();
+    }
+    let cs: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] == '[' && i + 2 < cs.len() && cs[i + 1] == 'S' && cs[i + 2].is_ascii_digit() {
+            let mut j = i + 2;
+            while j < cs.len() && cs[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j < cs.len() && cs[j] == ']' {
+                let k: u32 = cs[i + 2..j].iter().collect::<String>().parse().unwrap_or(0);
+                if k > 0 {
+                    out.push_str(&format!("[S{}]", k + offset));
+                    i = j + 1;
+                    continue;
+                }
+            }
+        }
+        out.push(cs[i]);
+        i += 1;
+    }
+    out
+}
+
 pub async fn delegate_tooled(
     model: &impl CodingModel,
     sandbox: &Sandbox,
@@ -526,7 +560,8 @@ pub async fn delegate_tooled(
     sub_budget: &CodingBudget,
     cancel: &Cancel,
     task: &str,
-) -> (String, Vec<String>) {
+    base: u32, // parent's current src_n — sub-agent sources are renumbered from base+1 upward
+) -> (String, Vec<String>, Vec<Source>) {
     let decomp = model
         .complete(
             "把给定的研究子任务拆成 1-2 个可以各自独立、用工具(检索/联网/计算)深挖的角度,每行一个,只输出角度本身。若本身已足够聚焦,就只输出一行。",
@@ -546,6 +581,11 @@ pub async fn delegate_tooled(
     }
     let mut reports: Vec<String> = Vec::new();
     let mut figs: Vec<String> = Vec::new();
+    // Renumber-merge accumulators: every sub-agent's real retrieved sources are lifted into the
+    // PARENT's global [Sn] id space (offset by ids already consumed) so delegated findings keep
+    // clickable, correctly-attributed provenance — no collision with the parent or sibling sub-agents.
+    let mut merged: Vec<Source> = Vec::new();
+    let mut next = base; // ids consumed so far (parent + earlier sub-agents); this sub's offset
     for a in &angles {
         if cancel.is_cancelled() {
             break;
@@ -566,24 +606,33 @@ pub async fn delegate_tooled(
         let ad: &mut (dyn FnMut(String, String) + Send) = &mut on_a;
         let sub = Box::pin(run_coding_agent(&sub_goal, sandbox, model, cancel, &sub_pause, sub_budget, kernel.clone(), sd, ad)).await;
         figs.extend(sub.figures);
-        reports.push(format!("### 子智能体角度:{a}\n{}", sub.summary.trim()));
+        // Lift this sub-agent's LOCAL source ids (1..M) into the parent's global space at `offset`,
+        // and rewrite its summary's [Sk] markers by the same offset so text and sources stay in sync.
+        let offset = next;
+        let sub_src_count = sub.sources.len() as u32;
+        for mut src in sub.sources {
+            src.id += offset;
+            merged.push(src);
+        }
+        next += sub_src_count;
+        reports.push(format!("### 子智能体角度:{a}\n{}", remap_cite_markers(sub.summary.trim(), offset)));
     }
     if reports.is_empty() {
-        return ("[委派未产出结果 —— 请自己完成这个子任务]".to_string(), figs);
+        return ("[委派未产出结果 —— 请自己完成这个子任务]".to_string(), figs, merged);
     }
     if reports.len() == 1 {
-        return (format!("[委派完成 · 1 个工具型子智能体]\n\n{}", reports[0]), figs);
+        return (format!("[委派完成 · 1 个工具型子智能体]\n\n{}", reports[0]), figs, merged);
     }
     let body = reports.join("\n\n");
     let synth = model
         .complete(
-            "把多个工具型子智能体各自子问题的结论综合成对总子任务的一个连贯、去重、有取舍的结论:忠实于各部分与其引用,指出一致与冲突,不要编造。",
+            "把多个工具型子智能体各自子问题的结论综合成对总子任务的一个连贯、去重、有取舍的结论:忠实于各部分与其引用,指出一致与冲突,不要编造。原文里形如 [S12] 的引用角标必须原样保留、不得改动或删除。",
             &format!("总子任务:{task}\n\n各子智能体结论:\n{body}\n\n综合结论:"),
             cancel,
         )
         .await
         .unwrap_or_else(|_| body.clone());
-    (format!("[委派完成 · {} 个工具型子智能体各攻一角度并综合]\n\n{}", reports.len(), synth.trim()), figs)
+    (format!("[委派完成 · {} 个工具型子智能体各攻一角度并综合]\n\n{}", reports.len(), synth.trim()), figs, merged)
 }
 
 pub async fn run_coding_agent(
@@ -1074,8 +1123,12 @@ pub async fn run_coding_agent(
                         cmd_timeout_s: budget.cmd_timeout_s,
                         cell_timeout_s: budget.cell_timeout_s,
                     };
-                    let (obs, figs) = delegate_tooled(model, sandbox, &kernel, &sub_budget, cancel, &task).await;
+                    let (obs, figs, merged) = delegate_tooled(model, sandbox, &kernel, &sub_budget, cancel, &task, src_n).await;
                     step_figures = figs; // sub-agents' computed figures flow into the parent report (deduped downstream)
+                    // Renumber-merge: the sub-agents' real sources come back in the parent's global [Sn]
+                    // space (ids src_n+1…); adopt them so delegated findings are clickable in the report.
+                    src_n += merged.len() as u32;
+                    sources.extend(merged);
                     (task.chars().take(60).collect::<String>(), obs)
                 }
             }
@@ -1610,6 +1663,19 @@ fn truncate(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn remap_cite_markers_offsets_ids_and_keeps_utf8() {
+        // sub-agent local ids are lifted into the parent's global space; Chinese text stays intact
+        assert_eq!(remap_cite_markers("下调 PD-L1 [S3]。", 10), "下调 PD-L1 [S13]。");
+        assert_eq!(remap_cite_markers("a[S1]b[S2]c", 5), "a[S6]b[S7]c");
+        // offset 0 is a no-op (local ids already ARE the global ids — first sub-agent, empty parent)
+        assert_eq!(remap_cite_markers("keep [S2] as-is", 0), "keep [S2] as-is");
+        // not-a-marker sequences are left untouched even with an offset
+        assert_eq!(remap_cite_markers("[S] [SX] [Sa] array[5]", 4), "[S] [SX] [Sa] array[5]");
+        // an unterminated "[S3" (no closing bracket) is preserved verbatim
+        assert_eq!(remap_cite_markers("dangling [S3 tail", 7), "dangling [S3 tail");
+    }
 
     /// Model that returns canned replies in order.
     struct ScriptModel {
