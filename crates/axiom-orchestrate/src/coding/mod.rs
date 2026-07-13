@@ -209,15 +209,21 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              `mpl.rcParams['font.sans-serif']=['PingFang SC','Heiti TC','Arial Unicode MS','DejaVu Sans']; \
              mpl.rcParams['axes.unicode_minus']=False` — then verify no missing-glyph boxes; only if no CJK \
              font is available fall back to English on the figure. \
-             MECHANISM / PATHWAY / CONCEPT figures MUST be drawn as a REAL matplotlib SCHEMATIC in \
-             python — actual cells as shapes, molecules/receptors as boxes, +/- signalling arrows, hand-\
-             placed labels and a legend (multi-panel if it clarifies), using patches / FancyArrowPatch / \
-             FancyBboxPatch the way a JOURNAL figure looks. This is REQUIRED when the deliverable is a \
-             mechanism/pathway/mechanism-diagram: do NOT emit a ```network (or ```chart) block of abstract \
-             dots-and-lines as the mechanism figure — a node-edge graph is NOT an acceptable mechanism \
-             schematic and reads as a placeholder. Build it with matplotlib and let it be CAPTURED as a \
-             real figure; a run that was asked for a 机理图/mechanism diagram but produced no matplotlib \
-             figure has FAILED its deliverable. \
+             MECHANISM / PATHWAY / CONCEPT figures MUST be a PUBLICATION-GRADE matplotlib SCHEMATIC — draw \
+             it like a scientific ILLUSTRATOR making a clean Nature/Cell figure, NOT a slide flowchart of \
+             rectangles. Concretely: (a) CELLS = filled ELLIPSES/CIRCLES with a colored edge and a soft \
+             pastel fill, e.g. `ax.add_patch(Ellipse((x,y),w,h,facecolor='#EAD9F2',edgecolor='#8A6FC4',\
+             lw=1.6,alpha=.92,zorder=1))` — NOT rectangles for cells; (b) RECEPTORS = small rounded boxes \
+             (FancyBboxPatch, boxstyle='round,pad=0.02') placed ON the cell membrane (sitting on the \
+             ellipse's edge); (c) LIGANDS / small molecules = small circles; a repeating chain (glycans, \
+             polymers, fibrils) = a ROW of small circles along a path, not one box labelled 'glycan'; \
+             (d) SIGNALLING = curved `FancyArrowPatch(a,b,arrowstyle='-|>',connectionstyle='arc3,rad=0.2',\
+             lw=2,color=...)`; INHIBITION = a blunt bar-end ('-['); (e) a SOFT professional palette (4-5 \
+             muted pastels, never primary red/green/blue at full saturation), GENEROUS whitespace so \
+             nothing overlaps, concise labels placed clear of shapes, and a small legend box in a corner; \
+             set `ax.set_xlim/ylim` with margin and `ax.axis('off')`. Do NOT emit a ```network / ```chart \
+             block of dots-and-lines as the mechanism figure — that reads as a placeholder. A run asked \
+             for a 机理图/mechanism diagram that produced no matplotlib schematic has FAILED its deliverable. \
              ITERATE ON THE FIGURE: after a plotting cell, CHECK it actually ran (no Traceback) and LOOK at \
              the result — if labels overlap, glyphs are boxes, or it errored, FIX and redraw (1-2 refine \
              passes) before finishing; a good figure is iterated, never one-shot. \
