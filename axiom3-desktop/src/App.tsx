@@ -851,7 +851,7 @@ function App() {
       synthesis: string | null;
       review?: string | null;
       steps?: { spec: { role: string; model: string }; status: string; output?: string }[];
-    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode, skill: pendingSkill || sessionCfg.specialist || undefined, prior: priorSynth || undefined }));
+    }>(() => invoke("run_workflow", { goal: g, runid, model: taskModel || undefined, agents: wfAgents || undefined, search: mode === "research", analyze: mode === "analysis" || codeAttachments.length > 0, attachments: codeAttachments, mode, skill: pendingSkill || sessionCfg.specialist || undefined, prior: priorSynth || undefined, compute: sessionCfg.compute }));
     if (!appendTo) { setCodeAttachments([]); setPendingSkill(null); }
     const steps = r?.steps?.map((s) => ({ role: s.spec.role, status: s.status, output: s.output ?? "", model: s.spec.model }));
     setTasks((ts) =>
@@ -915,7 +915,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string; trace?: AgentStepView[] }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute })
     );
     if (!appendTo) { setCodeAttachments([]); }
     setPendingSkill(null);

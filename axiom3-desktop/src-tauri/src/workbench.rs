@@ -2243,11 +2243,17 @@ pub async fn run_workflow(
     // Prior round's findings (a follow-up continuing the same research topic) — so the multi-agent
     // team builds on established results instead of restarting. Enables multi-round deep research.
     prior: Option<String>,
+    compute: Option<String>,
 ) -> Result<Run, String> {
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }
     let goal = prepend_skill(goal, skill); // /技能 picker: inject the chosen skill card up front
+    // Cloud privacy guard (mirrors coding_run): keep raw user data off the cloud model — only
+    // structure/summaries/results in what's uploaded. Local (on-device) inference needs no guard.
+    let goal = if compute.as_deref() == Some("cloud") {
+        format!("[数据隐私 · 云端模式] 用户数据只在本地内核处理；发给云端模型的内容只含结构与摘要/结果，不含原始数据行（整表、大量原始记录）。\n\n{goal}")
+    } else { goal };
     // A follow-up carrying prior findings CONTINUES the investigation — prepend them as settled context.
     let goal = match prior.as_ref().map(|p| p.trim()).filter(|p| !p.is_empty()) {
         Some(p) => format!(
@@ -2548,11 +2554,23 @@ pub async fn coding_run(
     // Prior round's findings (a follow-up in the SAME research session) — carried in so the agent
     // CONTINUES the investigation instead of starting over. Enables multi-round deep research.
     prior: Option<String>,
+    compute: Option<String>,
 ) -> Result<CodingRunResult, String> {
     let goal = prepend_skill(goal, skill);
     if goal.trim().is_empty() {
         return Err("empty goal".into());
     }
+    // Cloud privacy guard: on a cloud model the user's RAW DATA must not leave the machine. The
+    // Python kernel is already local, so data is PROCESSED locally — the leak risk is the transcript
+    // (a `print(df)` dumps raw rows into what's sent to the cloud model). Prepend a hard rule so the
+    // agent prints only structure/summary/results, never raw rows. Local (on-device) needs no guard.
+    let goal = if compute.as_deref() == Some("cloud") {
+        format!(
+            "[数据隐私 · 云端模式] 用户数据只在本地 Python 内核处理；发给云端模型的内容不得包含原始数据。读取/处理数据文件时，print 只输出结构与摘要（df.shape、df.columns、df.dtypes、df.describe()、检验统计量、计算结果、图），绝不 print 大块原始数据行（整表、df.head() 的大量列、原始记录）——那些会随 transcript 上传云端。保护用户数据不外流是硬性要求。\n\n{goal}"
+        )
+    } else {
+        goal
+    };
     // Resolve provider/connection + model, mode-aware: analysis (kernel) prefers a thinking model.
     let is_analyze = analyze.unwrap_or(false);
     let (provider, model_id) = resolve_model(&app, provider, model, false, if is_analyze { "analysis" } else { "auto" })?;

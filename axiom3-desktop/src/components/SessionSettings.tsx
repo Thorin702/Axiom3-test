@@ -22,7 +22,7 @@ export const DEFAULT_CFG: SessionCfg = {
   reviewerModel: "",
   memory: false,
   specialist: "",
-  compute: "local",
+  compute: "cloud", // default cloud — there is no local inference yet; local switches to on-device (Ollama) when available
 };
 
 function cycle(list: string[], cur: string): string {
@@ -85,6 +85,9 @@ export function SessionSettings({
             <Select
               label={zh ? "算力" : "Compute"}
               value={cfg.compute === "cloud" ? (zh ? "云端" : "Cloud") : (zh ? "本地" : "Local")}
+              sub={cfg.compute === "cloud"
+                ? (zh ? "数据在本地内核处理，仅摘要上传云端模型" : "data processed in local kernel; only summaries sent to the cloud model")
+                : (zh ? "模型与数据全在本机，零上传（需 Ollama）" : "model + data stay on-device, zero upload (needs Ollama)")}
               onClick={() => set({ compute: cfg.compute === "cloud" ? "local" : "cloud" })}
             />
           </div>
@@ -105,10 +108,13 @@ function Toggle({ label, on, onClick }: { label: string; on: boolean; onClick: (
   );
 }
 
-function Select({ label, value, onClick }: { label: string; value: string; onClick: () => void }) {
+function Select({ label, value, sub, onClick }: { label: string; value: string; sub?: string; onClick: () => void }) {
   return (
     <button className="ax-cfg__row" onClick={onClick}>
-      <span className="ax-cfg__label">{label}</span>
+      <span className="ax-cfg__label">
+        {label}
+        {sub && <span className="ax-cfg__sub">{sub}</span>}
+      </span>
       <span className="ax-cfg__val">
         {value}
         <ChevronRight size={13} aria-hidden />
