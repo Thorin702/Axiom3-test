@@ -2631,6 +2631,16 @@ pub async fn recap_run(
     Ok(String::new())
 }
 
+/// The "Opus tier" steer prepended to a research-mode run: the SAME rich tool agent, but told to
+/// behave like a deep literature/web research scientist rather than a budget-bounded local-data
+/// analyst. Kept separate from the coding system prompt so analysis mode is unaffected.
+const RESEARCH_MODE_DIRECTIVE: &str = "【深度研究模式 · 无预算限制】你现在是一名深度研究科学家,目标是产出一份**高价值、有据可依、带引用**的深度研究报告。行为要求:\n\
+1) 文献/联网优先,不假设有本地数据:用 litsearch 对课题做**广度优先**的多角度检索(至少 5-8 个不同角度,不要只换关键词),读真实论文的标题/年份/DOI/摘要并**引用**;需要外部数据时用 python 从公开来源(GEO/UniProt/Ensembl/官方数据库/原始 URL)抓取再分析。绝不编造数据、数字、引用或结论。\n\
+2) **没有步数/时间预算压力**——要把课题做透:定位领域已知与空白 → 提出 2-3 个真正不同的竞争假设并各自权衡 → 明确指出你的**新颖点**(可借鉴邻域机制做跨域迁移),但对新颖性要诚实(先自查证是否已发表)。\n\
+3) 遇到复杂子问题就分步深挖,必要时用 python 做真实计算/建模来支撑论证;图只在真正增进理解时画,用原生图块或 matplotlib,填真实计算值。\n\
+4) 自我批判:说清楚你的结论的弱点、如何被证伪、验证从相关到因果的阶梯(含增益实验与阴性对照)。\n\
+5) 最终产出一份结构化、可独立阅读的深度报告(立论→证据与分析→图→竞争假设权衡→新颖点→验证方案→诚实的局限与引用),用用户的语言。质量与深度是唯一目标,不要为了收尾而草率。";
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri command args bind 1:1 to JS invoke keys
 pub async fn coding_run(
@@ -2650,6 +2660,10 @@ pub async fn coding_run(
     // CONTINUES the investigation instead of starting over. Enables multi-round deep research.
     prior: Option<String>,
     compute: Option<String>,
+    // DEEP RESEARCH mode (the "Opus tier"): the SAME rich tool agent, but reconfigured — no step-budget
+    // pressure, literature/web-first (not local data), and steered toward a deep, cited, high-value
+    // report. Implies analyze (it still gets a Python kernel to analyze fetched data).
+    research: Option<bool>,
 ) -> Result<CodingRunResult, String> {
     let goal = prepend_skill(goal, skill);
     if goal.trim().is_empty() {
@@ -2666,9 +2680,12 @@ pub async fn coding_run(
     } else {
         goal
     };
-    // Resolve provider/connection + model, mode-aware: analysis (kernel) prefers a thinking model.
-    let is_analyze = analyze.unwrap_or(false);
-    let (provider, model_id) = resolve_model(&app, provider, model, false, if is_analyze { "analysis" } else { "auto" })?;
+    // DEEP RESEARCH implies analyze (it needs a kernel to analyze fetched data + a scratch workspace),
+    // but with no budget pressure and a literature/web-first, deep-cited-report steer.
+    let is_research = research.unwrap_or(false);
+    let is_analyze = analyze.unwrap_or(false) || is_research;
+    // Resolve provider/connection + model, mode-aware: research/analysis prefer a thinking model.
+    let (provider, model_id) = resolve_model(&app, provider, model, false, if is_research { "research" } else if is_analyze { "analysis" } else { "auto" })?;
     // Analysis with no chosen folder gets a private scratch workspace, so a user can just
     // attach data and ask — no need to pick a code directory.
     let workspace = if workspace.trim().is_empty() && is_analyze {
@@ -2727,6 +2744,14 @@ pub async fn coding_run(
         None
     };
     let base_goal = reframed.clone().unwrap_or_else(|| goal.clone());
+    // DEEP RESEARCH: after the topic is reframed (novelty / competing hypotheses / breadth), prepend
+    // the mode directive that makes the tool agent behave like the "Opus tier" — literature/web-first,
+    // no budget pressure, a deep cited report. Applied for both first-round and follow-up.
+    let base_goal = if is_research {
+        format!("{RESEARCH_MODE_DIRECTIVE}\n\n=== 研究课题 ===\n{base_goal}")
+    } else {
+        base_goal
+    };
     // Prepend the prior round's findings so the agent CONTINUES the same investigation — build on
     // what's established, don't re-derive it — realizing multi-round deep research on one topic.
     let goal = match prior_ctx {
@@ -2821,7 +2846,10 @@ pub async fn coding_run(
     // read-only code task. QUALITY-FIRST: a heavy pipeline (single-cell / phylo / velocity) must be
     // able to finish CORRECTLY rather than get cut off mid-analysis — cost/time is not the constraint,
     // so the step budget and per-cell timeout are generous (auto-checkpoint/restore protects state).
-    let budget = if analyze.unwrap_or(false) {
+    let budget = if is_research {
+        // DEEP RESEARCH: effectively no budget control — run until the research is genuinely thorough.
+        CodingBudget { max_steps: 200, per_call_timeout_s: 180, cmd_timeout_s: 180, cell_timeout_s: 900 }
+    } else if is_analyze {
         CodingBudget { max_steps: 80, per_call_timeout_s: 150, cmd_timeout_s: 150, cell_timeout_s: 900 }
     } else {
         CodingBudget::default()

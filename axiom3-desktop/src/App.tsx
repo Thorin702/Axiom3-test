@@ -41,8 +41,8 @@ import {
 // the Python kernel. The backend picks thinking vs non-thinking per mode.
 const MODES = [
   { k: "auto", zh: "自动", en: "Auto", Icon: Sparkles, tzh: "读懂请求,自己选研究/分析/校验与思考深度", ten: "infer intent + thinking depth" },
-  { k: "research", zh: "研究", en: "Research", Icon: Search, tzh: "文献 + 检索 → 带引用综述(多智能体)", ten: "literature + search → cited synthesis" },
-  { k: "analysis", zh: "分析", en: "Analysis", Icon: TerminalSquare, tzh: "Python 内核真跑数据 → 计算图 + 统计", ten: "Python kernel → computed figures + stats" },
+  { k: "research", zh: "研究", en: "Research", Icon: Search, tzh: "深度研究:无预算 · 联网/文献优先 · 带引用高价值报告", ten: "deep research: no budget · web/literature-first · cited report" },
+  { k: "analysis", zh: "分析", en: "Analysis", Icon: TerminalSquare, tzh: "分析你的本地数据:Python 内核真跑 → 计算图 + 统计(有预算)", ten: "analyze your local data: Python kernel → figures + stats" },
 ] as const;
 type ModeKey = (typeof MODES)[number]["k"];
 
@@ -229,7 +229,7 @@ function App() {
   // forever). Once the new-session dialog writes projectDir, the effect below re-dispatches with
   // the preserved text, and the FRESH run function (projectDir now set) sails past its own gate.
   const [pendingRun, setPendingRun] = useState<
-    null | { run: "free" | "check" | "workflow" | "coding"; text: string; forceAnalyze?: boolean; appendTo?: string }
+    null | { run: "free" | "check" | "workflow" | "coding"; text: string; forceAnalyze?: boolean; appendTo?: string; research?: boolean }
   >(null);
   useEffect(() => {
     if (!projectDir || !pendingRun) return;
@@ -238,7 +238,7 @@ function App() {
     if (pr.run === "free") submitFreeText(pr.text);
     else if (pr.run === "check") runCheckDraft(pr.text);
     else if (pr.run === "workflow") runWorkflow(pr.text, pr.appendTo);
-    else if (pr.run === "coding") runCoding(pr.text, pr.forceAnalyze, pr.appendTo);
+    else if (pr.run === "coding") runCoding(pr.text, pr.forceAnalyze, pr.appendTo, pr.research);
   }, [projectDir, pendingRun]);
   // Live orchestration runs (module-level store) — feeds the in-thread thinking chain.
   const liveRuns = useSyncExternalStore(runStore.subscribe, runStore.snapshot);
@@ -918,12 +918,12 @@ function App() {
   }
   // `appendTo` = a follow-up in the SAME analysis session → continue the research (prior findings
   // fed back in) and append the result as a new version (v2, v3 …), for multi-round deep research.
-  async function runCoding(goal: string, forceAnalyze = false, appendTo?: string) {
+  async function runCoding(goal: string, forceAnalyze = false, appendTo?: string, research = false) {
     const g = goal.trim();
     if (!g) return;
-    if (!projectDir) { setPendingRun({ run: "coding", text: g, forceAnalyze, appendTo }); newTask(); return; }
-    const doAnalyze = forceAnalyze || codeAnalyze || cmd === "analyze";
-    if (!codeWs && !doAnalyze) return; // code mode needs a folder; analyze can use a scratch dir
+    if (!projectDir) { setPendingRun({ run: "coding", text: g, forceAnalyze, appendTo, research }); newTask(); return; }
+    const doAnalyze = forceAnalyze || codeAnalyze || cmd === "analyze" || research; // research implies a kernel
+    if (!codeWs && !doAnalyze) return; // code mode needs a folder; analyze/research can use a scratch dir
     const runid = `run-${crypto.randomUUID()}`;
     const sessionId = appendTo ?? runid;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
@@ -934,7 +934,7 @@ function App() {
       setActiveId(appendTo);
       pushTab(appendTo);
     } else {
-      setTasks((ts) => [{ id: runid, type: "code", title, status: "running", ts: Date.now(), goal: g, forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
+      setTasks((ts) => [{ id: runid, type: research ? "research" : "code", title, status: "running", ts: Date.now(), goal: g, deep: research || undefined, forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
       setForkOrigin(null);
       setActiveId(runid);
       pushTab(runid);
@@ -946,7 +946,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string; trace?: AgentStepView[] }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute, research })
     );
     if (!appendTo) { setCodeAttachments([]); }
     setPendingSkill(null);
@@ -979,7 +979,7 @@ function App() {
     // Code/workflow artifacts have no draft-check hash-chain (latest_provenance() would error);
     // export the ARTIFACT's own provenance instead — goal, every step + its verbatim code, the
     // synthesis, the reviewer's findings, and version history — as a self-contained JSON.
-    if (at && (at.type === "code" || at.type === "workflow")) {
+    if (at && (at.type === "code" || at.type === "workflow" || at.type === "research")) {
       const base = (at.title || "artifact").slice(0, 40).replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "artifact";
       const path = await save({ defaultPath: `${base}-provenance.json`, filters: [{ name: "JSON", extensions: ["json"] }] });
       if (typeof path !== "string") return;
@@ -1026,7 +1026,7 @@ function App() {
   const showArtifactPane =
     view === "thread" &&
     !!activeTask &&
-    (activeTask.type === "workflow" || activeTask.type === "code") &&
+    (activeTask.type === "workflow" || activeTask.type === "code" || activeTask.type === "research") &&
     activeTask.status !== "running" &&
     (!!activeTask.synthesis || (activeTask.steps?.length ?? 0) > 0);
   // Auto-open the right column when an artifact becomes available.
@@ -1120,17 +1120,19 @@ function App() {
       return false;
     }
     const at = tasks.find((x) => x.id === activeId);
-    if (at?.type === "workflow") runWorkflow(text, at.id); // follow-up → continue the research (v2…)
-    else if (at?.type === "code") runCoding(text, true, at.id); // follow-up → continue the same analysis session (build on prior findings)
-    // 分析 = CODE-FIRST: a single agent starts a real Python kernel, runs the data, and the
-    // artifact IS the computed result (volcano/tables from actual numbers) — same shape as
-    // Claude Science. Previously 分析 went to the multi-agent TEXT workflow, which could
-    // synthesize plausible-but-uncomputed results (the reviewer then flagged them); code-first
-    // grounds every number in a real run instead. 研究 stays multi-agent (search + review).
-    // 分析:默认单智能体代码优先(runCoding);会话设置里开「委派」则改派多智能体团队(runWorkflow,
-    // 带 compute 阶段真算图)。这两条是设置面板里目前真正接线生效的开关(specialist + delegation)。
-    else if (mode === "analysis") { if (sessionCfg.delegation) runWorkflow(text); else runCoding(text, true); }
-    else if (mode === "research" || codeAttachments.length > 0) runWorkflow(text);
+    // Follow-ups continue in the SAME mode: research→deep tool agent, code/analysis→coding, old
+    // multi-agent workflow sessions→workflow.
+    if (at?.type === "research") runCoding(text, true, at.id, true); // deep-research follow-up
+    else if (at?.type === "workflow") runWorkflow(text, at.id); // legacy multi-agent session (v2…)
+    else if (at?.type === "code") runCoding(text, true, at.id); // analysis follow-up (build on prior)
+    // TWO MODES (the Opus/Haiku split):
+    // 分析 (Haiku tier) = single agent + Python kernel, budget-controlled, YOUR local data — code-first
+    //   so every number is computed, not asserted.
+    // 研究 (Opus tier) = the SAME rich tool agent but NO budget, literature/web-first (not local data),
+    //   steered to a deep, cited, high-value report (backend research=true; multi-agent delegation next).
+    else if (mode === "analysis") runCoding(text, true);
+    else if (mode === "research") runCoding(text, true, undefined, true);
+    else if (codeAttachments.length > 0) runCoding(text, true); // attached data → analyze it locally
     else runCheckDraft(text);
     return true;
   }
@@ -1288,7 +1290,7 @@ function App() {
                   const activeRunning = activeTask?.status === "running";
                   // coding AND workflow runs are pausable — the engine holds each agent at its next
                   // turn while paused (cancel still wins); resume picks up where it left off.
-                  const runningCode = activeRunning && (activeTask?.type === "code" || activeTask?.type === "workflow");
+                  const runningCode = activeRunning && (activeTask?.type === "code" || activeTask?.type === "workflow" || activeTask?.type === "research");
                   if (runningCode && !hasText) {
                     const rid = activeTask!.liveRunId ?? activeTask!.id;
                     const isPaused = pausedRids.has(rid);
@@ -1961,7 +1963,7 @@ function App() {
                           phases + each agent (launch animation + name/model) + its steps (verbatim
                           code for coding/analysis), streamed live from runStore; falls back to the
                           persisted tk.steps once the finished live run is cleared. */}
-                      {(tk.type === "workflow" || tk.type === "code") && (
+                      {(tk.type === "workflow" || tk.type === "code" || tk.type === "research") && (
                         liveRun ? (
                           <ThreadActivity
                             run={liveRun}
