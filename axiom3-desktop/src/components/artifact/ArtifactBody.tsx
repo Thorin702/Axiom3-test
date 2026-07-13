@@ -72,21 +72,50 @@ const MD_ALLOWED_TAGS = [
   "code", "pre", "kbd", "samp", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6",
   "ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot", "tr", "th", "td", "caption",
 ];
+function katexHtml(tex: string, display: boolean): string {
+  try {
+    return katex.renderToString(tex.trim(), { displayMode: display, throwOnError: false, output: "html" });
+  } catch {
+    return `<code>${tex.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c] as string))}</code>`;
+  }
+}
+
+// Render markdown, but FIRST pull out inline/display math ($$…$$, \[…\], $…$, \(…\)) and render it via
+// KaTeX — analysis/research answers are equation-heavy and inline math left to the markdown renderer
+// shows up as literal `$\frac{}{}` gibberish (the "乱码" users saw). Math is stashed behind private-use
+// placeholders that survive marked + DOMPurify untouched, then the (trusted, self-generated) KaTeX HTML
+// is spliced back in AFTER sanitize — the same after-sanitize splice pattern injectCites uses.
+// Private-use delimiters around the stash index — inert text through marked + DOMPurify, can't collide
+// with real content (built via fromCharCode so no literal PUA chars live in the source).
+const MATH_OPEN = String.fromCharCode(0xe000);
+const MATH_CLOSE = String.fromCharCode(0xe001);
+const MATH_RE = new RegExp(MATH_OPEN + "(\\d+)" + MATH_CLOSE, "g");
 function renderMd(md: string): string {
-  const raw = marked.parse(md, { async: false }) as string;
-  return DOMPurify.sanitize(raw, {
+  const math: string[] = [];
+  const stash = (tex: string, display: boolean): string => {
+    const i = math.length;
+    math.push(katexHtml(tex, display));
+    return `${MATH_OPEN}${i}${MATH_CLOSE}`;
+  };
+  const src = md
+    .replace(/\$\$([\s\S]+?)\$\$/g, (_m, t) => stash(t, true))
+    .replace(/\\\[([\s\S]+?)\\\]/g, (_m, t) => stash(t, true))
+    .replace(/\\\(([\s\S]+?)\\\)/g, (_m, t) => stash(t, false))
+    // inline $…$: require non-space just inside the delimiters and forbid $/newline within, so prose
+    // like "$5 and $10" (space before the closing $) is NOT treated as math.
+    .replace(/(?<![\\$])\$(?!\s)([^\n$]+?)(?<!\s)\$(?!\$)/g, (_m, t) => stash(t, false));
+  const raw = marked.parse(src, { async: false }) as string;
+  let html = DOMPurify.sanitize(raw, {
     ALLOWED_TAGS: MD_ALLOWED_TAGS,
     ALLOWED_ATTR: ["class", "colspan", "rowspan", "align"],
     ALLOW_DATA_ATTR: false,
   });
+  if (math.length) html = html.replace(MATH_RE, (_m, n) => math[Number(n)] ?? "");
+  return html;
 }
 
 function renderMath(tex: string): string {
-  try {
-    return katex.renderToString(tex, { displayMode: true, throwOnError: false, output: "html" });
-  } catch {
-    return `<pre class="ax-md__pre">${tex.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c] as string))}</pre>`;
-  }
+  return katexHtml(tex, true);
 }
 
 // Turn `[Sn]` markers into clickable citation superscripts — ONLY for ids we actually have a source

@@ -230,21 +230,19 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              `mpl.rcParams['font.sans-serif']=['PingFang SC','Heiti TC','Arial Unicode MS','DejaVu Sans']; \
              mpl.rcParams['axes.unicode_minus']=False` — then verify no missing-glyph boxes; only if no CJK \
              font is available fall back to English on the figure. \
-             MECHANISM / PATHWAY / CONCEPT figures MUST be a PUBLICATION-GRADE matplotlib SCHEMATIC — draw \
-             it like a scientific ILLUSTRATOR making a clean Nature/Cell figure, NOT a slide flowchart of \
-             rectangles. Concretely: (a) CELLS = filled ELLIPSES/CIRCLES with a colored edge and a soft \
-             pastel fill, e.g. `ax.add_patch(Ellipse((x,y),w,h,facecolor='#EAD9F2',edgecolor='#8A6FC4',\
-             lw=1.6,alpha=.92,zorder=1))` — NOT rectangles for cells; (b) RECEPTORS = small rounded boxes \
-             (FancyBboxPatch, boxstyle='round,pad=0.02') placed ON the cell membrane (sitting on the \
-             ellipse's edge); (c) LIGANDS / small molecules = small circles; a repeating chain (glycans, \
-             polymers, fibrils) = a ROW of small circles along a path, not one box labelled 'glycan'; \
-             (d) SIGNALLING = curved `FancyArrowPatch(a,b,arrowstyle='-|>',connectionstyle='arc3,rad=0.2',\
-             lw=2,color=...)`; INHIBITION = a blunt bar-end ('-['); (e) a SOFT professional palette (4-5 \
-             muted pastels, never primary red/green/blue at full saturation), GENEROUS whitespace so \
-             nothing overlaps, concise labels placed clear of shapes, and a small legend box in a corner; \
-             set `ax.set_xlim/ylim` with margin and `ax.axis('off')`. Do NOT emit a ```network / ```chart \
-             block of dots-and-lines as the mechanism figure — that reads as a placeholder. A run asked \
-             for a 机理图/mechanism diagram that produced no matplotlib schematic has FAILED its deliverable. \
+             MECHANISM / PATHWAY / CONCEPT diagrams: PREFER a NATIVE figure block over hand-drawn \
+             matplotlib — the native renderers emit clean publication-grade SVG, whereas hand-placing \
+             matplotlib patches (Ellipse/FancyArrowPatch/…) reliably looks amateurish. Pick by what the \
+             diagram IS: a signalling / regulatory / causal PATHWAY or process FLOW → ```mermaid (e.g. \
+             `graph LR; A[受体激活]-->B[下游信号]; B-->|抑制|C[凋亡]`); a map of entities with \
+             ACTIVATION vs INHIBITION edges → ```network (nodes + edges, tag each edge `\"sign\":\"+\"` or \
+             `\"-\"`); a CHEMICAL reaction / transformation → ```reaction; a molecular structure → \
+             ```smiles. Give real, specific node labels in the user's language — never a generic \
+             dots-and-lines placeholder. ONLY when no native block can express the idea (e.g. a spatial \
+             cell-membrane cartoon) fall back to a matplotlib schematic, drawn like a clean Nature/Cell \
+             illustration: cells = soft-filled ellipses (not rectangles), receptors = small rounded boxes on \
+             the membrane, ligands = small circles, activation = curved `FancyArrowPatch(...arrowstyle='-|>'\
+             ...)`, inhibition = blunt '-[', a muted pastel palette, generous whitespace, `ax.axis('off')`. \
              ITERATE ON THE FIGURE: after a plotting cell, CHECK it actually ran (no Traceback) and LOOK at \
              the result — if labels overlap, glyphs are boxes, or it errored, FIX and redraw (1-2 refine \
              passes) before finishing; a good figure is iterated, never one-shot. \
@@ -384,9 +382,9 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              don't count) — when spent, fall back to conventions and DISCLOSE them so the run converges. \
              After the human answers, use exactly their choice and record it in your methods/assumptions.\n\
              For QUANTITATIVE DATA you computed (distributions, comparisons, correlations, time series, \
-             ROC/PR, volcano, heatmaps, embeddings…), you may ALSO emit a NATIVE figure block filled with \
-             your computed values — these are for DATA, NOT a substitute for a hand-drawn mechanism \
-             schematic (draw those in matplotlib as above). Use these EXACT shapes: \
+             ROC/PR, volcano, heatmaps, embeddings…), emit a NATIVE figure block filled with your computed \
+             values (these render as clean SVG). Native blocks are ALSO the preferred way to draw a \
+             mechanism/pathway (```mermaid / ```network / ```reaction — see above). Use these EXACT shapes: \
              ```chart bar = {\"type\":\"bar\",\"title\":..,\"xlabel\":..,\"ylabel\":..,\"data\":[{\"label\":\"Jan\",\"value\":12}, …]}; \
              ```chart scatter (also UMAP/PCA/t-SNE embeddings) = {\"type\":\"scatter\",...,\"points\":[{\"x\":1,\"y\":2,\"group\":?}, …]}; \
              ```chart line = {\"type\":\"line\",...,\"series\":[{\"name\":..,\"points\":[[x,y], …]}]}. \
@@ -735,6 +733,8 @@ pub async fn run_coding_agent_steered(
     const MAX_MALFORMED: u32 = 3;
     let mut intake_done = !pause.intake_required(); // satisfied once the forced intake ask has fired
     let mut intake_nudges = 0u32; // bounded pushes to make the first action an ask_user intake card
+    let mut delegated_once = false; // a delegate sub-team has been spawned this run
+    let mut delegate_nudges = 0u32; // bounded push to open a sub-team on a complex research topic
     let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
     // Automatic kernel resilience: a cell timeout/crash restarts the kernel and WIPES in-memory state
     // (dataframes/adata). We auto-checkpoint after an expensive successful cell and auto-restore after
@@ -904,6 +904,26 @@ pub async fn run_coding_agent_steered(
             } else {
                 intake_done = true; // relent after the nudge budget; let this action proceed
             }
+        }
+        // DELEGATE NUDGE: like the intake gate, GLM won't open a multi-agent sub-team on its own even
+        // in research mode — so the dynamic multi-agent capability never actually fires. A few steps in
+        // (after it has scoped + done some initial breadth), push it ONCE to fan out its hardest/broadest
+        // branch, then relent so a genuinely single-angle topic isn't forced to sub-divide.
+        if pause.delegate_encouraged()
+            && !delegated_once
+            && delegate_nudges < 1
+            && n >= 4
+            && !matches!(tool.as_str(), "delegate" | "ask_user" | "plan")
+        {
+            delegate_nudges += 1;
+            transcript.push_str(
+                "\n[system] 你在深度研究模式,手上有一支能并行工作的子智能体团队(delegate 工具)。这个课题是多面的:\
+                 现在挑出你最宽、最硬的一个分支——竞争假说的权衡、跨领域机制普查、或正反证据的系统梳理——用一个 \
+                 {\"tool\":\"delegate\",\"task\":\"…(自足、值得一支小队深挖的子问题)\"} 开子队去攻,等它带回结论再综合。\
+                 现在就发这个 delegate 动作,先别做别的。You are in deep-research mode with a sub-agent team available; \
+                 delegate your single broadest/hardest branch NOW via one {\"tool\":\"delegate\",\"task\":…} call.\n",
+            );
+            continue;
         }
         let mut step_figures: Vec<String> = Vec::new(); // figures this turn (python only)
         let (detail, observation) = match tool.as_str() {
@@ -1102,7 +1122,7 @@ pub async fn run_coding_agent_steered(
                     format!("[skip] 这条检索与之前某次高度重复,未执行。你已检索 {n_done} 次——够了。现在停止检索,基于已有文献:提出 2-3 个竞争假说、选出最强并说明新颖性、画机理图、给相关→因果→增益(gain-of-function)→阴性对照的分级验证,然后 {{\"final\":…}}. Duplicate query — not executed; STOP searching and produce the deliverable now.")
                 } else if n_done >= 10 {
                     lit_queries.push(q.clone());
-                    format!("[stop] litsearch 预算已用尽({n_done} 次),现已暂停。立即用已检索到的文献:提出 2-3 个竞争假说、选最强、**用 python+matplotlib 画一张自定义机理示意图(细胞/受体/箭头/图例,不要用抽象 network 块)**、给分级验证方案,然后 {{\"final\":…}}. 不要再检索。litsearch budget spent — it is DISABLED; DRAW the mechanism schematic in matplotlib (not a node-graph), give the verification plan, and finish; do not search again.")
+                    format!("[stop] litsearch 预算已用尽({n_done} 次),现已暂停。立即用已检索到的文献:提出 2-3 个竞争假说、选最强、**用原生图块画机理图(通路/流程用 ```mermaid,带激活/抑制的关系网用 ```network,化学反应用 ```reaction;标签要具体、用用户语言)**、给分级验证方案,然后 {{\"final\":…}}. 不要再检索。litsearch budget spent — it is DISABLED; draw the mechanism figure as a NATIVE block (```mermaid / ```network / ```reaction), give the verification plan, and finish; do not search again.")
                 } else {
                     let hits = match LitSearch::new().search(&q, 5).await {
                         Ok(works) if works.is_empty() => "(no matching works)".to_string(),
@@ -1208,6 +1228,7 @@ pub async fn run_coding_agent_steered(
                 if task.trim().is_empty() {
                     ("delegate".to_string(), "ERROR: delegate needs a `task` — a self-contained subtask worth a whole sub-team.".to_string())
                 } else {
+                    delegated_once = true; // satisfies the delegate nudge — don't push again
                     let sub_budget = CodingBudget {
                         max_steps: 18,
                         per_call_timeout_s: budget.per_call_timeout_s,
@@ -1605,6 +1626,15 @@ fn sanitize_json_strings(s: &str) -> String {
     for c in s.chars() {
         if in_str {
             if esc {
+                // The previous char was a backslash. Keep it as an escape ONLY for the sequences JSON
+                // actually defines and a report would use (\" \\ \/ \n \r \t). Anything else — \sigma,
+                // \frac, \{ etc. from LaTeX the model drops into a {"final":"…"} string — is a LONE
+                // backslash that makes serde reject the whole envelope (which then gets dumped raw as
+                // "乱码"). Escape it so the final parses and the LaTeX survives as literal text.
+                const KEEP: &[char] = &['"', '\\', '/', 'n', 'r', 't'];
+                if !KEEP.contains(&c) {
+                    out.push('\\');
+                }
                 out.push(c);
                 esc = false;
             } else {
@@ -1743,6 +1773,20 @@ fn truncate(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn sanitize_escapes_latex_so_a_latex_laden_final_parses() {
+        // A {"final":…} carrying LaTeX (\sigma, \frac) is INVALID JSON as-is (\s is not a JSON escape)
+        // → serde rejects it → the raw envelope used to get dumped as "乱码". Sanitize must fix it.
+        let raw = r#"{"final":"参数 \sigma 增大,能量为 \frac{1}{2}mv^2"}"#;
+        assert!(serde_json::from_str::<serde_json::Value>(raw).is_err(), "raw \\sigma is invalid json");
+        let v: serde_json::Value =
+            serde_json::from_str(&sanitize_json_strings(raw)).expect("sanitized should parse");
+        let f = v["final"].as_str().unwrap();
+        assert!(f.contains("\\sigma"), "LaTeX \\sigma preserved literally: {f}");
+        assert!(f.contains("\\frac"), "LaTeX \\frac preserved (not formfeed): {f}");
+        assert!(!f.contains('\u{0c}'), "no stray formfeed from \\f");
+    }
 
     #[test]
     fn remap_cite_markers_offsets_ids_and_keeps_utf8() {

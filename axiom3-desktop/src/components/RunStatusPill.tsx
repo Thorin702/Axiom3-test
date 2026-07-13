@@ -1,12 +1,12 @@
 // A "running" status pill rendered right above the composer, aligned to its left edge — mirrors
 // Claude Code's activity line. Shows the app's knowledge-graph mark (the icon) as a live
-// "thinking" pulse while agents run, followed by elapsed time · tokens · task state. It PERSISTS
-// after the run finishes (showing the last run's final stats, static graph), and renders nothing
-// only when the run store is empty. Reads the module-level runStore. (Lives in the composer, so
-// it shows on the home + thread views where work is started, not on the settings-like tabs.)
-import { useEffect, useState, useSyncExternalStore } from "react";
+// "thinking" pulse while THIS session's agent runs, followed by elapsed time · tokens · state.
+// It is keyed to the ACTIVE task's run (passed in) — NOT the global run store — so a blank/new
+// session or a different task's view never shows another task's pulse. Renders nothing when the
+// active task has no run (e.g. the home/new-session view).
+import { useEffect, useState } from "react";
 import type { Lang } from "../i18n";
-import { runStore } from "../lib/runStore";
+import type { RunView } from "../lib/types";
 
 function fmtDur(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -36,37 +36,27 @@ function GraphMark({ active }: { active: boolean }) {
   );
 }
 
-export function RunStatusPill({ lang }: { lang: Lang }) {
+export function RunStatusPill({ lang, run }: { lang: Lang; run?: RunView }) {
   const zh = lang === "zh";
-  const runs = useSyncExternalStore(runStore.subscribe, runStore.snapshot);
-  const running = runs.filter((r) => r.status === "running");
-  const active = running.length > 0;
+  const active = run?.status === "running";
   const [, setTick] = useState(0);
-  // tick every second for a live "thinking time" while anything runs
+  // tick every second for a live "thinking time" while THIS run works
   useEffect(() => {
     if (!active) return;
     const t = setInterval(() => setTick((x) => x + 1), 1000);
     return () => clearInterval(t);
   }, [active]);
 
-  if (runs.length === 0) return null;
+  // No run for the active task (home / new session / a task that never ran) → show nothing.
+  if (!run) return null;
 
-  // running → aggregate the in-flight runs; otherwise → hold the most recent finished run's stats
-  let elapsedMs: number;
-  let tokens: number;
-  let label: string;
-  if (active) {
-    elapsedMs = Date.now() - Math.min(...running.map((r) => r.startedMs));
-    tokens = running.reduce((s, r) => s + r.tokensIn + r.tokensOut, 0);
-    label = `${running.length} ${zh ? "个任务运行中" : running.length > 1 ? "running tasks" : "running task"}`;
-  } else {
-    const latest = runs[0]; // store prepends newest
-    elapsedMs = (latest.finishedMs ?? latest.startedMs) - latest.startedMs;
-    tokens = latest.tokensIn + latest.tokensOut;
-    label = zh
-      ? latest.status === "done" ? "已完成" : latest.status === "cancelled" ? "已取消" : "已结束"
-      : latest.status === "done" ? "done" : latest.status === "cancelled" ? "cancelled" : "ended";
-  }
+  const elapsedMs = (active ? Date.now() : run.finishedMs ?? run.startedMs) - run.startedMs;
+  const tokens = run.tokensIn + run.tokensOut;
+  const label = active
+    ? zh ? "运行中" : "running"
+    : zh
+    ? run.status === "done" ? "已完成" : run.status === "cancelled" ? "已取消" : "已结束"
+    : run.status === "done" ? "done" : run.status === "cancelled" ? "cancelled" : "ended";
 
   return (
     <span

@@ -1142,8 +1142,9 @@ function App() {
   function composerBlock() {
     return (
       <>
-      {/* running indicator sits right above the input box (renders nothing when idle) */}
-      <RunStatusPill lang={lang} />
+      {/* running indicator sits right above the input box — keyed to the ACTIVE task's run so it
+          never shows another task's pulse on a blank/new session or a different task's view. */}
+      <RunStatusPill lang={lang} run={liveRuns.find((r) => r.id === (activeTask?.liveRunId ?? activeTask?.id))} />
       <div className="ax-composer">
         {cmd === null ? (
           <>

@@ -2653,7 +2653,7 @@ pub async fn recap_run(
 const RESEARCH_MODE_DIRECTIVE: &str = "【深度研究模式 · 无预算限制】你现在是一名深度研究科学家,目标是产出一份**高价值、有据可依、带引用**的深度研究报告。行为要求:\n\
 1) 文献/联网优先,不假设有本地数据:用 **litsearch** 对课题做**广度优先**多角度检索(≥5-8 个不同角度,不要只换关键词),读真实论文并**引用**;用 **web_search** 找论文之外的高价值来源(官方数据库 GEO/UniProt/PDB/Ensembl/PubChem、数据集、工具文档、预印本、机构页),用 **web_fetch** 打开链接细读;需要结构化数据(CSV/JSON/accession)时用 **python**(pandas/urllib)抓取并解析再分析。绝不编造数据、数字、引用或结论。\n\
 2) **没有步数/时间预算压力**——要把课题做透:定位领域已知与空白 → 提出 2-3 个真正不同的竞争假设并各自权衡 → 明确指出你的**新颖点**(可借鉴邻域机制做跨域迁移),但对新颖性要诚实(先自查证是否已发表)。\n\
-3) 遇到复杂子问题就分步深挖,必要时用 python 做真实计算/建模来支撑论证;图只在真正增进理解时画,用原生图块或 matplotlib,填真实计算值。\n\
+3) 遇到**宽而可分**的子问题(竞争假说权衡、跨领域机制普查、正反证据梳理)时,用 **delegate** 开一支子智能体团队并行深挖各角度、再综合;只有单点问题才自己一步步做。必要时用 python 做真实计算/建模支撑论证。图:机理/通路/概念图**优先用原生图块**(通路流程 ```mermaid、带激活/抑制的关系网 ```network、化学反应 ```reaction),数据图用原生图块填真实计算值,matplotlib 只在原生图块都表达不了时用。\n\
 4) 自我批判:说清楚你的结论的弱点、如何被证伪、验证从相关到因果的阶梯(含增益实验与阴性对照)。\n\
 5) 最终产出一份结构化、可独立阅读的深度报告(立论→证据与分析→图→竞争假设权衡→新颖点→验证方案→诚实的局限与引用),用用户的语言。质量与深度是唯一目标,不要为了收尾而草率。";
 
@@ -2819,9 +2819,13 @@ pub async fn coding_run(
     if is_analyze && prior_ctx.is_none() {
         pause.require_intake();
     }
-    // Deep research (the Opus tier) can spawn multi-agent sub-workflows for complex subtasks.
+    // Deep research (the Opus tier) can spawn multi-agent sub-workflows for complex subtasks — and is
+    // NUDGED to actually do so a few steps in (GLM won't invoke this discretionary meta-tool on its own,
+    // same as ask_user), so the multi-agent capability really fires on a complex topic. Bounded: the
+    // loop relents after the nudges if the model declines, so a single-angle topic can still go solo.
     if is_research {
         pause.allow_delegate();
+        pause.encourage_delegate();
     }
     let _guard = state
         .begin_run(&runid, cancel.clone(), pause.clone())
@@ -2830,17 +2834,22 @@ pub async fn coding_run(
     let sink: Arc<dyn EventSink> = Arc::new(TauriSink { app: app.clone() });
     let em = SeqEmitter::new(sink, runid.clone());
     let title: String = goal.trim().chars().take(60).collect();
-    em.emit(RunEventBody::RunStarted { task_kind: "coding".into(), title, cancellable: true });
-    // Show the reframed directive in the thinking chain so the expansion is transparent, not hidden.
+    // Research is NOT a "coding" agent to the user — name the run + its agent for the mode, not the
+    // implementation. (task_kind drives labels in the activity rail; the role drives the in-thread
+    // "启动智能体 · …" name.)
+    let task_kind = if is_research { "research" } else { "analysis" };
+    let agent_role = if is_research { "研究员" } else { "分析师" };
+    em.emit(RunEventBody::RunStarted { task_kind: task_kind.into(), title, cancellable: true });
+    // Show the reframed brief in the thinking chain so the expansion is transparent, not hidden.
     if let Some(ref rf) = reframed {
         em.emit(RunEventBody::AgentStep {
             agent_id: "reframe".into(),
             step: 0,
             role: "reframe".into(),
             status: "ok".into(),
-            title: "理解意图 → 研究指令".into(),
+            title: "理解课题 → 研究方向".into(),
             reasoning: String::new(),
-            output: format!("**研究指令(自动扩写自你的请求)**\n\n{rf}"),
+            output: format!("**研究方向(据你的请求自动细化)**\n\n{rf}"),
             lines: rf.lines().count(),
         });
     }
@@ -2852,7 +2861,7 @@ pub async fn coding_run(
     em.emit(RunEventBody::PhaseChanged { phase: "executing".into(), index: 1, total: 3 });
     em.emit(RunEventBody::AgentSpawned {
         agent_id: "coder".into(),
-        role: "coder".into(),
+        role: agent_role.into(),
         model: model_id.clone(),
         vendor: provider.clone(),
         phase: "executing".into(),

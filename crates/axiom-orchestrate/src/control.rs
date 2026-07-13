@@ -21,6 +21,10 @@ struct Inner {
     // bounded multi-agent sub-workflow for a complex subtask. Off by default so analysis stays single-
     // agent and sub-agents can't recurse (a sub-run never sets it).
     delegate_allowed: AtomicBool,
+    // When set, the coding loop NUDGES the model to open a `delegate` sub-team a few steps in — GLM
+    // won't call this discretionary meta-tool on its own judgment (same as `ask_user`), so without a
+    // bounded push the multi-agent capability never actually fires on a complex research topic.
+    encourage_delegate: AtomicBool,
     // Answer channel for the `ask_user` tool: the parked tool polls `take_answer`; the UI fills it
     // via the `answer_ask` command. One slot is enough — asks are strictly one-at-a-time per run.
     answer: Mutex<Option<String>>,
@@ -77,5 +81,12 @@ impl Pause {
     }
     pub fn delegate_allowed(&self) -> bool {
         self.0.delegate_allowed.load(Ordering::Relaxed)
+    }
+    /// Nudge the model to open a `delegate` sub-team on a complex research topic (bounded; it relents).
+    pub fn encourage_delegate(&self) {
+        self.0.encourage_delegate.store(true, Ordering::Relaxed);
+    }
+    pub fn delegate_encouraged(&self) -> bool {
+        self.0.encourage_delegate.load(Ordering::Relaxed)
     }
 }

@@ -93,7 +93,11 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
             const nAgents = planned || r.agents.length;
             const idx = Math.max(0, r.phases.indexOf(r.phase));
             const finished = r.status !== "running";
-            const kindLabel = r.taskKind === "workflow" ? "Workflow" : r.taskKind === "coding" ? "Coding" : r.taskKind;
+            const kindLabel =
+              r.taskKind === "workflow" ? "Workflow"
+              : r.taskKind === "research" ? (lang === "zh" ? "研究" : "Research")
+              : r.taskKind === "analysis" || r.taskKind === "coding" ? (lang === "zh" ? "分析" : "Analysis")
+              : r.taskKind;
             return (
               <div className="ax-runcard" key={r.id}>
                 {/* ── task header ── */}
@@ -102,7 +106,7 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                   <span className="ax-runcard__name">{r.title}</span>
                   {r.status === "running" && (
                     <span className="ax-runcard__ctl">
-                      {(r.taskKind === "coding") && (
+                      {(r.taskKind === "coding" || r.taskKind === "analysis" || r.taskKind === "research") && (
                         <button
                           className="ax-iconbtn"
                           onClick={() => {
