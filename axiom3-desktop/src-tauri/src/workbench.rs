@@ -26,7 +26,7 @@ use axiom_runtime::supervisor::{run_batch, Cancel};
 use axiom_runtime::Provider;
 use axiom_orchestrate::coding::sandbox::{Sandbox, SandboxMode};
 use axiom_orchestrate::kernel::{CellResult, PyKernel};
-use axiom_orchestrate::coding::{run_coding_agent, CodingBudget, ProviderModel};
+use axiom_orchestrate::coding::{run_coding_agent, run_coding_agent_steered, CodingBudget, ProviderModel};
 use axiom_orchestrate::events::{EventSink, RunEvent, RunEventBody, SeqEmitter};
 use axiom_orchestrate::model::Run;
 use axiom_orchestrate::step::ProviderStep;
@@ -2595,6 +2595,11 @@ async fn reframe_goal(provider: &str, model_id: &str, raw: &str, cancel: &Cancel
 /// fabricate). Run on a DIFFERENT model than the author when possible for an independent perspective.
 const RESEARCH_REVIEW_SYSTEM: &str = "你是一位独立、严格的科研审稿人,正在评审下面这份研究报告(它由另一个智能体产出)。请只做【评审、不要改写报告】,简明列点指出:①有没有过度声明/未被证据支撑的断言(尤其「最新颖/完全空白/一定」这类);②有没有引用与结论不匹配或缺引用的关键论断;③论证/方法有没有明显缺口或逻辑跳跃;④如果报告本身扎实、诚实,就明确说「整体扎实」并只列少数可改进点。要具体(指到具体论断),别泛泛。绝不编造报告里没有的事实。用简体中文,控制在 6-10 条以内。";
 
+/// Reliability net: when the author model couldn't synthesize the final report even after retries, a
+/// fast independent model writes it FROM THE RETRIEVED SOURCES. It may only use the [Sn] markers it is
+/// given (never invent one), and must not fabricate facts beyond the provided source excerpts.
+const REPORT_SYNTH_SYSTEM: &str = "你是一名深度研究科学家,正在根据下面提供的『已检索到的来源』撰写一份结构化、连贯、带引用的中文深度研究报告。硬性要求:①只依据提供的来源与其摘录写作,绝不编造来源里没有的事实、数字或结论;②在每个有来源支撑的论断句末标注对应的 [Sn] 角标,只能使用提供的角标、不得新造;③分模块论述,提出并权衡竞争性假说、指出证据强弱与不确定处,对新颖性保持诚实;④用 Markdown,只输出报告正文,不要输出 JSON、不要图表代码块。";
+
 const RECAP_SYSTEM: &str = "你是用户的科研助手，刚完成用户交办的一项分析/研究任务，完整报告在下面。请用**对话口吻**、面向用户写一段收尾汇报（像在聊天里向他交代结果那样），分三部分：\n\
 1) 用「**核心结论**」作小标题，列 2-4 条一针见血的关键发现（每条一句），直击这次最重要的结果——**把每条里的关键数字、名称或结论用 `**加粗**` 高亮**；只挑最有分量的，别罗列全部，别写套话式的正确废话。\n\
 2) 另起一行用「**建议下一步**」作小标题，结合你对用户真实意图的判断，列 2-3 条具体、可执行、真正有价值的深化/验证/扩展方向（每条一句，落到具体动作，不要泛泛而谈）。\n\
@@ -2755,14 +2760,11 @@ pub async fn coding_run(
         None
     };
     let base_goal = reframed.clone().unwrap_or_else(|| goal.clone());
-    // DEEP RESEARCH: after the topic is reframed (novelty / competing hypotheses / breadth), prepend
-    // the mode directive that makes the tool agent behave like the "Opus tier" — literature/web-first,
-    // no budget pressure, a deep cited report. Applied for both first-round and follow-up.
-    let base_goal = if is_research {
-        format!("{RESEARCH_MODE_DIRECTIVE}\n\n=== 研究课题 ===\n{base_goal}")
-    } else {
-        base_goal
-    };
+    // DEEP RESEARCH: the mode directive (literature/web-first, no budget pressure, deep cited report)
+    // is passed as SYSTEM STEERING via run_coding_agent_steered — NOT concatenated into the goal. That
+    // keeps the goal (→ transcript GOAL header → report subject → recap input → session title) the
+    // CLEAN user topic, so the internal directive can never leak into a salvage dump or the recap.
+    let steer: &str = if is_research { RESEARCH_MODE_DIRECTIVE } else { "" };
     // Prepend the prior round's findings so the agent CONTINUES the same investigation — build on
     // what's established, don't re-derive it — realizing multi-round deep research on one topic.
     let goal = match prior_ctx {
@@ -2884,7 +2886,7 @@ pub async fn coding_run(
     // code/args it wrote) as output, tool results fed back as input. CJK ≈ 2–3 chars/token → /3.
     let mut acc_in: u64 = goal.chars().count() as u64 / 3 + 1800; // task + system-prompt baseline
     let mut acc_out: u64 = 0;
-    let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &pause, &budget, kernel, |step| {
+    let result = run_coding_agent_steered(&goal, steer, &sandbox, &model, &cancel, &pause, &budget, kernel, |step| {
         let think: String = step.reasoning.chars().take(600).collect();
         let mut note = if think.is_empty() {
             format!("{} {}", step.tool, step.detail)
@@ -3030,6 +3032,37 @@ pub async fn coding_run(
     // Attach the figures the agent COMPUTED (base64 PNG) to the artifact as native
     // ```pyfig blocks, so the report shows results drawn from real data, not asserted.
     let mut synthesis = result.summary;
+    // RELIABILITY NET: if the in-agent synthesis FELL BACK (the author model couldn't write the final
+    // report even after retries — its salvage produced the sources-list placeholder), re-synthesize a
+    // proper cited report on the fast, independent DeepSeek model FROM THE RETRIEVED SOURCES. A heavy
+    // deep-research run must reliably yield a real report, not a placeholder. [Sn] markers stay valid
+    // (they map to result.sources, which is returned) so the report's citations remain clickable.
+    let synth_fell_back = synthesis.starts_with("## 研究要点(基于已检索到的来源)")
+        || synthesis.starts_with("本次研究已收集材料并生成了图");
+    if is_research && synth_fell_back && !result.sources.is_empty() && std::env::var("DEEPSEEK_API_KEY").is_ok() {
+        use axiom_orchestrate::coding::CodingModel;
+        let m = ProviderModel { provider: "deepseek".into(), model: "deepseek-v4-flash".into(), timeout_s: 180 };
+        let mut src_block = String::new();
+        for s in result.sources.iter().take(40) {
+            let head = if s.title.trim().is_empty() { s.url.clone() } else { s.title.clone() };
+            src_block.push_str(&format!(
+                "[S{}] ({}) {}\n{}\n\n",
+                s.id, s.kind,
+                head.chars().take(160).collect::<String>(),
+                s.excerpt.chars().take(500).collect::<String>()
+            ));
+        }
+        let user = format!(
+            "研究课题:\n{}\n\n已检索到的来源(每条含 [Sn] 角标与摘录):\n{}\n\n现在据此写出完整的深度研究报告。",
+            goal.chars().take(800).collect::<String>(),
+            src_block.chars().take(9000).collect::<String>(),
+        );
+        if let Ok(t) = m.complete(REPORT_SYNTH_SYSTEM, &user, &Cancel::new()).await {
+            if t.trim().chars().count() > 200 {
+                synthesis = t.trim().to_string();
+            }
+        }
+    }
     if !result.figures.is_empty() {
         synthesis.push_str("\n\n## 计算得到的图 · Computed figures\n");
         for f in &result.figures {

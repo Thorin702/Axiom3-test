@@ -604,7 +604,7 @@ pub async fn delegate_tooled(
         let mut on_a = |_: String, _: String| {};
         let sd: &mut (dyn FnMut(CodingStepRec) + Send) = &mut on_s;
         let ad: &mut (dyn FnMut(String, String) + Send) = &mut on_a;
-        let sub = Box::pin(run_coding_agent(&sub_goal, sandbox, model, cancel, &sub_pause, sub_budget, kernel.clone(), sd, ad)).await;
+        let sub = Box::pin(run_coding_agent_steered(&sub_goal, "", sandbox, model, cancel, &sub_pause, sub_budget, kernel.clone(), sd, ad)).await;
         figs.extend(sub.figures);
         // Lift this sub-agent's LOCAL source ids (1..M) into the parent's global space at `offset`,
         // and rewrite its summary's [Sk] markers by the same offset so text and sources stay in sync.
@@ -636,25 +636,79 @@ pub async fn delegate_tooled(
 }
 
 /// Salvage a proper report from everything gathered so far. Used BOTH at step-budget exhaustion and
-/// when a step's model call keeps failing — a long, expensive run must never collapse to a bare error
-/// (or a raw transcript dump) and throw away its gathered material. One synthesis attempt over the
-/// compacted transcript; on failure, a readable transcript-tail fallback.
-async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str, cancel: &Cancel) -> String {
-    let wrap_ctx = compact_transcript(transcript, 26_000);
+/// when a step's model call keeps failing — a long, expensive run must never collapse and throw away
+/// its gathered material. Retries the synthesis a few times (a transient timeout/429 shouldn't force
+/// the thinner fallback); on total failure builds a CLEAN report from the retrieved SOURCES — it never
+/// dumps the raw transcript (which holds internal steering / the GOAL header) into a user-facing report.
+async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str, sources: &[Source], cancel: &Cancel) -> String {
+    let wrap_ctx = compact_transcript(transcript, 22_000);
     let wrap_user = format!(
         "{wrap_ctx}\n\n[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统地组织成一篇有结论、有引用的报告(已生成的图会自动附上,不要再画)。给出明确的主要发现与结论;如果个别方向还能更深入,就在结尾用「后续可深化的方向」简短列出——把它当作完整报告的自然延伸,而不是说报告没做完。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
     );
-    match model.complete(sys, &wrap_user, cancel).await {
-        Ok(r) if r.trim().chars().count() > 40 => r.trim().to_string(),
-        _ => format!(
-            "已完成一轮深度研究,下面是已检索 / 计算得到的阶段性结论(部分方向仍可继续深化):\n{}",
-            truncate(transcript, 1500)
-        ),
+    // The final synthesis is the make-or-break deliverable — retry so a transient blip doesn't force
+    // the fallback (backoff between tries; cancellation bails immediately).
+    for wait_ms in [0u64, 4000, 12000] {
+        if wait_ms > 0 {
+            for _ in 0..(wait_ms / 200) {
+                if cancel.is_cancelled() { break; }
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+        if cancel.is_cancelled() { break; }
+        if let Ok(r) = model.complete(sys, &wrap_user, cancel).await {
+            if r.trim().chars().count() > 80 {
+                return r.trim().to_string();
+            }
+        }
     }
+    fallback_report_from_sources(sources)
 }
 
+/// When the model can't synthesize the final report, build a clean, readable report from the retrieved
+/// sources (with clickable [Sn] markers) — NEVER a raw transcript dump. Figures are attached separately.
+fn fallback_report_from_sources(sources: &[Source]) -> String {
+    if sources.is_empty() {
+        return "本次研究已收集材料并生成了图,但最终文字报告的合成未能完成。已计算生成的图见下方。建议再运行一次以获得完整的文字综述。".to_string();
+    }
+    let mut s = String::from(
+        "## 研究要点(基于已检索到的来源)\n\n> 说明:本次最终文字综述未能自动合成,以下按来源列出已获取的关键材料(角标可点击溯源);下方附有已计算生成的图。可再运行一次以得到完整的带引用综述。\n\n",
+    );
+    for src in sources {
+        let kind = match src.kind.as_str() { "paper" => "文献", "db" => "数据库", _ => "网页" };
+        let head = if src.title.trim().is_empty() { src.url.clone() } else { src.title.clone() };
+        s.push_str(&format!("- **[S{}]** ({kind}) {}\n", src.id, head.chars().take(160).collect::<String>()));
+        let ex: String = src.excerpt.lines().filter(|l| !l.trim().is_empty()).take(2).collect::<Vec<_>>().join(" ");
+        if !ex.trim().is_empty() {
+            s.push_str(&format!("  - {}\n", ex.chars().take(220).collect::<String>()));
+        }
+    }
+    s.push_str("\n**后续可深化**:再运行一次即可让模型把上述来源综合成完整、连贯、带引用的深度报告。");
+    s
+}
+
+/// Back-compat entry: run with no extra system steering (the `goal` is the whole task).
 pub async fn run_coding_agent(
     goal: &str,
+    sandbox: &Sandbox,
+    model: &impl CodingModel,
+    cancel: &Cancel,
+    pause: &Pause,
+    budget: &CodingBudget,
+    kernel: Option<Arc<PyKernel>>,
+    on_step: impl FnMut(CodingStepRec),
+    on_ask: impl FnMut(String, String),
+) -> CodingResult {
+    run_coding_agent_steered(goal, "", sandbox, model, cancel, pause, budget, kernel, on_step, on_ask).await
+}
+
+/// Like `run_coding_agent`, but `steer` (mode directives like the deep-research brief) is appended to
+/// the SYSTEM prompt instead of being concatenated into `goal`. This keeps `goal` — which becomes the
+/// transcript's `GOAL:` header, the report subject, the recap input and the session title — the CLEAN
+/// user topic, so internal steering can never leak into a salvage dump or any user-facing string.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_coding_agent_steered(
+    goal: &str,
+    steer: &str,
     sandbox: &Sandbox,
     model: &impl CodingModel,
     cancel: &Cancel,
@@ -666,7 +720,13 @@ pub async fn run_coding_agent(
     // event so the UI can render the question card. The loop then parks until the answer arrives.
     mut on_ask: impl FnMut(String, String),
 ) -> CodingResult {
-    let sys = system_prompt(sandbox.mode(), kernel.is_some(), pause.delegate_allowed());
+    let base_sys = system_prompt(sandbox.mode(), kernel.is_some(), pause.delegate_allowed());
+    let sys = if steer.trim().is_empty() {
+        base_sys
+    } else {
+        // Internal steering, explicitly fenced off from the deliverable so the model never echoes it.
+        format!("{base_sys}\n\n=== 本次运行的模式指令(仅供你遵循,绝不要把这段文字复述进报告/结论)===\n{steer}")
+    };
     let mut transcript = format!("GOAL:\n{goal}\n\nWorkspace root: {}\n", sandbox.root().display());
     let mut ran_command = false; // did the agent run a build/test command this run?
     let mut nudged = false; // pushed back once for finishing without verifying
@@ -741,7 +801,7 @@ pub async fn run_coding_agent(
                             // tail). The run ends gracefully with real content + its figures.
                             let _ = &e; // error is captured in the transcript; the salvage speaks for itself
                             let artifacts = collect_artifacts(sandbox.root(), &start_files);
-                            let summary = synthesize_wrapup(model, &sys, &transcript, cancel).await;
+                            let summary = synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await;
                             return CodingResult { status: "done".into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
                         }
                         // Escalating backoff — a 429/rate-limit window can last tens of seconds, so
@@ -1495,7 +1555,7 @@ pub async fn run_coding_agent(
     // Budget exhausted without a {"final"}. Don't dump the raw transcript as the "report" — do ONE
     // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
     // figures (falls back to a transcript tail on failure). Same salvage the model-error path uses.
-    let summary = synthesize_wrapup(model, &sys, &transcript, cancel).await;
+    let summary = synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await;
     CodingResult { status: "done".into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
 
