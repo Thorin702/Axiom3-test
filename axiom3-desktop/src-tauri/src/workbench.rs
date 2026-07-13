@@ -2806,6 +2806,10 @@ pub async fn coding_run(
     if is_analyze && prior_ctx.is_none() {
         pause.require_intake();
     }
+    // Deep research (the Opus tier) can spawn multi-agent sub-workflows for complex subtasks.
+    if is_research {
+        pause.allow_delegate();
+    }
     let _guard = state
         .begin_run(&runid, cancel.clone(), pause.clone())
         .ok_or("a run with this id is already in flight")?;
@@ -2903,6 +2907,7 @@ pub async fn coding_run(
             "litsearch" => format!("**📚 文献检索 · {}**\n\n{}", step.input, obs_full),
             "web_search" => format!("**🌐 联网检索 · {}**\n\n{}", step.input, obs_full),
             "web_fetch" => format!("**🔗 读取网页 · {}**\n\n{}", step.input, obs_full),
+            "delegate" => format!("**👥 委派子智能体团队 · {}**\n\n{}", step.detail, obs_full),
             "pip_install" => format!("**📦 安装依赖 · {}**\n\n```\n{}\n```", step.input, obs_full),
             "conda_install" => format!("**🧬 安装二进制工具(bioconda) · {}**\n\n```\n{}\n```", step.input, obs_full),
             "job_start" => format!("**🚀 后台作业**\n\n```python\n{}\n```\n\n{}", step.input.trim(), obs_full),
@@ -2928,6 +2933,7 @@ pub async fn coding_run(
                 "litsearch" => format!("📚 文献检索 · {}", step.input),
                 "web_search" => format!("🌐 联网检索 · {}", step.input),
                 "web_fetch" => format!("🔗 读取网页 · {}", step.input),
+                "delegate" => format!("👥 委派子智能体团队 · {}", step.detail),
                 "search_skills" => format!("🧭 检索技能 · {}", step.input),
                 "load_skill" => format!("📖 加载技能 · {}", step.input),
                 "pip_install" => format!("📦 安装依赖 · {}", step.detail),

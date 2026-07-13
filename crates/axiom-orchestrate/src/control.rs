@@ -17,6 +17,10 @@ struct Inner {
     // card — GLM (and weaker models) won't ask on their own discretion even when the prompt demands
     // it, so without this the clarifying intake never fires. See the intake gate in coding::run.
     require_intake: AtomicBool,
+    // When set, the `delegate` tool is available (deep-research mode, depth 0): the agent can spawn a
+    // bounded multi-agent sub-workflow for a complex subtask. Off by default so analysis stays single-
+    // agent and sub-agents can't recurse (a sub-run never sets it).
+    delegate_allowed: AtomicBool,
     // Answer channel for the `ask_user` tool: the parked tool polls `take_answer`; the UI fills it
     // via the `answer_ask` command. One slot is enough — asks are strictly one-at-a-time per run.
     answer: Mutex<Option<String>>,
@@ -66,5 +70,12 @@ impl Pause {
     }
     pub fn intake_required(&self) -> bool {
         self.0.require_intake.load(Ordering::Relaxed)
+    }
+    /// Allow the `delegate` tool (deep-research mode). Sub-runs never call this → no recursion.
+    pub fn allow_delegate(&self) {
+        self.0.delegate_allowed.store(true, Ordering::Relaxed);
+    }
+    pub fn delegate_allowed(&self) -> bool {
+        self.0.delegate_allowed.load(Ordering::Relaxed)
     }
 }

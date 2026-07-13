@@ -161,7 +161,7 @@ print('micromamba ready; installing', _pkgs, 'as background job __ID__ (pid', _p
 print('poll with job_status id=__ID__; binaries land on PATH at', _eb, 'once DONE')
 "#;
 
-fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
+fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> String {
     let mut s = String::from(
         "You are a research coding agent working in a sandboxed workspace. Each turn, FIRST write \
          1-2 short sentences of THINKING in the USER'S LANGUAGE (Chinese if they wrote Chinese) — say \
@@ -406,6 +406,18 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              scikit-learn n_jobs=-1, or set worker/thread counts) rather than running single-threaded."
         ));
     }
+    if can_delegate {
+        s.push_str(
+            "\n{\"tool\":\"delegate\",\"task\":\"<a self-contained, non-trivial SUBTASK>\"}   (DEEP RESEARCH \
+             only: hand a COMPLEX, separable subtask to a multi-agent sub-team — it is decomposed into \
+             several angles, a focused sub-agent tackles each, and the results are synthesized back to \
+             you. Use it like a scientist opening a working group: when ONE step is itself broad (e.g. \
+             'survey all proposed mechanisms of X across fields', 'weigh the 4 competing hypotheses for \
+             Y', 'map the evidence for and against Z'), delegate it rather than doing it shallowly \
+             yourself; then build on what comes back. Don't delegate something you can answer in one \
+             step, and don't delegate the WHOLE task — decompose first, delegate the hard branches.)",
+        );
+    }
     s.push_str(
         " For any task beyond a couple of steps, START by writing a plan (the plan tool), then work \
          through it, re-sending the updated list as you check items off. Be efficient; do not repeat a \
@@ -417,6 +429,52 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
 /// Run the loop. `on_step` is called after each tool execution (the shell streams it as
 /// an event). Cancellation is checked every turn (cooperative — an in-flight command
 /// still finishes or hits its timeout).
+/// The `delegate` tool: spawn a BOUNDED multi-agent sub-workflow for a complex, self-contained
+/// subtask — decompose it into 2-4 independent angles, have a focused sub-agent tackle each
+/// (sequential; parallel GLM calls hit 429), then synthesize. Reuses `model.complete` (no tools, no
+/// kernel, no recursion into the full agent — a tool-using sub-agent is a later upgrade). Returns the
+/// synthesized result as the delegating step's observation. Bounded to keep a research run converging.
+pub async fn run_delegate(model: &impl CodingModel, task: &str, cancel: &Cancel) -> String {
+    let decomp_sys = "把给定的研究子任务拆成 2-4 个可以各自独立深挖的角度/子问题,每行一个,只输出角度本身(不要编号、不要解释、不要多余的话)。";
+    let angles_raw = model
+        .complete(decomp_sys, &format!("子任务:\n{task}"), cancel)
+        .await
+        .unwrap_or_default();
+    let mut angles: Vec<String> = angles_raw
+        .lines()
+        .map(|l| l.trim().trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '-' | '*' | '·' | '.' | ')' | '(' | ' ' | '、')).trim().to_string())
+        .filter(|l| l.chars().count() > 3)
+        .take(4)
+        .collect();
+    if angles.is_empty() {
+        angles.push(task.to_string());
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for (i, a) in angles.iter().enumerate() {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let sub_sys = "你是一个专注的研究子智能体,只深入回答分配给你的这一个角度:要具体、有据、简洁,可引用你确知的真实文献/机制,诚实区分已知与推测,绝不编造。不要跑题到别的角度。";
+        let ans = model
+            .complete(sub_sys, &format!("总子任务:{task}\n\n你负责的角度:{a}\n\n给出你这一角度的深入结论:"), cancel)
+            .await
+            .unwrap_or_default();
+        if !ans.trim().is_empty() {
+            parts.push(format!("### 角度 {}:{a}\n{}", i + 1, ans.trim()));
+        }
+    }
+    if parts.is_empty() {
+        return "[委派未产出结果 —— 请自己完成这个子任务]".to_string();
+    }
+    let body = parts.join("\n\n");
+    let synth_sys = "把多个子智能体各自角度的结论综合成对总子任务的一个连贯、去重、有取舍的结论:忠实于各部分,指出它们的一致与冲突,不要编造。";
+    let synth = model
+        .complete(synth_sys, &format!("总子任务:{task}\n\n各角度结论:\n{body}\n\n综合结论:"), cancel)
+        .await
+        .unwrap_or_else(|_| body.clone());
+    format!("[委派完成 · {} 个子智能体各攻一角度并综合]\n\n{}", parts.len(), synth.trim())
+}
+
 pub async fn run_coding_agent(
     goal: &str,
     sandbox: &Sandbox,
@@ -430,7 +488,7 @@ pub async fn run_coding_agent(
     // event so the UI can render the question card. The loop then parks until the answer arrives.
     mut on_ask: impl FnMut(String, String),
 ) -> CodingResult {
-    let sys = system_prompt(sandbox.mode(), kernel.is_some());
+    let sys = system_prompt(sandbox.mode(), kernel.is_some(), pause.delegate_allowed());
     let mut transcript = format!("GOAL:\n{goal}\n\nWorkspace root: {}\n", sandbox.root().display());
     let mut ran_command = false; // did the agent run a build/test command this run?
     let mut nudged = false; // pushed back once for finishing without verifying
@@ -857,6 +915,20 @@ pub async fn run_coding_agent(
                 };
                 (url, obs)
             }
+            "delegate" if !pause.delegate_allowed() => {
+                // Not deep-research (or already inside a sub-agent) — no delegation; do it yourself.
+                ("delegate".to_string(), "[此处不开子智能体委派 —— 请自己完成这个子任务]".to_string())
+            }
+            "delegate" => {
+                // Spawn a bounded multi-agent sub-workflow for ONE complex, separable subtask.
+                let task = arg_str(&v, "task").to_string();
+                if task.trim().is_empty() {
+                    ("delegate".to_string(), "ERROR: delegate needs a `task` — a self-contained subtask worth a whole sub-team.".to_string())
+                } else {
+                    let obs = run_delegate(model, &task, cancel).await;
+                    (task.chars().take(60).collect::<String>(), obs)
+                }
+            }
             "run" => {
                 ran_command = true;
                 let argv: Vec<String> = v
@@ -1145,6 +1217,7 @@ pub async fn run_coding_agent(
             "read_file" | "list_dir" | "write_file" | "edit" => arg_str(&v, "path").to_string(),
             "search" | "litsearch" | "search_skills" | "web_search" => arg_str(&v, "query").to_string(),
             "web_fetch" => arg_str(&v, "url").to_string(),
+            "delegate" => arg_str(&v, "task").to_string(),
             "load_skill" => arg_str(&v, "name").to_string(),
             "glob" => arg_str(&v, "pattern").to_string(),
             "job_start" => arg_str(&v, "code").to_string(),
