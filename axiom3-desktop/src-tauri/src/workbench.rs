@@ -2492,6 +2492,9 @@ pub fn answer_ask(state: tauri::State<'_, AppState>, runid: String, answer: Stri
 pub struct CodingRunResult {
     pub status: String,
     pub synthesis: String,
+    /// Deep-research only: an independent cross-model reviewer's critique (gaps / overclaims). Never
+    /// a rewrite of the report and never a verdict on truth — surfaced inline like Claude Science.
+    pub review: Option<String>,
     pub steps: u32,
     /// An auditable execution log — one entry per tool step (the code the agent ran + its
     /// output), rendered as markdown. Shape matches the frontend AgentStepView.
@@ -2584,6 +2587,10 @@ async fn reframe_goal(provider: &str, model_id: &str, raw: &str, cancel: &Cancel
     }
     Some(t.to_string())
 }
+
+/// Cross-model quality check for a deep-research report. REVIEW ONLY — never rewrites (so it can't
+/// fabricate). Run on a DIFFERENT model than the author when possible for an independent perspective.
+const RESEARCH_REVIEW_SYSTEM: &str = "你是一位独立、严格的科研审稿人,正在评审下面这份研究报告(它由另一个智能体产出)。请只做【评审、不要改写报告】,简明列点指出:①有没有过度声明/未被证据支撑的断言(尤其「最新颖/完全空白/一定」这类);②有没有引用与结论不匹配或缺引用的关键论断;③论证/方法有没有明显缺口或逻辑跳跃;④如果报告本身扎实、诚实,就明确说「整体扎实」并只列少数可改进点。要具体(指到具体论断),别泛泛。绝不编造报告里没有的事实。用简体中文,控制在 6-10 条以内。";
 
 const RECAP_SYSTEM: &str = "你是用户的科研助手，刚完成了用户交办的一项分析/研究任务，完整的产物报告在下面。请用**对话口吻**、面向用户写一段简短的收尾汇报（就像你在聊天里向他交代结果那样），包含两部分：\n\
 1) 先用 2-4 句话说清楚你这次实际做了什么、以及最关键的 1-3 个结论——可以引用报告里的具体数字/发现，但只挑最重要的，别罗列全部；\n\
@@ -2845,7 +2852,7 @@ pub async fn coding_run(
         phase: "executing".into(),
     });
 
-    let model = ProviderModel { provider: provider.clone(), model: model_id, timeout_s: 90 };
+    let model = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: 90 };
     // Analysis runs (real data download + a full domain pipeline + figures) need more headroom than a
     // read-only code task. QUALITY-FIRST: a heavy pipeline (single-cell / phylo / velocity) must be
     // able to finish CORRECTLY rather than get cut off mid-analysis — cost/time is not the constraint,
@@ -3034,7 +3041,26 @@ pub async fn coding_run(
             synthesis.push_str(&format!("- `{}` — {sz}\n", a.path));
         }
     }
-    Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace })
+    // DEEP RESEARCH: an INDEPENDENT cross-model reviewer flags gaps / overclaims / unsupported claims.
+    // Prefer a DIFFERENT model (DeepSeek if its key is set) — it catches what the author model misses
+    // and dodges the GLM rate limit; REVIEW ONLY, so it never rewrites the report and can't fabricate.
+    let review = if is_research && synthesis.trim().chars().count() > 200 {
+        use axiom_orchestrate::coding::CodingModel;
+        let (rp, rm) = if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+            ("deepseek".to_string(), "deepseek-v4-flash".to_string())
+        } else {
+            (provider.clone(), model_id.clone())
+        };
+        let reviewer = ProviderModel { provider: rp, model: rm, timeout_s: 90 };
+        let user = format!("研究报告:\n{}", synthesis.chars().take(9000).collect::<String>());
+        match reviewer.complete(RESEARCH_REVIEW_SYSTEM, &user, &Cancel::new()).await {
+            Ok(t) if t.trim().chars().count() > 20 => Some(t.trim().to_string()),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace, review })
 }
 
 /// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can

@@ -945,7 +945,7 @@ function App() {
     setSlash("");
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
-    const r = await run<{ status: string; synthesis: string; trace?: AgentStepView[] }>(() =>
+    const r = await run<{ status: string; synthesis: string; review?: string; trace?: AgentStepView[] }>(() =>
       invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute, research })
     );
     if (!appendTo) { setCodeAttachments([]); }
@@ -961,10 +961,10 @@ function App() {
         const steps = (r.trace && r.trace.length) ? r.trace : (x.steps ?? []);
         if (appendTo) {
           const prior = x.versions ?? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }];
-          const newVer = { synthesis: r.synthesis, steps, ts: Date.now(), goal: g };
-          return { ...x, status, synthesis: r.synthesis, steps, goal: g, versions: [...prior, newVer] };
+          const newVer = { synthesis: r.synthesis, review: r.review ?? undefined, steps, ts: Date.now(), goal: g };
+          return { ...x, status, synthesis: r.synthesis, review: r.review ?? undefined, steps, goal: g, versions: [...prior, newVer] };
         }
-        return { ...x, status, synthesis: r.synthesis, steps };
+        return { ...x, status, synthesis: r.synthesis, review: r.review ?? undefined, steps };
       })
     );
     if (r?.synthesis && r.status !== "cancelled") generateRecap(sessionId, g, r.synthesis);
