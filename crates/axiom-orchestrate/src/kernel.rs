@@ -25,6 +25,11 @@ import sys, json, io, base64, traceback, ast, contextlib
 try:
     import matplotlib
     matplotlib.use('Agg')
+    # Default CJK-capable fonts so Chinese labels NEVER render as boxes — the model often forgets
+    # to set font.sans-serif, and matplotlib's default (DejaVu Sans) has no CJK glyphs. These faces
+    # ship on macOS; DejaVu Sans stays as the Latin fallback. Set once at kernel boot, global.
+    matplotlib.rcParams['font.sans-serif'] = ['PingFang HK','PingFang SC','Heiti TC','STHeiti','Arial Unicode MS','Songti SC','DejaVu Sans']
+    matplotlib.rcParams['axes.unicode_minus'] = False
 except Exception:
     pass
 NS = {'__name__': '__main__'}
