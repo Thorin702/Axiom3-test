@@ -162,8 +162,13 @@ print('poll with job_status id=__ID__; binaries land on PATH at', _eb, 'once DON
 
 fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
     let mut s = String::from(
-        "You are a coding agent working inside a sandboxed workspace. Each turn respond with \
-         EXACTLY ONE JSON object and nothing else — one of:\n\
+        "You are a research coding agent working in a sandboxed workspace. Each turn, FIRST write \
+         1-2 short sentences of THINKING in the USER'S LANGUAGE (Chinese if they wrote Chinese) — say \
+         what you are about to do and WHY, or what the last result told you and what you'll do next — \
+         as plain prose with NO curly braces. This narration is streamed LIVE to the user so they can \
+         follow your reasoning like a scientist thinking out loud; a bare tool call with no thinking \
+         leaves them staring at a '运行代码' row with no idea what is happening, so ALWAYS narrate. \
+         THEN, on a new line, give EXACTLY ONE JSON action object — one of:\n\
          {\"tool\":\"plan\",\"todos\":[\"[ ] first step\",\"[ ] second step\"]}   (for a multi-step \
          task, list 3-7 TODOs; RE-SEND the whole list each time you update it, marking finished items \
          [x], so the plan stays current)\n\
@@ -440,7 +445,7 @@ pub async fn run_coding_agent(
         // Keep the GOAL header + the most recent steps; elide the middle.
         let ctx = compact_transcript(&transcript, 26_000);
         let user = format!(
-            "{ctx}\n[budget] step {n} of {} ({remaining} left).{warn}\nNext action (one JSON object only):",
+            "{ctx}\n[budget] step {n} of {} ({remaining} left).{warn}\n先用1-2句话说出你此刻的思考(你要做什么、为什么、上一步的结果说明了什么),再给出你的 JSON 动作 · First write 1-2 sentences of your thinking in the user's language, THEN your JSON action:",
             budget.max_steps
         );
         // Model calls over a long transcript occasionally time out or hit a transient provider

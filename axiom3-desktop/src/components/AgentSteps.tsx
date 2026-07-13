@@ -14,7 +14,10 @@ import { Pyfig } from "./artifact/Pyfig";
 // Tools that fold into a run-summary group (vs. a code/plan/figure step that stands alone).
 const ROUTINE = new Set(["litsearch", "search", "search_skills", "load_skill", "read_file", "list_dir", "glob", "run", "job_status"]);
 
-type Item = { kind: "group"; steps: AgentStepView[] } | { kind: "solo"; step: AgentStepView };
+type Item =
+  | { kind: "narr"; text: string }
+  | { kind: "group"; steps: AgentStepView[] }
+  | { kind: "solo"; step: AgentStepView };
 
 function group(steps: AgentStepView[]): Item[] {
   const out: Item[] = [];
@@ -23,8 +26,20 @@ function group(steps: AgentStepView[]): Item[] {
     if (run.length) { out.push({ kind: "group", steps: run }); run = []; }
   };
   for (const s of steps) {
-    if (ROUTINE.has(s.role)) run.push(s);
-    else { flush(); out.push({ kind: "solo", step: s }); }
+    // The agent's thinking for this step is surfaced as a narration paragraph in the MAIN flow so
+    // the user follows the reasoning (like Claude Science). Routine actions (searches/reads) still
+    // fold into ONE group — their narrations stream as a continuous train of thought ABOVE the
+    // group, so we DON'T break the group per step (which would scatter it into many "检索 1 次"
+    // rows). A solo step's narration sits right above that step, after the routine group is flushed.
+    const narr = (s.reasoning || "").trim().replace(/^THINKING\s*[:：]\s*/i, "");
+    if (ROUTINE.has(s.role)) {
+      if (narr) out.push({ kind: "narr", text: narr });
+      run.push(s);
+    } else {
+      flush();
+      if (narr) out.push({ kind: "narr", text: narr });
+      out.push({ kind: "solo", step: s });
+    }
   }
   flush();
   return out;
@@ -74,9 +89,11 @@ export function AgentSteps({ steps, lang }: { steps: AgentStepView[]; lang: Lang
   return (
     <div className="ax-chain">
       {items.map((it, i) =>
-        it.kind === "group"
-          ? <GroupRow key={i} steps={it.steps} lang={lang} />
-          : <SoloRow key={i} step={it.step} lang={lang} />
+        it.kind === "narr"
+          ? <p key={i} className="ax-chain__narr">{it.text}</p>
+          : it.kind === "group"
+            ? <GroupRow key={i} steps={it.steps} lang={lang} />
+            : <SoloRow key={i} step={it.step} lang={lang} />
       )}
     </div>
   );
@@ -124,7 +141,7 @@ function SoloRow({ step, lang, nested }: { step: AgentStepView; lang: Lang; nest
 
   return (
     <div className={`ax-chain__step ${nested ? "is-nested" : ""}`}>
-      {step.reasoning && step.reasoning.trim() && <p className="ax-chain__narr">{step.reasoning.trim()}</p>}
+      {/* narration is now hoisted into the main flow as a `narr` item (see group()), not per-row */}
       <button
         className={`ax-chain__card ${open ? "is-open" : ""} ${hasBody ? "" : "is-static"}`}
         onClick={() => hasBody && setOpen((o) => !o)}
