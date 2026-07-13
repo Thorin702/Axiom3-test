@@ -107,13 +107,22 @@ fn max_fleet_claims() -> usize {
 /// Build the verification fleet from whichever providers have a key in the
 /// environment — a vendor with no key simply isn't in the fleet.
 fn fleet_from_env() -> Vec<FleetMember> {
+    // PRIMARY-VENDOR FIRST (see search_arms_from_env): when GLM is the user's primary, cross-verify
+    // WITHIN the GLM family (glm-5.2 + glm-5-turbo are two independent-enough voices) rather than
+    // routing verification to a backup vendor like DeepSeek. Fall back cross-vendor only if no GLM.
+    if std::env::var(Provider::Zhipu.env_var()).is_ok() {
+        let z = Provider::Zhipu.family().to_string();
+        return vec![
+            FleetMember { family: z.clone(), provider: z.clone(), model: "glm-5.2".to_string() },
+            FleetMember { family: z.clone(), provider: z, model: "glm-5-turbo".to_string() },
+        ];
+    }
     let candidates = [
         (Provider::Anthropic, "claude-haiku-4-5-20251001"),
         (Provider::OpenAi, "gpt-4o-mini"),
         (Provider::DeepSeek, "deepseek-v4-flash"),
         (Provider::Gemini, "gemini-1.5-flash"),
         (Provider::Qwen, "qwen-plus"),
-        (Provider::Zhipu, "glm-5-turbo"),
     ];
     candidates
         .iter()
@@ -129,13 +138,23 @@ fn fleet_from_env() -> Vec<FleetMember> {
 /// The connected models as AB-MCTS arms (the multi-LLM axis of deep-search mode). Mirrors
 /// `fleet_from_env` — only providers with a key in env are included.
 fn search_arms_from_env() -> Vec<ModelArm> {
+    // PRIMARY-VENDOR FIRST: if GLM (Zhipu) is configured it is the user's primary, so run the whole
+    // multi-arm AB-MCTS search WITHIN the GLM family — glm-5.2 for depth + glm-5-turbo for breadth.
+    // This keeps the multi-model diversity AB-MCTS needs while NEVER routing a research agent to a
+    // backup vendor (DeepSeek etc.). Only fall back to a cross-vendor arm set when GLM isn't set.
+    if std::env::var(Provider::Zhipu.env_var()).is_ok() {
+        let z = Provider::Zhipu.family().to_string();
+        return vec![
+            ModelArm { provider: z.clone(), model: "glm-5.2".to_string() },
+            ModelArm { provider: z, model: "glm-5-turbo".to_string() },
+        ];
+    }
     let candidates = [
         (Provider::Anthropic, "claude-haiku-4-5-20251001"),
         (Provider::OpenAi, "gpt-4o-mini"),
         (Provider::DeepSeek, "deepseek-v4-flash"),
         (Provider::Gemini, "gemini-2.5-flash"),
         (Provider::Qwen, "qwen-plus"),
-        (Provider::Zhipu, "glm-5-turbo"),
     ];
     candidates
         .iter()
