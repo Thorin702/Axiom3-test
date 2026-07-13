@@ -139,6 +139,8 @@ export type AgentStepView = {
 // One version of a session's artifact — a follow-up run iterates the artifact (v1 → v2 …)
 // rather than spawning a new session (forking does that). The task's top-level
 // synthesis/review/steps mirror the LATEST version.
+// A retrieved external source, addressable by its [Sn] marker in the report — click to trace back.
+export type CiteSource = { id: number; kind: string; title: string; url: string; excerpt: string };
 export type ArtifactVersion = { synthesis?: string; review?: string; steps?: AgentStepView[]; ts: number; goal: string };
 // A research SESSION: the unit of work. Carries its full goal so it can be FORKED (re-run
 // a variant without losing the original thread), and enough lineage/provenance for the
@@ -154,6 +156,7 @@ export type Task = {
   deep?: boolean; // ran as an adaptive multi-agent (AB-MCTS) search
   result?: DraftCheck;
   synthesis?: string; // workflow runs: the folded multi-agent output (latest version)
+  sources?: CiteSource[]; // retrieved sources ([Sn]) — makes the report's citation markers clickable
   recap?: string; // chat-style wrap-up (what was done + key findings + next steps), shown in the thread
   recapPending?: boolean; // recap is being generated (brief, after the task completes)
   review?: string; // the reviewer agent's critique/findings (never a verdict)

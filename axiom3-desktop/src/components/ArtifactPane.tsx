@@ -309,7 +309,7 @@ export function ArtifactPane({
               </p>
             )}
             <div ref={artifactRef} className={paper ? "ax-artbody--paper" : ""} onMouseUp={onArtifactMouseUp}>
-              {ver.synthesis ? <ArtifactBody text={ver.synthesis} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>}
+              {ver.synthesis ? <ArtifactBody text={ver.synthesis} sources={task.sources} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>}
             </div>
           </>
         )}

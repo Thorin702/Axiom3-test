@@ -5,7 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, DraftCheck, ExportSummary, Task, Source, AgentStepView } from "./lib/types";
+import type { ProjectStatus, DraftCheck, ExportSummary, Task, Source, AgentStepView, CiteSource } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
@@ -945,7 +945,7 @@ function App() {
     setSlash("");
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
-    const r = await run<{ status: string; synthesis: string; review?: string; trace?: AgentStepView[] }>(() =>
+    const r = await run<{ status: string; synthesis: string; review?: string; sources?: CiteSource[]; trace?: AgentStepView[] }>(() =>
       invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute, research })
     );
     if (!appendTo) { setCodeAttachments([]); }
@@ -962,9 +962,9 @@ function App() {
         if (appendTo) {
           const prior = x.versions ?? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }];
           const newVer = { synthesis: r.synthesis, review: r.review ?? undefined, steps, ts: Date.now(), goal: g };
-          return { ...x, status, synthesis: r.synthesis, review: r.review ?? undefined, steps, goal: g, versions: [...prior, newVer] };
+          return { ...x, status, synthesis: r.synthesis, review: r.review ?? undefined, sources: r.sources, steps, goal: g, versions: [...prior, newVer] };
         }
-        return { ...x, status, synthesis: r.synthesis, review: r.review ?? undefined, steps };
+        return { ...x, status, synthesis: r.synthesis, review: r.review ?? undefined, sources: r.sources, steps };
       })
     );
     if (r?.synthesis && r.status !== "cancelled") generateRecap(sessionId, g, r.synthesis);
@@ -2005,7 +2005,7 @@ function App() {
                         <div className="ax-synth">
                           <p className="ax-block-label">{lang === "zh" ? "汇总结果" : "Synthesized result"}</p>
                           {/* rendered natively: markdown + molecules (SMILES) + diagrams (mermaid) + math */}
-                          <ArtifactBody text={tk.synthesis} />
+                          <ArtifactBody text={tk.synthesis} sources={tk.sources} />
                         </div>
                       )}
 

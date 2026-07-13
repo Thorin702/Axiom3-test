@@ -2495,6 +2495,9 @@ pub struct CodingRunResult {
     /// Deep-research only: an independent cross-model reviewer's critique (gaps / overclaims). Never
     /// a rewrite of the report and never a verdict on truth — surfaced inline like Claude Science.
     pub review: Option<String>,
+    /// Every external source the agent retrieved, addressable by its `[Sn]` marker — so the report's
+    /// citations are clickable and trace back to the original passage.
+    pub sources: Vec<axiom_orchestrate::coding::Source>,
     pub steps: u32,
     /// An auditable execution log — one entry per tool step (the code the agent ran + its
     /// output), rendered as markdown. Shape matches the frontend AgentStepView.
@@ -3060,7 +3063,7 @@ pub async fn coding_run(
     } else {
         None
     };
-    Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace, review })
+    Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace, review, sources: result.sources })
 }
 
 /// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can

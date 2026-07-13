@@ -67,6 +67,20 @@ pub struct CodingResult {
     /// Newick, saved PNGs, …) — a per-file artifact manifest the app can surface, list, and
     /// reference by name (big files) instead of inlining.
     pub artifacts: Vec<ArtifactFile>,
+    /// Every external source the agent RETRIEVED during the run (papers, web pages, database
+    /// records), each with a stable [Sn] id + an excerpt — so a report's [Sn] markers are clickable
+    /// and trace back to the original text. Provenance, never a truth verdict.
+    pub sources: Vec<Source>,
+}
+
+/// One retrieved external source, addressable by its `[S{id}]` marker in the report.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct Source {
+    pub id: u32,
+    pub kind: String, // "paper" | "web" | "db"
+    pub title: String,
+    pub url: String,     // DOI url / page url / db record url ("" if none)
+    pub excerpt: String, // the abstract / page text / record — the "original passage" to trace to
 }
 
 /// One agent-produced workspace file, for the per-file artifact registry.
@@ -306,6 +320,12 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              web_fetch (which returns prose text, not a parsed table).  • A domain has a known pipeline → \
              search_skills + load_skill FIRST.  Don't write python to scrape a web page when web_fetch \
              does it; don't web_fetch a data table when python can parse it.\n\
+             ── CITATIONS (traceable provenance) ── Every result from litsearch / web_search / web_fetch / \
+             a database tool is tagged with a source id like [S3]. When you state a fact, finding, or claim \
+             that came from a source, put its marker at the END of that sentence, e.g. \"…下调 PD-L1 [S3]。\" \
+             Use the EXACT [Sn] the tool returned, cite only sources you actually retrieved, and never \
+             invent a marker. These markers become CLICKABLE and let the reader trace back to the original \
+             passage — citing precisely is part of the rigor.\n\
              Use python to COMPUTE results and figures from real data — never state a number, table, \
              or trend you did not actually compute. In your final answer, describe what the computed \
              results and figures show; the figures themselves are attached automatically.\n\
@@ -600,6 +620,10 @@ pub async fn run_coding_agent(
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
     let mut web_queries: Vec<String> = Vec::new(); // web_search queries so far — dedup + soft breadth nudge
+    // Provenance: every retrieved source gets a stable [Sn] id + excerpt, so the report's [Sn] markers
+    // are clickable and trace back to the original text. `src_n` is the running global counter.
+    let mut sources: Vec<Source> = Vec::new();
+    let mut src_n: u32 = 0;
     // Snapshot the workspace so we can report the files the agent produces (per-file artifacts).
     let start_files = snapshot_files(sandbox.root());
     for n in 1..=budget.max_steps {
@@ -608,7 +632,7 @@ pub async fn run_coding_agent(
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
         if cancel.is_cancelled() {
-            return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
+            return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
         // Budget meter: the model has no other way to know how many steps remain, so it can't
         // triage. Show step N/total and, in the final ~20%, an explicit wrap-up order so it stops
@@ -638,7 +662,7 @@ pub async fn run_coding_agent(
                     Err(e) => {
                         attempt += 1;
                         if attempt > 3 || cancel.is_cancelled() {
-                            return CodingResult { status: "failed".into(), summary: format!("model error after {attempt} attempts: {e}"), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
+                            return CodingResult { status: "failed".into(), summary: format!("model error after {attempt} attempts: {e}"), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
                         }
                         // Escalating backoff — a 429/rate-limit window can last tens of seconds, so
                         // the old ~6s total (attempt*5*200ms) never outlasts it and all retries fail
@@ -676,7 +700,7 @@ pub async fn run_coding_agent(
                     );
                     continue;
                 }
-                return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
+                return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
         };
         // Weaker models routinely emit a valid-INTENT tool call whose JSON is technically
@@ -699,7 +723,7 @@ pub async fn run_coding_agent(
                     ));
                     continue;
                 }
-                return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
+                return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
         };
         if let Some(f) = v.get("final").and_then(|x| x.as_str()) {
@@ -714,7 +738,7 @@ pub async fn run_coding_agent(
                 );
                 continue;
             }
-            return CodingResult { status: "done".into(), summary: f.to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
+            return CodingResult { status: "done".into(), summary: f.to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
         let tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
         // FORCED INTAKE GATE: GLM (and weaker models) won't call ask_user on their own discretion even
@@ -944,13 +968,20 @@ pub async fn run_coding_agent(
                         Ok(works) if works.is_empty() => "(no matching works)".to_string(),
                         Ok(works) => works
                             .iter()
-                            .enumerate()
-                            .map(|(i, w)| {
+                            .map(|w| {
                                 let authors = if w.authors.is_empty() { "—".into() } else { w.authors.join(", ") };
                                 let year = w.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
-                                let doi = w.doi.clone().unwrap_or_else(|| "—".into());
+                                let doi = w.doi.clone().unwrap_or_default();
                                 let abs: String = w.abstract_text.chars().take(280).collect();
-                                format!("[{}] {} ({year}) — {authors}\n    DOI: {doi}\n    {abs}", i + 1, w.title)
+                                src_n += 1;
+                                sources.push(Source {
+                                    id: src_n,
+                                    kind: "paper".into(),
+                                    title: w.title.clone(),
+                                    url: if doi.is_empty() { String::new() } else if doi.starts_with("http") { doi.clone() } else { format!("https://doi.org/{doi}") },
+                                    excerpt: format!("{} ({year}) — {authors}\n{}", w.title, w.abstract_text.chars().take(1200).collect::<String>()),
+                                });
+                                format!("[S{}] {} ({year}) — {authors}\n    DOI: {}\n    {abs}", src_n, w.title, if doi.is_empty() { "—".into() } else { doi })
                             })
                             .collect::<Vec<_>>()
                             .join("\n\n"),
@@ -981,8 +1012,17 @@ pub async fn run_coding_agent(
                         Ok(rs) if rs.is_empty() => "(web 检索无结果 — 换个说法,或改用 litsearch(论文)/直接 web_fetch 一个已知 URL)".to_string(),
                         Ok(rs) => rs
                             .iter()
-                            .enumerate()
-                            .map(|(i, r)| format!("[{}] {}\n    {}\n    {}", i + 1, r.title, r.url, r.snippet))
+                            .map(|r| {
+                                src_n += 1;
+                                sources.push(Source {
+                                    id: src_n,
+                                    kind: "web".into(),
+                                    title: r.title.clone(),
+                                    url: r.url.clone(),
+                                    excerpt: format!("{}\n{}\n{}", r.title, r.url, r.snippet),
+                                });
+                                format!("[S{}] {}\n    {}\n    {}", src_n, r.title, r.url, r.snippet)
+                            })
                             .collect::<Vec<_>>()
                             .join("\n\n"),
                         Err(e) => format!("ERROR: web_search failed: {e}. 可改用 litsearch 或 web_fetch 已知 URL。"),
@@ -1000,7 +1040,18 @@ pub async fn run_coding_agent(
                 } else {
                     match WebClient::new().fetch(&url).await {
                         Ok(t) if t.trim().is_empty() => "(fetched, but no readable text — likely a binary/dynamic page; try a different source or python)".to_string(),
-                        Ok(t) => t,
+                        Ok(t) => {
+                            src_n += 1;
+                            let title = t.lines().find(|l| !l.trim().is_empty()).unwrap_or(&url).chars().take(120).collect::<String>();
+                            sources.push(Source {
+                                id: src_n,
+                                kind: "web".into(),
+                                title,
+                                url: url.clone(),
+                                excerpt: t.chars().take(4000).collect(),
+                            });
+                            format!("[S{src_n}] 来源 {url}\n\n{t}")
+                        }
                         Err(e) => format!("ERROR: web_fetch failed: {e}"),
                     }
                 };
@@ -1291,7 +1342,21 @@ pub async fn run_coding_agent(
             // dispatched through the registry so adding one is a registry entry, not a new match arm.
             t if is_sci_tool(t) => {
                 let arg = arg_str(&v, sci_tool_arg(t)).to_string();
-                (arg.chars().take(60).collect::<String>(), run_sci_tool(t, &arg).await)
+                let rec = run_sci_tool(t, &arg).await;
+                let obs = if rec.starts_with("ERROR") || rec.starts_with('(') {
+                    rec
+                } else {
+                    src_n += 1;
+                    sources.push(Source {
+                        id: src_n,
+                        kind: "db".into(),
+                        title: format!("{t} · {arg}"),
+                        url: String::new(),
+                        excerpt: rec.chars().take(1500).collect(),
+                    });
+                    format!("[S{src_n}] {rec}")
+                };
+                (arg.chars().take(60).collect::<String>(), obs)
             }
             other => (other.to_string(), format!("ERROR: unknown tool '{other}'")),
         };
@@ -1358,7 +1423,7 @@ pub async fn run_coding_agent(
             truncate(&transcript, 1500)
         ),
     };
-    CodingResult { status: "done".into(), summary, steps: budget.max_steps, figures: all_figures, artifacts }
+    CodingResult { status: "done".into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
 
 /// Extract the first balanced top-level `{...}` object from a reply (tolerate fences /

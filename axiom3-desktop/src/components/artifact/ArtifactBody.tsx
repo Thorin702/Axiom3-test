@@ -5,9 +5,11 @@
 // (the same anti-poisoning posture as the rest of the product — imported/agent text is
 // untrusted; links and remote images are stripped so a poisoned artifact can't navigate or
 // beacon out).
-import { useMemo } from "react";
+import { useMemo, useState, type MouseEvent } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import type { CiteSource } from "../../lib/types";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Molecule } from "./Molecule";
@@ -87,10 +89,30 @@ function renderMath(tex: string): string {
   }
 }
 
-export function ArtifactBody({ text }: { text: string }) {
+// Turn `[Sn]` markers into clickable citation superscripts — ONLY for ids we actually have a source
+// for (an orphaned marker from a sub-agent stays plain text). Applied to already-sanitized HTML that
+// we then set ourselves, so the injected <sup> survives (data-sid isn't re-sanitized away).
+function injectCites(html: string, has: (id: number) => boolean): string {
+  return html.replace(/\[S(\d+)\]/g, (m, n) =>
+    has(Number(n)) ? `<sup class="ax-cite" data-sid="${n}" title="点击溯源">[${n}]</sup>` : m
+  );
+}
+
+export function ArtifactBody({ text, sources }: { text: string; sources?: CiteSource[] }) {
   const segs = useMemo(() => segment(text), [text]);
+  const srcMap = useMemo(() => new Map((sources ?? []).map((s) => [s.id, s])), [sources]);
+  const [cite, setCite] = useState<CiteSource | null>(null);
+  const onClick = srcMap.size
+    ? (e: MouseEvent) => {
+        const el = (e.target as HTMLElement).closest?.(".ax-cite");
+        if (el) {
+          const s = srcMap.get(Number(el.getAttribute("data-sid")));
+          if (s) setCite(s);
+        }
+      }
+    : undefined;
   return (
-    <div className="ax-md">
+    <div className="ax-md" onClick={onClick}>
       {segs.map((s, i) => {
         if (s.t === "smiles") return <Molecule key={i} smiles={s.body} />;
         if (s.t === "mermaid") return <Diagram key={i} code={s.body} />;
@@ -119,9 +141,35 @@ export function ArtifactBody({ text }: { text: string }) {
         if (s.t === "pyfig") return <Pyfig key={i} spec={s.body} />;
         if (s.t === "protein") return <Protein key={i} source={s.body} />;
         if (s.t === "math") return <div key={i} className="ax-md__math" dangerouslySetInnerHTML={{ __html: renderMath(s.body) }} />;
-        // katex html is trusted (we generated it); markdown html is sanitized in renderMd.
-        return <div key={i} dangerouslySetInnerHTML={{ __html: renderMd(s.body) }} />;
+        // katex html is trusted (we generated it); markdown html is sanitized in renderMd, then we
+        // add citation superscripts on top of the already-sanitized string.
+        const html = srcMap.size ? injectCites(renderMd(s.body), (id) => srcMap.has(id)) : renderMd(s.body);
+        return <div key={i} dangerouslySetInnerHTML={{ __html: html }} />;
       })}
+      {cite && <CitePopover source={cite} onClose={() => setCite(null)} />}
     </div>
+  );
+}
+
+// Click a [Sn] marker → this popover shows the original source (title, link, the retrieved passage).
+function CitePopover({ source, onClose }: { source: CiteSource; onClose: () => void }) {
+  const kind = source.kind === "paper" ? "📄 文献" : source.kind === "db" ? "🔬 数据库" : "🌐 网页";
+  return (
+    <>
+      <div className="ax-cite__scrim" onClick={onClose} />
+      <div className="ax-cite__pop" role="dialog" aria-label="来源溯源">
+        <div className="ax-cite__head">
+          <span className="ax-cite__kind">{kind} · 来源 [S{source.id}]</span>
+          <button className="ax-cite__x" onClick={onClose} aria-label="关闭">×</button>
+        </div>
+        <div className="ax-cite__title">{source.title}</div>
+        {source.url && (
+          <button className="ax-cite__link" onClick={() => openUrl(source.url).catch(() => {})} title={source.url}>
+            {source.url}　↗
+          </button>
+        )}
+        <div className="ax-cite__excerpt">{source.excerpt}</div>
+      </div>
+    </>
   );
 }
