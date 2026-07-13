@@ -415,6 +415,8 @@ pub async fn run_coding_agent(
     let mut plan_gated = false; // whether the one-time plan-approval gate has fired
     let mut malformed = 0u32; // consecutive un-parseable JSON envelopes (bounded retry, not a fatal "done")
     const MAX_MALFORMED: u32 = 3;
+    let mut intake_done = !pause.intake_required(); // satisfied once the forced intake ask has fired
+    let mut intake_nudges = 0u32; // bounded pushes to make the first action an ask_user intake card
     let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
     let mut searched: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup repeated skill searches
     let mut skill_searched = false; // once true, HARD-block further search_skills until a load_skill (force-commit)
@@ -538,6 +540,30 @@ pub async fn run_coding_agent(
             return CodingResult { status: "done".into(), summary: f.to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files) };
         }
         let tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        // FORCED INTAKE GATE: GLM (and weaker models) won't call ask_user on their own discretion even
+        // when the prompt demands it — so an analysis run's clarifying intake never fired. Enforce it:
+        // the FIRST action MUST be an ask_user intake card. Reject anything else and nudge (bounded),
+        // then relent so a stubborn model still converges instead of hanging.
+        if !intake_done && !pause.asks_disabled() {
+            if tool == "ask_user" {
+                intake_done = true; // let the match below surface the card + park for the answer
+            } else if tool == "final" && intake_nudges >= 2 {
+                intake_done = true; // gave up nudging — don't block a finish
+            } else if intake_nudges < 2 {
+                intake_nudges += 1;
+                transcript.push_str(
+                    "\n[system] STOP — before ANY other tool, your FIRST action on this analysis MUST be \
+                     an ask_user INTAKE card. Emit ONE ask_user with 1-4 questions confirming: the real \
+                     research question, what a trustworthy answer would look like, and the data's \
+                     provenance (attached vs fetched vs synthetic — it changes how much to trust the \
+                     result). Present options NEUTRALLY and pre-select nothing. Emit that ask_user JSON \
+                     now — do not run code, read files, or plan first.\n",
+                );
+                continue;
+            } else {
+                intake_done = true; // relent after the nudge budget; let this action proceed
+            }
+        }
         let mut step_figures: Vec<String> = Vec::new(); // figures this turn (python only)
         let (detail, observation) = match tool.as_str() {
             "plan" => {

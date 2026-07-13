@@ -13,6 +13,10 @@ struct Inner {
     // immediately. Used by headless/secondary steps (e.g. figure recomputation) that have no UI to
     // surface a card and whose pause is not the one the `answer_ask` command can reach.
     asks_disabled: AtomicBool,
+    // When set, the coding loop FORCES the first action of an analysis run to be an `ask_user` intake
+    // card — GLM (and weaker models) won't ask on their own discretion even when the prompt demands
+    // it, so without this the clarifying intake never fires. See the intake gate in coding::run.
+    require_intake: AtomicBool,
     // Answer channel for the `ask_user` tool: the parked tool polls `take_answer`; the UI fills it
     // via the `answer_ask` command. One slot is enough — asks are strictly one-at-a-time per run.
     answer: Mutex<Option<String>>,
@@ -55,5 +59,12 @@ impl Pause {
     }
     pub fn asks_disabled(&self) -> bool {
         self.0.asks_disabled.load(Ordering::Relaxed)
+    }
+    /// Require the coding loop's FIRST action to be an `ask_user` intake card (analysis first round).
+    pub fn require_intake(&self) {
+        self.0.require_intake.store(true, Ordering::Relaxed);
+    }
+    pub fn intake_required(&self) -> bool {
+        self.0.require_intake.load(Ordering::Relaxed)
     }
 }

@@ -2729,6 +2729,12 @@ pub async fn coding_run(
     if require_plan_approval.unwrap_or(false) {
         pause.require_plan_approval();
     }
+    // Force an ask_user INTAKE card as the first action of a first-round analysis — GLM won't ask on
+    // its own discretion, so without this the clarifying intake never fires. Follow-ups (prior_ctx set)
+    // and non-analysis code runs skip it; the loop relents after a bounded nudge if the model refuses.
+    if is_analyze && prior_ctx.is_none() {
+        pause.require_intake();
+    }
     let _guard = state
         .begin_run(&runid, cancel.clone(), pause.clone())
         .ok_or("a run with this id is already in flight")?;
