@@ -75,9 +75,9 @@ impl Decomposer for LlmDecomposer {
                 tools: Vec::new(),
             };
             let reply = retry_async(&RetryPolicy::default(), is_retryable_error, || async {
-                tokio::time::timeout(Duration::from_secs(45), complete_with(provider, &req))
+                tokio::time::timeout(Duration::from_secs(120), complete_with(provider, &req))
                     .await
-                    .map_err(|_| anyhow::anyhow!("decompose timed out after 45s"))?
+                    .map_err(|_| anyhow::anyhow!("decompose timed out after 120s"))?
             })
             .await;
             let plan = match reply {

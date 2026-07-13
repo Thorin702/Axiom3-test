@@ -231,13 +231,28 @@ pub async fn search_core<G: Generator, S: Scorer>(
         let arm = &arms[arm_idx];
         let refine_of = nodes[sel].candidate.clone();
         let going_deeper = refine_of.is_some();
-        let node_id = format!("{}-n{}", opts.run_id, ok + err + 1); // 1-based attempt number
+        let attempt = ok + err + 1; // 1-based attempt number (labels the candidate for the user)
+        let node_id = format!("{}-n{}", opts.run_id, attempt);
         em.emit(RunEventBody::AgentSpawned {
             agent_id: node_id.clone(),
             role: format!("{} · {}", if going_deeper { "refine" } else { "explore" }, arm.model),
             model: arm.model.clone(),
             vendor: arm.provider.clone(),
             phase: "searching".into(),
+        });
+        // Immediate feedback: generation is one long (1–3 min) call with no token stream, so
+        // without this the user stares at a dead status bar the whole time. Say what THIS agent
+        // is about to do so the run never looks stalled.
+        em.emit(RunEventBody::AgentProgress {
+            agent_id: node_id.clone(),
+            step: 0,
+            tokens_in: 0,
+            tokens_out: 0,
+            note: Some(if going_deeper {
+                format!("第 {attempt} 次尝试 · 改进当前最佳草稿（{}）…", arm.model)
+            } else {
+                format!("第 {attempt} 次尝试 · 探索一个新方向（{}）…", arm.model)
+            }),
         });
 
         // ── EXPAND: generate (or refine) a candidate ──
@@ -247,7 +262,21 @@ pub async fn search_core<G: Generator, S: Scorer>(
             Ok(_) | Err(_) => {
                 err += 1;
                 let msg = gen.err().map(|e| e.to_string()).unwrap_or_else(|| "empty candidate".into());
-                em.emit(RunEventBody::AgentFinished { agent_id: node_id, outcome: "err".into(), tokens_in: 0, tokens_out: 0, error: Some(msg), summary: None });
+                // the input context was sent even though generation failed — count it so the
+                // sidebar/meter reflect real spend, and surface the reason as a visible step.
+                let tok_in = (goal.chars().count()
+                    + refine_of.as_deref().map(|d| d.chars().count()).unwrap_or(0)) as u64 / 3 + 400;
+                em.emit(RunEventBody::AgentStep {
+                    agent_id: node_id.clone(),
+                    step: 1,
+                    role: if going_deeper { "refine".into() } else { "explore".into() },
+                    status: "err".into(),
+                    title: format!("候选 {attempt} · 失败 · {}", arm.model),
+                    reasoning: format!("第 {attempt} 次尝试没能产出候选：{msg}。搜索继续尝试其它模型/方向。"),
+                    output: String::new(),
+                    lines: 0,
+                });
+                em.emit(RunEventBody::AgentFinished { agent_id: node_id, outcome: "err".into(), tokens_in: tok_in, tokens_out: 0, error: Some(msg), summary: None });
                 // Advance progress on the error path too, so the bar doesn't stall (mirrors
                 // the success path + the flat orchestrate, which emits on both outcomes).
                 let done = ok + err;
@@ -255,6 +284,34 @@ pub async fn search_core<G: Generator, S: Scorer>(
                 continue;
             }
         };
+        // Make the candidate itself a live thinking step (mirrors the coding agent's per-turn
+        // AgentStep). Without this the user sees only a status bar for the whole generation and
+        // never learns WHAT each agent produced or whether the direction is right — the exact gap
+        // reported. Emitted BEFORE scoring so the draft shows the moment it lands. Tokens are
+        // estimated from real content length (the completion seam doesn't surface usage yet), so
+        // the sidebar agent/token counts and the context meter actually move.
+        let tok_in = (goal.chars().count()
+            + refine_of.as_deref().map(|d| d.chars().count()).unwrap_or(0)) as u64 / 3 + 400;
+        let tok_out = candidate.chars().count() as u64 / 3;
+        em.emit(RunEventBody::AgentStep {
+            agent_id: node_id.clone(),
+            step: 1,
+            role: if going_deeper { "refine".into() } else { "explore".into() },
+            status: "ok".into(),
+            title: if going_deeper {
+                format!("候选 {attempt} · 改进草稿 · {}", arm.model)
+            } else {
+                format!("候选 {attempt} · 探索 · {}", arm.model)
+            },
+            reasoning: if going_deeper {
+                format!("第 {attempt} 次尝试：在当前评分最高的草稿上补齐缺口、增强论证、收紧结构后重新产出，交给评审打分。")
+            } else {
+                format!("第 {attempt} 次尝试：从任务独立产出一个完整候选方案，交给评审打分。")
+            },
+            output: candidate.clone(),
+            lines: candidate.lines().count(),
+        });
+
         // ── SCORE: the adversarial-verify critique, as a quality rubric in [0,1] ──
         // Sanitize at the boundary: a non-finite score (e.g. a buggy external Scorer) must
         // not enter the tree/posteriors — fall back to neutral rather than poison the search.
@@ -290,8 +347,8 @@ pub async fn search_core<G: Generator, S: Scorer>(
         em.emit(RunEventBody::AgentFinished {
             agent_id: node_id,
             outcome: "ok".into(),
-            tokens_in: 0,
-            tokens_out: 0,
+            tokens_in: tok_in,
+            tokens_out: tok_out,
             error: None,
             summary: Some(format!("score {score:.2} · {}", truncate(&candidate, 80))),
         });
@@ -419,18 +476,28 @@ impl Generator for ProviderGenerator {
         arm: &ModelArm,
         cancel: &Cancel,
     ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send {
+        // Candidates are shown live to the user as thinking steps, so they must read in the
+        // user's language and be able to carry native scientific figures (rendered above the
+        // conversation) — not just the final synthesis. Reply in the SAME language as the task.
+        let fig = "When the answer genuinely calls for a scientific figure, emit it as a native \
+                   fenced block with REAL values (never fabricate data): a data figure as ```chart \
+                   (JSON {type:scatter|bar|line,title,xlabel,ylabel,points|series}); a key equation \
+                   as ```math (LaTeX); a molecule as ```smiles; an architecture/flow as ```mermaid.";
         let (system, user) = match refine_of {
             None => (
-                "You produce ONE strong candidate solution to the task. Be complete, \
-                 specific, well-structured, and self-contained. Return only the solution."
-                    .to_string(),
+                format!(
+                    "You produce ONE strong candidate solution to the task. Be complete, specific, \
+                     well-structured, and self-contained. Reply in the SAME language as the task. \
+                     {fig} Return only the solution."
+                ),
                 format!("TASK:\n{task}"),
             ),
             Some(draft) => (
-                "You improve an existing draft so it better solves the task — fix gaps, add \
-                 specificity, tighten structure and remove weak parts. Keep what works. \
-                 Return only the improved version."
-                    .to_string(),
+                format!(
+                    "You improve an existing draft so it better solves the task — fix gaps, add \
+                     specificity, tighten structure and remove weak parts. Keep what works. Reply \
+                     in the SAME language as the task. {fig} Return only the improved version."
+                ),
                 format!("TASK:\n{task}\n\nCURRENT DRAFT:\n{draft}"),
             ),
         };
@@ -450,10 +517,13 @@ impl Generator for ProviderGenerator {
                 reasoning_effort: None,
                 tools: Vec::new(),
             };
+            // 180s, not 60: GLM-5.2 is a deep-reasoning model and an explore candidate is a full
+            // research answer — a long generation routinely needs >60s, which is why every arm was
+            // timing out with "no candidate produced". Give the deep model room to finish.
             let reply = retry_async(&RetryPolicy::default(), is_retryable_error, || async {
-                tokio::time::timeout(Duration::from_secs(60), complete_with(p, &req))
+                tokio::time::timeout(Duration::from_secs(180), complete_with(p, &req))
                     .await
-                    .map_err(|_| anyhow::anyhow!("generation timed out after 60s"))?
+                    .map_err(|_| anyhow::anyhow!("generation timed out after 180s"))?
             })
             .await?;
             Ok(reply)
@@ -505,9 +575,9 @@ impl Scorer for ProviderScorer {
                 tools: Vec::new(),
             };
             let reply = retry_async(&RetryPolicy::default(), is_retryable_error, || async {
-                tokio::time::timeout(Duration::from_secs(45), complete_with(p, &req))
+                tokio::time::timeout(Duration::from_secs(90), complete_with(p, &req))
                     .await
-                    .map_err(|_| anyhow::anyhow!("scoring timed out after 45s"))?
+                    .map_err(|_| anyhow::anyhow!("scoring timed out after 90s"))?
             })
             .await;
             match reply {

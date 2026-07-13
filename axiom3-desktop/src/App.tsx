@@ -1,6 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
@@ -181,6 +182,8 @@ function App() {
   // deep-search toggle + model dropdown — the backend picks thinking/non-thinking per mode.
   const [mode, setMode] = useState<ModeKey>(() => (localStorage.getItem("axiom3.mode") as ModeKey) || "auto");
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
+  const [appVer, setAppVer] = useState(""); // app version from tauri.conf (single source), shown in the sidebar
+  useEffect(() => { getVersion().then(setAppVer).catch(() => {}); }, []);
   const [skillMenu, setSkillMenu] = useState(false); // /技能 picker open
   const [pendingSkill, setPendingSkill] = useState<string | null>(null); // skill key to inject into the next run
   // Persistent run settings (the composer's settings popover). `specialist` maps to the skill
@@ -1712,7 +1715,7 @@ function App() {
               {!sidebarCollapsed && (
                 <span className="ax-acct__label">
                   <b>{lang === "zh" ? "本地版" : "Local"}</b>
-                  <span>{lang === "zh" ? "本机数据" : "on-device"}</span>
+                  <span>{(lang === "zh" ? "本机数据" : "on-device")}{appVer && ` · v${appVer}`}</span>
                 </span>
               )}
             </button>

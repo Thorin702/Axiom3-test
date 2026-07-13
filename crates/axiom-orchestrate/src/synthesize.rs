@@ -41,9 +41,9 @@ pub async fn critique(goal: &str, steps: &[StepState], provider: &str, model: &s
         tools: Vec::new(),
     };
     let r = retry_async(&RetryPolicy::default(), is_retryable_error, || async {
-        tokio::time::timeout(Duration::from_secs(45), complete_with(p, &req))
+        tokio::time::timeout(Duration::from_secs(90), complete_with(p, &req))
             .await
-            .map_err(|_| anyhow::anyhow!("critique timed out after 45s"))?
+            .map_err(|_| anyhow::anyhow!("critique timed out after 90s"))?
     })
     .await;
     r.unwrap_or_default()

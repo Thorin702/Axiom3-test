@@ -19,9 +19,24 @@ impl EventSink for PrintSink {
             }
             RunEventBody::PhaseChanged { phase, .. } => println!("── {phase}"),
             RunEventBody::AgentSpawned { role, .. } => println!("  + {role}"),
-            RunEventBody::AgentFinished { summary, outcome, .. } => match summary {
-                Some(s) => println!("      {s}"),
-                None => println!("      ({outcome})"),
+            RunEventBody::AgentProgress { note, .. } => {
+                if let Some(n) = note {
+                    println!("    · {n}");
+                }
+            }
+            RunEventBody::AgentStep { title, reasoning, output, status, .. } => {
+                println!("    ▸ [{status}] {title}");
+                if !reasoning.is_empty() {
+                    println!("        thinking: {}", reasoning.chars().take(90).collect::<String>());
+                }
+                let head: String = output.chars().take(90).collect::<String>().replace('\n', " ");
+                if !head.is_empty() {
+                    println!("        output: {head}…");
+                }
+            }
+            RunEventBody::AgentFinished { summary, outcome, tokens_in, tokens_out, .. } => match summary {
+                Some(s) => println!("      {s}  [tok in {tokens_in} / out {tokens_out}]"),
+                None => println!("      ({outcome})  [tok in {tokens_in} / out {tokens_out}]"),
             },
             RunEventBody::RunFinished { agents_ok, agents_err, .. } => {
                 println!("■ done: {agents_ok} ok / {agents_err} err")
@@ -39,15 +54,20 @@ async fn main() {
             .into()
     });
 
+    // Match the app's real routing: GLM (Zhipu) is primary when its key is set, else DeepSeek/Qwen.
     let mut models = Vec::new();
-    if std::env::var("DEEPSEEK_API_KEY").is_ok() {
+    if std::env::var("ZHIPU_API_KEY").is_ok() {
+        models.push(ModelArm { provider: "zhipu".into(), model: "glm-5.2".into() });
+        models.push(ModelArm { provider: "zhipu".into(), model: "glm-5-turbo".into() });
+    }
+    if models.is_empty() && std::env::var("DEEPSEEK_API_KEY").is_ok() {
         models.push(ModelArm { provider: "deepseek".into(), model: "deepseek-v4-flash".into() });
     }
     if std::env::var("QWEN_API_KEY").is_ok() {
         models.push(ModelArm { provider: "qwen".into(), model: "qwen-plus".into() });
     }
     if models.is_empty() {
-        eprintln!("set DEEPSEEK_API_KEY (and optionally QWEN_API_KEY) to run");
+        eprintln!("set ZHIPU_API_KEY (or DEEPSEEK_API_KEY / QWEN_API_KEY) to run");
         return;
     }
 

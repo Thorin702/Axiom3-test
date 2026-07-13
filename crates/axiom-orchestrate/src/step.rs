@@ -50,12 +50,17 @@ impl AgentStep for ProviderStep {
                 .ok_or_else(|| anyhow::anyhow!("unknown provider: {}", input.spec.provider))?;
             let req = build_request(&input);
             let reply = retry_async(&RetryPolicy::default(), is_retryable_error, || async {
-                tokio::time::timeout(Duration::from_secs(45), complete_with(provider, &req))
+                tokio::time::timeout(Duration::from_secs(120), complete_with(provider, &req))
                     .await
-                    .map_err(|_| anyhow::anyhow!("step timed out after 45s"))?
+                    .map_err(|_| anyhow::anyhow!("step timed out after 120s"))?
             })
             .await?;
-            Ok(StepOutcome { output: reply, tokens_in: 0, tokens_out: 0 })
+            // Rough token estimate from real content length (complete_with doesn't surface usage
+            // yet). CJK-heavy text runs ~2-3 chars/token, so /3 is a reasonable floor — this beats
+            // showing a flat 0 while a real usage-from-response path is a later refactor.
+            let out_tok = (reply.chars().count() as u64) / 3;
+            let in_tok = (input.spec.goal.chars().count() as u64) / 3 + 1500; // + system-prompt baseline
+            Ok(StepOutcome { output: reply, tokens_in: in_tok, tokens_out: out_tok })
         }
     }
 }

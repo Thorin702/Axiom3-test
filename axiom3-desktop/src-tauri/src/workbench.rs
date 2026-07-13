@@ -2405,17 +2405,21 @@ async fn compute_figures_for_report(
     // This is a headless figure-recomputation step: its pause is not the run's registered one and it
     // renders no card, so `ask_user` must NOT park here — disable it so the model converges instead.
     pause.disable_asks();
+    let mut acc_in: u64 = goal.chars().count() as u64 / 3 + 1800;
+    let mut acc_out: u64 = 0;
     let result = run_coding_agent(&goal, &sandbox, &model, cancel, &pause, &budget, Some(kernel), |step| {
         let note = format!("{} {}", step.tool, step.detail);
-        em.emit(RunEventBody::AgentProgress { agent_id: "analyst".into(), step: step.n, tokens_in: 0, tokens_out: 0, note: Some(note) });
+        acc_out += (step.reasoning.chars().count() + step.input.chars().count()) as u64 / 3;
+        acc_in += step.observation.chars().count() as u64 / 3 + 200;
+        em.emit(RunEventBody::AgentProgress { agent_id: "analyst".into(), step: step.n, tokens_in: acc_in, tokens_out: acc_out, note: Some(note) });
     }, |_, _| {})
     .await;
     let outcome = if result.status == "done" { "ok" } else { "err" };
     em.emit(RunEventBody::AgentFinished {
         agent_id: "analyst".into(),
         outcome: outcome.into(),
-        tokens_in: 0,
-        tokens_out: 0,
+        tokens_in: acc_in,
+        tokens_out: acc_out,
         error: None,
         summary: Some(result.summary.chars().take(120).collect()),
     });
@@ -2734,6 +2738,12 @@ pub async fn coding_run(
         CodingBudget::default()
     };
     let mut trace: Vec<CodingStepOut> = Vec::new(); // auditable execution log
+    // Real (content-derived) token accounting so the sidebar + context meter move with actual
+    // work instead of showing a flat 0. complete_with doesn't surface API usage yet, so we
+    // estimate from the bytes that actually flowed: the model's produced text (reasoning + the
+    // code/args it wrote) as output, tool results fed back as input. CJK ≈ 2–3 chars/token → /3.
+    let mut acc_in: u64 = goal.chars().count() as u64 / 3 + 1800; // task + system-prompt baseline
+    let mut acc_out: u64 = 0;
     let result = run_coding_agent(&goal, &sandbox, &model, &cancel, &pause, &budget, kernel, |step| {
         let think: String = step.reasoning.chars().take(600).collect();
         let mut note = if think.is_empty() {
@@ -2831,11 +2841,14 @@ pub async fn coding_run(
             output: out,
             lines,
         });
+        // Accumulate a real, content-derived token estimate (cumulative; runStore SETs per event).
+        acc_out += (step.reasoning.chars().count() + step.input.chars().count()) as u64 / 3;
+        acc_in += step.observation.chars().count() as u64 / 3 + 200; // tool result + per-step overhead
         em.emit(RunEventBody::AgentProgress {
             agent_id: "coder".into(),
             step: step.n,
-            tokens_in: 0,
-            tokens_out: 0,
+            tokens_in: acc_in,
+            tokens_out: acc_out,
             note: Some(note),
         });
     }, |card_id, card| {
@@ -2852,8 +2865,8 @@ pub async fn coding_run(
     em.emit(RunEventBody::AgentFinished {
         agent_id: "coder".into(),
         outcome: outcome.into(),
-        tokens_in: 0,
-        tokens_out: 0,
+        tokens_in: acc_in,
+        tokens_out: acc_out,
         error: None,
         summary: Some(result.summary.chars().take(120).collect()),
     });
