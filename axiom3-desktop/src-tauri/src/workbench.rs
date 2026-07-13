@@ -2364,26 +2364,52 @@ async fn compute_figures_for_report(
     let sandbox = Sandbox::with_mode(&ws, SandboxMode::ReadWrite).map_err(|e| e.to_string())?;
     // copy any attached data files into the workspace (the kernel's cwd)
     let mut names: Vec<String> = Vec::new();
+    let mut copy_failed: Vec<String> = Vec::new(); // surface failures — never analyze on silently-missing data
     if let Some(atts) = attachments.as_ref() {
         for a in atts {
             let src = std::path::Path::new(a);
             if let Some(f) = src.file_name() {
-                if std::fs::copy(src, sandbox.root().join(f)).is_ok() {
-                    names.push(f.to_string_lossy().into_owned());
+                match std::fs::copy(src, sandbox.root().join(f)) {
+                    Ok(_) => names.push(f.to_string_lossy().into_owned()),
+                    Err(e) => copy_failed.push(format!("{} ({e})", f.to_string_lossy())),
                 }
             }
         }
     }
     // Seed the scientific stack before the compute kernel starts (same rationale as coding_run).
+    // BOTH the seed and the kernel handshake run under a timeout — otherwise a wedged pip solve or a
+    // stuck interpreter handshake hangs the whole compute phase forever with no way to cancel.
     let base_seed = base.clone();
-    let py = tauri::async_runtime::spawn_blocking(move || seed_sci_stack(&base_seed))
-        .await
-        .map_err(|e| e.to_string())??;
-    let kernel = Arc::new(PyKernel::start(&py.to_string_lossy(), sandbox.root()).map_err(|e| e.to_string())?);
-    let data_note = if names.is_empty() {
-        String::new()
-    } else {
-        format!(" Data files are in your workspace (cwd), read with pandas: {}.", names.join(", "))
+    let py = tokio::time::timeout(
+        std::time::Duration::from_secs(900),
+        tauri::async_runtime::spawn_blocking(move || seed_sci_stack(&base_seed)),
+    )
+    .await
+    .map_err(|_| "科学环境初始化超时(>15 分钟) · sci-stack seeding timed out".to_string())?
+    .map_err(|e| e.to_string())??;
+    let py_s = py.to_string_lossy().into_owned();
+    let root = sandbox.root().to_path_buf();
+    let start = tauri::async_runtime::spawn_blocking(move || PyKernel::start(&py_s, &root));
+    let kernel = Arc::new(
+        tokio::time::timeout(std::time::Duration::from_secs(120), start)
+            .await
+            .map_err(|_| "Python 内核启动超时 · kernel start timed out".to_string())?
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?,
+    );
+    let data_note = {
+        let mut note = if names.is_empty() {
+            String::new()
+        } else {
+            format!(" Data files are in your workspace (cwd), read with pandas: {}.", names.join(", "))
+        };
+        if !copy_failed.is_empty() {
+            note.push_str(&format!(
+                " ⚠ NOTE: these attached files FAILED to copy and are NOT available — do not assume them: {}.",
+                copy_failed.join("; ")
+            ));
+        }
+        note
     };
     let goal = format!(
         "You are the analysis step of a research workflow. Using the python tool, COMPUTE the key \
@@ -2664,11 +2690,13 @@ pub async fn coding_run(
         if let Some(atts) = attachments.as_ref().filter(|a| !a.is_empty()) {
             let root = sandbox.root().to_path_buf();
             let mut names: Vec<String> = Vec::new();
+            let mut copy_failed: Vec<String> = Vec::new();
             for a in atts {
                 let src = std::path::Path::new(a);
                 if let Some(fname) = src.file_name() {
-                    if std::fs::copy(src, root.join(fname)).is_ok() {
-                        names.push(fname.to_string_lossy().into_owned());
+                    match std::fs::copy(src, root.join(fname)) {
+                        Ok(_) => names.push(fname.to_string_lossy().into_owned()),
+                        Err(e) => copy_failed.push(format!("{} ({e})", fname.to_string_lossy())),
                     }
                 }
             }
@@ -2679,6 +2707,13 @@ pub async fn coding_run(
                      Files: {}.",
                     names.join(", ")
                 );
+            }
+            if !copy_failed.is_empty() {
+                // never let the agent analyze on silently-missing data — surface the failed copies.
+                data_note.push_str(&format!(
+                    "\n⚠ NOTE: these attached files FAILED to copy and are NOT available — do not assume them: {}.",
+                    copy_failed.join("; ")
+                ));
             }
         }
     }
@@ -2782,10 +2817,12 @@ pub async fn coding_run(
     });
 
     let model = ProviderModel { provider: provider.clone(), model: model_id, timeout_s: 90 };
-    // Analysis runs (real data download + a full domain pipeline + figures) need more headroom
-    // than a read-only code task; give the analyze path a larger step budget.
+    // Analysis runs (real data download + a full domain pipeline + figures) need more headroom than a
+    // read-only code task. QUALITY-FIRST: a heavy pipeline (single-cell / phylo / velocity) must be
+    // able to finish CORRECTLY rather than get cut off mid-analysis — cost/time is not the constraint,
+    // so the step budget and per-cell timeout are generous (auto-checkpoint/restore protects state).
     let budget = if analyze.unwrap_or(false) {
-        CodingBudget { max_steps: 40, per_call_timeout_s: 120, cmd_timeout_s: 120, cell_timeout_s: 600 }
+        CodingBudget { max_steps: 80, per_call_timeout_s: 150, cmd_timeout_s: 150, cell_timeout_s: 900 }
     } else {
         CodingBudget::default()
     };

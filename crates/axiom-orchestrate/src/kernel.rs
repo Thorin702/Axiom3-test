@@ -22,6 +22,14 @@ use std::time::Duration;
 /// `AXKERNEL {json}` line per request back on the real stdout.
 const DRIVER: &str = r#"
 import sys, json, io, base64, traceback, ast, contextlib
+# Default socket timeout so an in-cell download (urllib / pandas.read_csv(url) / requests without a
+# timeout) that STALLS fails fast + catchably instead of hanging the whole cell for the full 15-min
+# cell budget (uninterruptible). 120s is generous for a real fetch but bounds a dead connection.
+try:
+    import socket as _socket
+    _socket.setdefaulttimeout(120)
+except Exception:
+    pass
 try:
     import matplotlib
     matplotlib.use('Agg')
@@ -164,9 +172,15 @@ impl PyKernel {
         let req = serde_json::json!({ "id": id, "code": code }).to_string();
         let mut guard = self.io.lock().unwrap_or_else(|p| p.into_inner());
 
-        // is the child still alive?
-        if let Ok(Some(status)) = guard.child.try_wait() {
-            anyhow::bail!("kernel exited ({status})");
+        // Kernel already dead (a PRIOR crash/OOM/segfault)? Respawn IN PLACE so it isn't bricked for
+        // every future cell, and report the reset so the coding loop auto-restores the last checkpoint.
+        if let Ok(Some(_status)) = guard.child.try_wait() {
+            let _ = guard.child.wait();
+            match spawn_io(&self.python, &self.cwd) {
+                Ok(fresh) => *guard = fresh,
+                Err(e) => anyhow::bail!("kernel had died and restart failed: {e}"),
+            }
+            anyhow::bail!("kernel had crashed — restarted; state was reset");
         }
         guard.stdin.write_all(req.as_bytes()).map_err(|e| anyhow::anyhow!("kernel write failed: {e}"))?;
         guard.stdin.write_all(b"\n")?;
@@ -174,6 +188,7 @@ impl PyKernel {
 
         // Read the AXKERNEL result line on a worker thread so we can enforce a timeout.
         let mut timed_out = false;
+        let mut died = false; // kernel crashed/OOM mid-cell (EOF or read error) — must respawn too
         let outcome: anyhow::Result<CellResult> = {
             // Split the struct into disjoint field borrows so the read thread (stdout) and the
             // timeout kill (child) don't conflict.
@@ -204,8 +219,12 @@ impl PyKernel {
                 });
                 match rx.recv_timeout(timeout) {
                     Ok(Ok(Some(json))) => parse_result(&json),
-                    Ok(Ok(None)) => anyhow::bail!("kernel closed unexpectedly"),
-                    Ok(Err(e)) => anyhow::bail!("kernel read failed: {e}"),
+                    // EOF / read error mid-cell = the kernel process DIED (segfault, OOM-kill, a C
+                    // extension crash). Previously this bailed WITHOUT respawning, so the dead handle
+                    // stayed installed and every later cell failed forever ("kernel exited") — a heavy
+                    // run was silently bricked. Flag it so we respawn just like a timeout.
+                    Ok(Ok(None)) => { died = true; anyhow::bail!("kernel closed unexpectedly (crash/OOM)") }
+                    Ok(Err(e)) => { died = true; anyhow::bail!("kernel read failed: {e}") }
                     Err(_) => {
                         // Kill the whole process GROUP (not just the child) so grandchildren
                         // die and the stdout pipe closes — otherwise the scoped reader below
@@ -218,16 +237,23 @@ impl PyKernel {
             })
         };
 
-        if timed_out {
-            // Respawn a fresh interpreter IN PLACE so the kernel stays usable (the previous
-            // version killed the child but left the dead handle installed, bricking every
-            // later cell). Reap the old child first to avoid a zombie.
+        if timed_out || died {
+            // Respawn a fresh interpreter IN PLACE so the kernel stays usable (the previous version
+            // killed/lost the child but left the dead handle installed, bricking every later cell).
+            // Reap the old child first to avoid a zombie. Report "state was reset" either way so the
+            // coding loop's auto-restore reloads the last checkpoint.
             let _ = guard.child.wait();
             match spawn_io(&self.python, &self.cwd) {
                 Ok(fresh) => *guard = fresh,
-                Err(e) => anyhow::bail!("cell timed out after {}s; kernel restart failed: {e}", timeout.as_secs()),
+                Err(e) => anyhow::bail!(
+                    "kernel {}; restart failed: {e}",
+                    if timed_out { format!("timed out after {}s", timeout.as_secs()) } else { "crashed".into() }
+                ),
             }
-            anyhow::bail!("cell timed out after {}s (kernel restarted — state was reset)", timeout.as_secs());
+            if timed_out {
+                anyhow::bail!("cell timed out after {}s (kernel restarted — state was reset)", timeout.as_secs());
+            }
+            anyhow::bail!("kernel crashed (likely OOM/segfault) — restarted; state was reset");
         }
         outcome
     }
@@ -291,6 +317,22 @@ mod tests {
         let r2 = k.exec("x + 2", Duration::from_secs(20)).unwrap();
         assert!(r2.ok);
         assert!(r2.stdout.contains("42"), "stdout was {:?}", r2.stdout);
+    }
+
+    #[test]
+    fn crash_respawns_kernel_and_stays_usable() {
+        let Some(py) = have_python() else { return };
+        let k = PyKernel::start(&py, std::env::temp_dir().as_path()).unwrap();
+        k.exec("x = 5", Duration::from_secs(20)).unwrap();
+        // Hard-crash the kernel process (os._exit bypasses cleanup → EOF on our pipe, like an OOM
+        // SIGKILL / C-extension segfault). This must NOT brick the kernel.
+        let r = k.exec("import os; os._exit(1)", Duration::from_secs(20));
+        assert!(r.is_err(), "a kernel crash should surface as an error, got {r:?}");
+        let msg = format!("{:?}", r.unwrap_err());
+        assert!(msg.contains("state was reset") || msg.contains("crashed"), "crash error should signal a reset: {msg}");
+        // The kernel must have respawned and be usable again (state is expected to be gone).
+        let r2 = k.exec("print(2 + 2)", Duration::from_secs(20)).unwrap();
+        assert!(r2.ok && r2.stdout.contains("4"), "kernel must work after a crash: {r2:?}");
     }
 
     #[test]

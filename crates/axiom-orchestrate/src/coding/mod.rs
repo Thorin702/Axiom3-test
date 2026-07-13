@@ -19,7 +19,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct CodingBudget {
     pub max_steps: u32,
@@ -132,7 +132,7 @@ impl CodingModel for ProviderModel {
 // Snapshot / reload picklable kernel globals — used by the checkpoint/restore tools AND by the
 // loop's AUTOMATIC resilience (checkpoint after an expensive cell, restore after a state-wiping
 // kernel reset), so a slow real-data step can no longer cost the whole session its loaded state.
-const CHECKPOINT_CODE: &str = "import pickle as _pk\n_ck = {}\nfor _k, _v in list(globals().items()):\n    if _k.startswith('_'): continue\n    try:\n        _pk.dumps(_v)\n        _ck[_k] = _v\n    except Exception:\n        pass\n_pk.dump(_ck, open('.axiom_ckpt.pkl', 'wb'))\nprint('checkpointed', len(_ck), 'objects:', sorted(_ck.keys()))\n";
+const CHECKPOINT_CODE: &str = "import pickle as _pk, os as _os\n_ck = {}\nfor _k, _v in list(globals().items()):\n    if _k.startswith('_'): continue\n    try:\n        _pk.dumps(_v, protocol=_pk.HIGHEST_PROTOCOL)\n        _ck[_k] = _v\n    except Exception:\n        pass\n_tmp = '.axiom_ckpt.pkl.tmp'\nwith open(_tmp, 'wb') as _f:\n    _pk.dump(_ck, _f, protocol=_pk.HIGHEST_PROTOCOL)\n_os.replace(_tmp, '.axiom_ckpt.pkl')\nprint('checkpointed', len(_ck), 'objects:', sorted(_ck.keys()))\n";
 const RESTORE_CODE: &str = "import pickle as _pk, os\nif os.path.exists('.axiom_ckpt.pkl'):\n    _ck = _pk.load(open('.axiom_ckpt.pkl', 'rb'))\n    globals().update(_ck)\n    print('restored', len(_ck), 'objects:', sorted(_ck.keys()))\nelse:\n    print('no checkpoint found (.axiom_ckpt.pkl missing)')\n";
 
 const CONDA_INSTALL: &str = r#"import os, sys, subprocess, platform, tarfile, io, requests
@@ -250,7 +250,9 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              handle messy reality — wrong encodings (fall back to latin-1), extra header rows, trailing \
              delimiters that shift columns. For a LARGE or dirty file, sniff the shape on a small slice \
              first (nrows=/usecols=/chunksize=) to get the parse right in ONE pass, then load the full \
-             frame and immediately `checkpoint` — so a later slow step can never cost you the load.)\n\
+             frame. Your state is AUTO-checkpointed after each expensive cell and AUTO-restored if the \
+             kernel restarts, so you rarely need to manage that by hand — just keep each heavy operation \
+             in its own cell.)\n\
              {\"tool\":\"pip_install\",\"packages\":[\"biopython\",\"dendropy\"]}   (install more Python \
              packages ON DEMAND into this kernel — pip, so pure-Python / wheels work: biopython, \
              dendropy, scikit-bio, umap-learn, statsmodels extras, etc. They become importable in the \
@@ -267,9 +269,10 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              Returns a job id.)\n\
              {\"tool\":\"job_status\",\"id\":\"<job id>\"}   (check a background job: RUNNING / DONE / \
              FAILED plus the tail of its log. Poll it between other steps; when DONE, read its output files.)\n\
-             {\"tool\":\"checkpoint\"}   (snapshot the kernel's variables to disk before a risky or huge \
-             step, so you can recover them.)  {\"tool\":\"restore\"}   (reload them after a kernel restart \
-             or crash — in-memory state is otherwise lost when the kernel restarts.)\n\
+             {\"tool\":\"checkpoint\"}   (usually AUTOMATIC — state is snapshotted after each expensive \
+             cell; call this only to force an extra snapshot before something especially risky.)  \
+             {\"tool\":\"restore\"}   (also AUTOMATIC after a kernel restart; call it manually only if you \
+             need to roll back to the last checkpoint on purpose.)\n\
              {\"tool\":\"ask_user\",\"questions\":[{\"header\":\"<=12 chars\",\"question\":\"<neutral one-line choice>\",\
              \"kind\":\"intent|fork|permission|integrity|scope|cost\",\"why_it_matters\":\"<how the branches change the verdict>\",\
              \"multiSelect\":false,\"allowOther\":true,\"options\":[{\"label\":\"<=40 chars\",\"description\":\"what it does + the tradeoff\",\"convention\":false}]}]}   \
@@ -289,13 +292,16 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              Use python to COMPUTE results and figures from real data — never state a number, table, \
              or trend you did not actually compute. In your final answer, describe what the computed \
              results and figures show; the figures themselves are attached automatically.\n\
-             BUDGET RULE — you have a FIXED step budget, shown each turn as [budget] step N of M. \
-             Steps are scarce; get to a FIRST computed figure FAST, then refine. Concretely: prefer \
-             the small/simulated dataset a task offers; if you fetch real data and it does not load \
-             cleanly within ~2 steps, SUBSAMPLE it to the size the task names (e.g. ~800 cells) or \
-             simulate that size, and move on. Spend early steps locating + loading; RESERVE the last \
-             few steps to compute the core result, draw the figure, and finish with {\"final\":…}. \
-             Do not re-run a search, re-read a file, or re-download something you already have.\n\
+             BUDGET RULE — you have a GENEROUS step budget, shown each turn as [budget] step N of M. \
+             QUALITY FIRST: prioritize a CORRECT, COMPLETE analysis over speed — it is fine to take many \
+             steps and a long time, so do NOT cut corners, skip validation, or rush to {\"final\":…}. \
+             Still avoid WASTED steps: never re-run a search, re-read a file, or re-download something you \
+             already have, and never repeat a failed approach UNCHANGED (change the approach or the inputs). \
+             Get a first computed figure reasonably early to de-risk, then DEEPEN it. If a real dataset is \
+             genuinely too big to process in one cell, SUBSAMPLE to a scientifically valid size (e.g. \
+             ~800–2000 cells) and disclose it — a solid subsampled result beats a full one that never \
+             finishes. Keep each heavy operation in its OWN cell so it completes and gets auto-checkpointed. \
+             Finish with {\"final\":…} only when the analysis is actually complete and its figures are drawn.\n\
              LARGE / REAL DATA — real datasets can be huge and a naive full read hangs the run for \
              MANY MINUTES with no visible progress (a 100+ MB single-cell matrix is the classic \
              trap). So: (1) BEFORE reading, check the size and PRINT it — `import os; \
@@ -418,6 +424,11 @@ pub async fn run_coding_agent(
     let mut intake_done = !pause.intake_required(); // satisfied once the forced intake ask has fired
     let mut intake_nudges = 0u32; // bounded pushes to make the first action an ask_user intake card
     let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
+    // Automatic kernel resilience: a cell timeout/crash restarts the kernel and WIPES in-memory state
+    // (dataframes/adata). We auto-checkpoint after an expensive successful cell and auto-restore after
+    // a state-wiping restart, so a heavy analysis survives instead of losing hours of loaded data.
+    let mut have_ckpt = false; // a checkpoint file exists to restore from
+    let mut cells_since_ckpt = 0u32; // periodic-checkpoint safety net counter
     let mut searched: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup repeated skill searches
     let mut skill_searched = false; // once true, HARD-block further search_skills until a load_skill (force-commit)
     let mut fig_seen: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup identical figures (re-run plots)
@@ -809,14 +820,17 @@ pub async fn run_coding_agent(
                     ran_command = true; // executing code counts as "ran something" (nudge)
                     let code = arg_str(&v, "code").to_string();
                     let label: String = code.lines().next().unwrap_or("").chars().take(60).collect();
-                    let k = k.clone();
+                    let kc = k.clone();
                     // Blocking kernel call off the async worker. Use the generous CELL timeout (NOT
                     // the tight shell `cmd_timeout_s`) so a slow-but-finite parse finishes and keeps
                     // its loaded state instead of tripping a kernel restart that wipes every dataframe.
                     let timeout = Duration::from_secs(budget.cell_timeout_s.max(60));
-                    let obs = match tokio::task::spawn_blocking(move || k.exec(&code, timeout)).await {
+                    let run_code = code.clone();
+                    let t0 = Instant::now();
+                    let obs = match tokio::task::spawn_blocking(move || kc.exec(&run_code, timeout)).await {
                         Ok(Ok(cell)) => {
                             step_figures = cell.figures;
+                            let cell_ok = cell.error.is_none();
                             let mut o = cell.stdout;
                             if let Some(err) = cell.error {
                                 if !o.is_empty() && !o.ends_with('\n') { o.push('\n'); }
@@ -826,9 +840,59 @@ pub async fn run_coding_agent(
                                 o.push_str(&format!("\n[{} figure(s) captured into the report]", step_figures.len()));
                             }
                             if o.trim().is_empty() { o = "(ran; no output)".into(); }
+                            // AUTO-CHECKPOINT: after a SUCCESSFUL, expensive cell (or every few cells),
+                            // snapshot picklable globals so a later kernel restart can recover them.
+                            // Best-effort + generous timeout; a checkpoint failure never fails the step.
+                            let elapsed = t0.elapsed().as_secs();
+                            cells_since_ckpt += 1;
+                            if cell_ok && (elapsed >= 15 || cells_since_ckpt >= 4) {
+                                let kk = k.clone();
+                                match tokio::task::spawn_blocking(move || kk.exec(CHECKPOINT_CODE, Duration::from_secs(300))).await {
+                                    Ok(Ok(c)) if c.stdout.contains("checkpointed") => { have_ckpt = true; cells_since_ckpt = 0; }
+                                    Ok(Err(e)) if e.to_string().contains("state was reset") => {
+                                        // Snapshotting a very large object ITSELF timed out / OOM'd and
+                                        // restarted the kernel — so the state we just computed is gone.
+                                        // Surface it (don't let the cell's "success" mislead the agent).
+                                        o.push_str("\n[自动容错警告] 保存快照时内核超时/内存不足并重启,刚计算出的内存状态已丢失。请把这步拆更小或抽样后重做。");
+                                        have_ckpt = false;
+                                    }
+                                    _ => {}
+                                }
+                            }
                             o
                         }
-                        Ok(Err(e)) => format!("ERROR: {e}"),
+                        Ok(Err(e)) => {
+                            let es = e.to_string();
+                            // A cell timeout/crash restarts the kernel and WIPES memory. AUTO-RESTORE the
+                            // last checkpoint so the agent doesn't silently lose adata/dataframes and
+                            // doesn't have to do the restore dance by hand (which it kept fumbling).
+                            if es.contains("kernel restart") || es.contains("state was reset") || es.contains("kernel had crashed") {
+                                if have_ckpt {
+                                    let kr = k.clone();
+                                    // Only report a recovery if RESTORE_CODE actually SUCCEEDED — a raised
+                                    // cell (corrupt checkpoint / un-unpicklable object) restores nothing,
+                                    // so telling the agent "state recovered" would be a lie.
+                                    let ok = match tokio::task::spawn_blocking(move || kr.exec(RESTORE_CODE, Duration::from_secs(300))).await {
+                                        Ok(Ok(c)) if c.error.is_none() && c.stdout.contains("restored") => Some(c.stdout.trim().to_string()),
+                                        _ => None,
+                                    };
+                                    match ok {
+                                        Some(restored) => format!(
+                                            "ERROR: {es}\n[自动容错] 内核重启后已自动从上一个检查点恢复状态：{restored}。但超时/崩溃的那步操作**没有完成** —— 不要原样重跑那步重活，改成先 SUBSAMPLE/抽样或拆成更小的 cell 分步做。"
+                                        ),
+                                        None => format!(
+                                            "ERROR: {es}\n[自动容错] 内核重启后尝试恢复检查点但**失败了**(检查点可能损坏或对象无法反序列化),内存状态已丢失。请重新加载数据,并把刚才那步拆小/抽样再做。"
+                                        ),
+                                    }
+                                } else {
+                                    format!(
+                                        "ERROR: {es}\n[自动容错] 内核重启前还没有检查点，所以内存里的数据(adata/DataFrame)丢了。请重新加载数据(加载成功后会被自动检查点保护),并把刚才超时的重活拆小/抽样再做。"
+                                    )
+                                }
+                            } else {
+                                format!("ERROR: {es}")
+                            }
+                        }
                         Err(e) => format!("ERROR: python kernel task failed: {e}"),
                     };
                     (label, obs)
@@ -920,8 +984,11 @@ pub async fn run_coding_agent(
                 Some(k) => {
                     let code = CHECKPOINT_CODE;
                     let k = k.clone();
-                    let obs = match tokio::task::spawn_blocking(move || k.exec(code, Duration::from_secs(60))).await {
-                        Ok(Ok(cell)) => { let mut o = cell.stdout; if let Some(e) = cell.error { o.push_str(&e); } o }
+                    let obs = match tokio::task::spawn_blocking(move || k.exec(code, Duration::from_secs(240))).await {
+                        Ok(Ok(cell)) => {
+                            if cell.stdout.contains("checkpointed") { have_ckpt = true; cells_since_ckpt = 0; }
+                            let mut o = cell.stdout; if let Some(e) = cell.error { o.push_str(&e); } o
+                        }
                         Ok(Err(e)) => format!("ERROR: {e}"),
                         Err(e) => format!("ERROR: {e}"),
                     };
@@ -1040,13 +1107,22 @@ pub async fn run_coding_agent(
         }
     }
     let artifacts = collect_artifacts(sandbox.root(), &start_files);
-    CodingResult {
-        status: "done".into(),
-        summary: format!("Reached the {}-step budget without finishing. Latest context:\n{}", budget.max_steps, truncate(&transcript, 2000)),
-        steps: budget.max_steps,
-        figures: all_figures,
-        artifacts,
-    }
+    // Budget exhausted without a {"final"}. Don't dump the raw transcript as the "report" — do ONE
+    // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
+    // figures + an honest note on what's incomplete. Falls back to a transcript tail on failure.
+    let wrap_ctx = compact_transcript(&transcript, 26_000);
+    let wrap_user = format!(
+        "{wrap_ctx}\n\n[你已用完步数预算,不能再调用任何工具] 现在直接写出**最终报告**:把你到目前为止真正计算出的结果和图讲清楚(已生成的图会自动附在报告里,不要再画),说明主要发现与结论,并诚实指出哪些部分还没完成、下一步该做什么。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
+    );
+    let summary = match model.complete(&sys, &wrap_user, cancel).await {
+        Ok(r) if r.trim().chars().count() > 40 => r.trim().to_string(),
+        _ => format!(
+            "(达到 {} 步预算,分析未完全收尾;已计算出的图见报告。)最近进展:\n{}",
+            budget.max_steps,
+            truncate(&transcript, 1500)
+        ),
+    };
+    CodingResult { status: "done".into(), summary, steps: budget.max_steps, figures: all_figures, artifacts }
 }
 
 /// Extract the first balanced top-level `{...}` object from a reply (tolerate fences /

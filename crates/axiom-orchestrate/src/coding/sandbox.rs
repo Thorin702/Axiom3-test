@@ -102,10 +102,31 @@ impl Sandbox {
         if !path.is_file() {
             return Err(format!("not a file: {p}"));
         }
-        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        // Read AT MOST the cap (+a little) into memory — never `fs::read` the whole file, or a
+        // multi-GB workspace file would OOM the host before cap_head ever ran.
+        let bytes = read_capped(&path, MAX_READ).map_err(|e| e.to_string())?;
         let mut s = String::from_utf8_lossy(&bytes).into_owned();
         cap_head(&mut s, MAX_READ);
         Ok(s)
+    }
+
+    /// Uncapped read for EDITING (up to MAX_WRITE) — editing must round-trip the WHOLE file, so it
+    /// can't go through the model-facing capped `read_file` (that truncated large files and then
+    /// wrote the truncation back, silently destroying everything past the cap). A file too large to
+    /// write back is refused rather than corrupted.
+    fn read_file_full(&self, p: &str) -> Result<String, String> {
+        let path = self.resolve(p)?;
+        if !path.is_file() {
+            return Err(format!("not a file: {p}"));
+        }
+        let len = std::fs::metadata(&path).map_err(|e| e.to_string())?.len() as usize;
+        if len > MAX_WRITE {
+            return Err(format!(
+                "edit: {p} is {} KB — too large to edit safely (limit {} KB). Rewrite the relevant part with write_file, or operate on it with the python tool.",
+                len / 1024, MAX_WRITE / 1024
+            ));
+        }
+        std::fs::read_to_string(&path).map_err(|e| e.to_string())
     }
 
     pub fn list_dir(&self, p: &str) -> Result<String, String> {
@@ -196,7 +217,7 @@ impl Sandbox {
         if old == new {
             return Err("edit: 'old' and 'new' are identical (nothing to do)".into());
         }
-        let content = self.read_file(p)?;
+        let content = self.read_file_full(p)?; // uncapped — must not truncate the file on write-back
         let count = content.matches(old).count();
         if count == 0 {
             return Err(format!("edit: 'old' text not found in {p}"));
@@ -394,6 +415,17 @@ fn scrub_env(cmd: &mut tokio::process::Command) {
     cmd.env("npm_config_fund", "false");
     cmd.env("PIP_NO_INPUT", "1");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
+}
+
+/// Read at most `max` (+1KB slack so cap_head can detect truncation) bytes of a file into memory,
+/// so a giant workspace file can't OOM the host before the byte cap is applied.
+fn read_capped(path: &std::path::Path, max: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?
+        .take((max as u64) + 1024)
+        .read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 /// Keep the first `max` bytes (on a char boundary); note truncation.
