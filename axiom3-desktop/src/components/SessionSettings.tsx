@@ -68,7 +68,8 @@ export function SessionSettings({
         <>
           <div className="ax-cfg__scrim" onClick={() => setOpen(false)} />
           <div className="ax-cfg__menu" role="menu">
-            <Toggle label={zh ? "委派" : "Delegation"} on={cfg.delegation} onClick={() => set({ delegation: !cfg.delegation })} />
+            {/* Delegation is no longer a manual toggle: analysis is always single-agent, and RESEARCH
+                mode delegates automatically (the agent opens a sub-team for complex subtasks). */}
             <Toggle label={zh ? "自动审查" : "Auto-review"} on={cfg.autoReview} onClick={() => set({ autoReview: !cfg.autoReview })} />
             <Select
               label={zh ? "审查模型" : "Reviewer model"}

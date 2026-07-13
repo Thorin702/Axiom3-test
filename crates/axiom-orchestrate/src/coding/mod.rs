@@ -12,6 +12,7 @@ use crate::kernel::PyKernel;
 use crate::skills;
 use axiom_providers::message::{ContentBlock, Message, Request};
 use axiom_runtime::litsearch::LitSearch;
+use axiom_runtime::scitools::{is_sci_tool, run_sci_tool, sci_tool_arg, sci_tools};
 use axiom_runtime::web::WebClient;
 use axiom_runtime::supervisor::{is_retryable_error, retry_async, Cancel, RetryPolicy};
 use axiom_runtime::complete_by_name;
@@ -405,6 +406,19 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
             "\nThis host has {cores} CPU cores available — parallelize heavier compute (e.g. \
              scikit-learn n_jobs=-1, or set worker/thread counts) rather than running single-threaded."
         ));
+    }
+    if has_kernel {
+        // Auto-listed from the science-tool registry — add a tool = add a registry entry, no prompt edit.
+        let mut db = String::from(
+            "\n── SPECIALIZED SCIENCE DATABASES (first-class tools — call these to look up an entity \
+             precisely; prefer them over hand-writing a fetch, and DON'T fabricate an id/SMILES/accession) ──\n",
+        );
+        for t in sci_tools() {
+            db.push_str("             ");
+            db.push_str(t.desc);
+            db.push('\n');
+        }
+        s.push_str(&db);
     }
     if can_delegate {
         s.push_str(
@@ -1273,6 +1287,12 @@ pub async fn run_coding_agent(
                     }
                 }
             }
+            // Specialized science-database tools (PubChem / UniProt / PDB / gene / trials / EuropePMC):
+            // dispatched through the registry so adding one is a registry entry, not a new match arm.
+            t if is_sci_tool(t) => {
+                let arg = arg_str(&v, sci_tool_arg(t)).to_string();
+                (arg.chars().take(60).collect::<String>(), run_sci_tool(t, &arg).await)
+            }
             other => (other.to_string(), format!("ERROR: unknown tool '{other}'")),
         };
         // Figure dedup: re-running a plot cell (common while tuning) would append duplicate PNGs to
@@ -1303,6 +1323,7 @@ pub async fn run_coding_agent(
             "search" | "litsearch" | "search_skills" | "web_search" => arg_str(&v, "query").to_string(),
             "web_fetch" => arg_str(&v, "url").to_string(),
             "delegate" => arg_str(&v, "task").to_string(),
+            t if is_sci_tool(t) => arg_str(&v, sci_tool_arg(t)).to_string(),
             "load_skill" => arg_str(&v, "name").to_string(),
             "glob" => arg_str(&v, "pattern").to_string(),
             "job_start" => arg_str(&v, "code").to_string(),

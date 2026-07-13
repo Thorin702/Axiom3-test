@@ -15,6 +15,7 @@ pub mod fleet;
 pub mod http;
 pub mod litsearch;
 pub mod plan;
+pub mod scitools;
 pub mod supervisor;
 pub mod web;
 

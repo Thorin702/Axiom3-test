@@ -12,7 +12,7 @@ import { Pyfig } from "./artifact/Pyfig";
 // to a dark PYTHON code cell with a "Show output" toggle.
 
 // Tools that fold into a run-summary group (vs. a code/plan/figure step that stands alone).
-const ROUTINE = new Set(["litsearch", "web_search", "web_fetch", "search", "search_skills", "load_skill", "read_file", "list_dir", "glob", "run", "job_status"]);
+const ROUTINE = new Set(["litsearch", "web_search", "web_fetch", "pubchem", "uniprot", "pdb", "gene", "trials", "europepmc", "search", "search_skills", "load_skill", "read_file", "list_dir", "glob", "run", "job_status"]);
 
 type Item =
   | { kind: "narr"; text: string }
