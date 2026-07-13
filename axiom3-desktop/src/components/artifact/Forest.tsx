@@ -36,9 +36,26 @@ function fmt(v: number): string {
 function trimZeros(s: string): string {
   return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
 }
-function truncate(s: string, max: number): string {
-  if (max <= 1) return s.length > 1 ? "…" : s;
-  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+// CJK-aware glyph width at the label font size (~11px): CJK glyphs render near-square
+// (~11px) while Latin/digits are ~6.4px, so char-count sizing badly underestimates 中文.
+function cw(s: string): number {
+  let w = 0;
+  for (const c of s) w += /[⺀-鿿＀-￯　-〿]/.test(c) ? 11 : 6.4;
+  return w;
+}
+// Truncate to a pixel budget (not a char count), appending "…" when the label overflows.
+function truncateToWidth(s: string, budget: number): string {
+  if (cw(s) <= budget) return s;
+  const ellW = cw("…");
+  let w = 0;
+  let out = "";
+  for (const c of s) {
+    const cwc = cw(c);
+    if (w + cwc + ellW > budget) break;
+    out += c;
+    w += cwc;
+  }
+  return out ? out + "…" : "…";
 }
 
 function niceNum(range: number, round: boolean): number {
@@ -118,10 +135,10 @@ export function Forest({ spec, caption }: { spec: string; caption?: string }) {
   const dotR = 4.5;
   const capH = 4;
   const plotW = 340;
-  const labelChars = Math.max(6, ...rows.map((r) => r.label.length));
-  const padL = Math.round(Math.min(280, Math.max(96, labelChars * 6.6 + 14)));
+  const labelW = Math.max(6 * 6.4, ...rows.map((r) => cw(r.label)));
+  const padL = Math.round(Math.min(280, Math.max(96, labelW + 14)));
   // labels are drawn at x=8; keep them inside the label gutter (never bleeding into the plot).
-  const maxLabelChars = Math.max(4, Math.floor((padL - 16) / 6.2));
+  const labelBudget = padL - 16;
   const echoStrs = rows.map((r) => `${fmt(r.estimate)}  [${fmt(r.lo)}, ${fmt(r.hi)}]`);
   const echoChars = Math.max(10, ...echoStrs.map((s) => s.length));
   const padR = Math.round(Math.min(220, Math.max(118, echoChars * 6.4 + 18)));
@@ -130,7 +147,7 @@ export function Forest({ spec, caption }: { spec: string; caption?: string }) {
   const plotTop = topPad + colHeaderH;
   const plotBottom = plotTop + n * rowH;
   const axisY = plotBottom + 4;
-  const titleW = d.title ? d.title.length * 6.7 + 16 : 0;
+  const titleW = d.title ? cw(d.title) + 16 : 0;
   const w = Math.max(padL + plotW + padR, Math.ceil(titleW));
   const h = plotBottom + 40;
   const x0 = padL;
@@ -199,7 +216,7 @@ export function Forest({ spec, caption }: { spec: string; caption?: string }) {
             const xl = xs(r.lo);
             const xh = xs(r.hi);
             const xe = xs(r.estimate);
-            const shown = truncate(r.label, maxLabelChars);
+            const shown = truncateToWidth(r.label, labelBudget);
             return (
               <g key={`row${i}`}>
                 <text x={8} y={y + 3.5} fontSize="11" fill="var(--ax-ink)">

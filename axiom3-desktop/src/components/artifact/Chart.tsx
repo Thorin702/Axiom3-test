@@ -116,12 +116,32 @@ function build(spec: Spec, tk: ReturnType<typeof tokens>) {
     tension: 0.2,
   }));
   if (datasets.length <= 1) base.plugins.legend.display = false;
-  return { type: "line", data: { datasets }, options: base };
+  // numeric x needs an explicit linear scale — Chart.js's line controller defaults x to
+  // "category", which plots by index and distorts non-uniform (e.g. log-spaced) spacing.
+  // Keep the default category scale when x are string labels.
+  const numericX = (spec.series ?? []).every((s) => s.points.every(([x]) => typeof x === "number"));
+  const opts = numericX ? { ...base, scales: { ...base.scales, x: { ...base.scales.x, type: "linear" } } } : base;
+  return { type: "line", data: { datasets }, options: opts };
 }
 
 export function Chart({ spec: raw, caption }: { spec: string; caption?: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [themeTick, setThemeTick] = useState(0);
+
+  // rebuild the chart when the OS/app theme flips (tokens() bakes colors at build time)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const bump = (): void => setThemeTick((n) => n + 1);
+    const mo = new MutationObserver(bump);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    mq?.addEventListener?.("change", bump);
+    return () => {
+      mo.disconnect();
+      mq?.removeEventListener?.("change", bump);
+    };
+  }, []);
 
   useEffect(() => {
     let chart: { destroy: () => void } | null = null;
@@ -153,7 +173,7 @@ export function Chart({ spec: raw, caption }: { spec: string; caption?: string }
       alive = false;
       chart?.destroy();
     };
-  }, [raw]);
+  }, [raw, themeTick]);
 
   return (
     <figure className="ax-fig">

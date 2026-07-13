@@ -16,11 +16,22 @@ type Spec = {
   vectors: Vec[];
 };
 
-// data-viz sequential blue ramp (100 → 700), same accessor as the dot-plot / field map.
-const RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
-function ramp(t: number): string {
-  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1);
-  return RAMP[Math.min(Math.floor(x), RAMP.length - 1)];
+// data-viz sequential blue ramp (100 → 700), same accessor as the dot-plot / field map. The LIGHT
+// ramp runs light → dark-navy (high magnitude is darkest); on the dark surface (--ax-surface ≈
+// #30302E) those darkest stops render dark-on-dark and vanish, so the dark theme uses a mirrored
+// ramp whose high-magnitude stops are BRIGHT and read against the dark background.
+const RAMP_LIGHT = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
+const RAMP_DARK = ["#22456e", "#2f5f97", "#3e7bc4", "#5497e6", "#7db4ef", "#a9cef7", "#d4e7fc"];
+function isDark(): boolean {
+  if (typeof document === "undefined") return false; // SSR / test guard
+  const t = document.documentElement.dataset.theme;
+  if (t === "dark") return true;
+  if (t === "light") return false;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+}
+function ramp(colors: string[], t: number): string {
+  const x = Math.max(0, Math.min(1, t)) * (colors.length - 1);
+  return colors[Math.min(Math.floor(x), colors.length - 1)];
 }
 
 // nice round tick step for a span, aiming for ~target divisions (shared idiom with volcano/manhattan).
@@ -75,6 +86,8 @@ export function Quiver({ spec: raw, caption }: { spec: string; caption?: string 
   const uid = useId().replace(/:/g, "");
   const gradId = `axquiver-${uid}`;
   const kindLabel = "矢量场 · quiver";
+  const dark = isDark();
+  const RAMP = dark ? RAMP_DARK : RAMP_LIGHT; // high-magnitude stops must read on the active surface
 
   let spec: Spec;
   try {
@@ -203,7 +216,7 @@ export function Quiver({ spec: raw, caption }: { spec: string; caption?: string 
             const x2 = x1 + dxPx;
             const y2 = y1 + dyPx;
             const len = Math.hypot(dxPx, dyPx);
-            const color = ramp((m - mMin) / mSpan);
+            const color = ramp(RAMP, (m - mMin) / mSpan);
             const title = (
               <title>{`x=${fmt(d.x)}, y=${fmt(d.y)} — (u ${fmt(d.u)}, v ${fmt(d.v)}) · |·| ${fmt(m)}${unit ? " " + unit : ""}`}</title>
             );
@@ -216,7 +229,7 @@ export function Quiver({ spec: raw, caption }: { spec: string; caption?: string 
               );
             }
             const ang = Math.atan2(dyPx, dxPx);
-            const headLen = Math.min(Math.max(len * 0.32, 3), 7);
+            const headLen = Math.min(Math.max(len * 0.32, 2), 7, len * 0.7); // never exceed ~70% of the shaft
             const hx1 = x2 - headLen * Math.cos(ang - HA);
             const hy1 = y2 - headLen * Math.sin(ang - HA);
             const hx2 = x2 - headLen * Math.cos(ang + HA);

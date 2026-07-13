@@ -42,12 +42,19 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
 
-function resolveRef(ref: unknown, idIndex: Map<string, number>, n: number): number | undefined {
+function resolveRef(
+  ref: unknown,
+  idIndex: Map<string, number>,
+  origToDedup: (number | undefined)[],
+): number | undefined {
   if (typeof ref === "string") {
     const k = ref.trim();
     return idIndex.has(k) ? idIndex.get(k) : undefined;
   }
-  if (typeof ref === "number" && Number.isInteger(ref) && ref >= 0 && ref < n) return ref;
+  // a numeric ref is a position in the ORIGINAL d.nodes array — translate it to the deduped
+  // index (undefined for a skipped/empty slot, matching an out-of-range ref).
+  if (typeof ref === "number" && Number.isInteger(ref) && ref >= 0 && ref < origToDedup.length)
+    return origToDedup[ref];
   return undefined;
 }
 
@@ -105,16 +112,29 @@ function build(raw: string): Result {
     return { error: "桑基图需要 nodes 数组与 links 数组" };
   }
 
-  // ── nodes: accept "name" or {id}; dedupe by id, keep first appearance. ──
+  // ── nodes: accept "name" or {id}; dedupe by id, keep first appearance. `origToDedup` maps each
+  // ORIGINAL d.nodes slot → its deduped index (a dup maps to the first occurrence; a skipped/empty
+  // slot → undefined), so a numeric link ref (a position in the author's original array) resolves to
+  // the RIGHT node even after dedup/skips — previously numeric refs indexed the deduped array and
+  // silently wired to the wrong node whenever any entry was dropped. ──
   const idIndex = new Map<string, number>();
   const names: string[] = [];
+  const origToDedup: (number | undefined)[] = [];
   for (const entry of d.nodes) {
     let id = "";
     if (typeof entry === "string") id = entry.trim();
     else if (entry && typeof entry === "object" && typeof (entry as { id?: unknown }).id === "string")
       id = (entry as { id: string }).id.trim();
-    if (!id || idIndex.has(id)) continue;
+    if (!id) {
+      origToDedup.push(undefined);
+      continue;
+    }
+    if (idIndex.has(id)) {
+      origToDedup.push(idIndex.get(id));
+      continue;
+    }
     idIndex.set(id, names.length);
+    origToDedup.push(names.length);
     names.push(id);
   }
   const n = names.length;
@@ -129,8 +149,8 @@ function build(raw: string): Result {
   const preds: number[][] = names.map(() => []);
   for (const l of d.links) {
     if (!l || typeof l !== "object") continue;
-    const s = resolveRef((l as { source?: unknown }).source, idIndex, n);
-    const t = resolveRef((l as { target?: unknown }).target, idIndex, n);
+    const s = resolveRef((l as { source?: unknown }).source, idIndex, origToDedup);
+    const t = resolveRef((l as { target?: unknown }).target, idIndex, origToDedup);
     const value = Number((l as { value?: unknown }).value);
     if (s === undefined || t === undefined || s === t || !Number.isFinite(value) || value <= 0) continue;
     if (reaches(t, s, adj)) continue; // would introduce a cycle — this diagram is acyclic by construction
@@ -227,7 +247,9 @@ function build(raw: string): Result {
         y,
         w: NODE_W,
         h,
-        color: i < CAT_LIGHT.length ? i : -1,
+        // cycle the palette (i % len) so a 9th+ node keeps a distinct hue instead of collapsing to
+        // one flat neutral that reads as "ungrouped"; position + ribbons still disambiguate repeats.
+        color: i % CAT_LIGHT.length,
         side: ci === 0 ? "L" : "R",
         through: through[i],
         inSum: inSum[i],

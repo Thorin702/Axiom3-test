@@ -874,6 +874,27 @@ function App() {
         return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps: st };
       })
     );
+    if (r?.status === "done" && r.synthesis) generateRecap(sessionId, g, r.synthesis);
+  }
+
+  // After a task produces a report, generate the chat-style wrap-up (what was done + key findings +
+  // suggested next steps) shown in the thread — the full report stays in the artifact panel. Runs
+  // AFTER the task is already "done" (non-blocking): the recap pops in a few seconds later. Falls back
+  // to the report's own opening lines if the model call fails, so the thread always reads conversationally.
+  async function generateRecap(sessionId: string, goal: string, report: string) {
+    const rep = (report || "").trim();
+    if (!rep) return;
+    setTasks((ts) => ts.map((x) => (x.id === sessionId ? { ...x, recapPending: true } : x)));
+    let recap = "";
+    try {
+      recap = await invoke<string>("recap_run", { goal, report: rep, model: taskModel || undefined });
+    } catch {
+      recap = "";
+    }
+    if (!recap.trim()) {
+      recap = rep.replace(/^#+\s.*$/gm, "").replace(/```[\s\S]*?```/g, "").trim().split(/\n\n/).slice(0, 2).join("\n\n").slice(0, 600);
+    }
+    setTasks((ts) => ts.map((x) => (x.id === sessionId ? { ...x, recap, recapPending: false } : x)));
   }
 
   // Read-only coding agent over a chosen workspace folder. Streams into the rail.
@@ -940,6 +961,7 @@ function App() {
         return { ...x, status, synthesis: r.synthesis, steps };
       })
     );
+    if (r?.status === "done" && r.synthesis) generateRecap(sessionId, g, r.synthesis);
   }
 
   async function cancelCheck() {
@@ -1950,11 +1972,24 @@ function App() {
                         ) : null
                       )}
 
-                      {/* When the artifact pane is open, the result + agents + provenance live
-                          THERE; the thread keeps the conversation (progress + reviewer). */}
+                      {/* When the artifact pane is open, the FULL report lives THERE; the thread keeps
+                          the conversation — a chat-style wrap-up (what was done + key findings + next
+                          steps) then a pointer into the panel. */}
+                      {showArtifactPane && (tk.recap || tk.recapPending) && (
+                        <div className="ax-recap">
+                          {tk.recap ? (
+                            <ArtifactBody text={tk.recap} />
+                          ) : (
+                            <p className="ax-recap__pending">
+                              <span className="ax-recap__dot" />
+                              {lang === "zh" ? "正在总结要点与下一步…" : "Summarizing key points & next steps…"}
+                            </p>
+                          )}
+                        </div>
+                      )}
                       {showArtifactPane && (
                         <button className="ax-artref" onClick={() => setRailOpen(true)}>
-                          {lang === "zh" ? "产物已生成 —— 见右侧「产物」面板 →" : "Artifact ready — see the Artifact panel on the right →"}
+                          {lang === "zh" ? "查看完整产物 · 见右侧「产物」面板 →" : "View the full artifact — Artifact panel on the right →"}
                         </button>
                       )}
 

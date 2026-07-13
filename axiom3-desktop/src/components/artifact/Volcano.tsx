@@ -73,15 +73,20 @@ export function Volcano({ spec: raw, caption }: { spec: string; caption?: string
       isFinite(g.lfc) &&
       typeof g.padj === "number" &&
       isFinite(g.padj) &&
-      g.padj >= 0,
+      g.padj >= 0 &&
+      g.padj <= 1,
   );
   if (clean.length === 0) {
     return <div className="ax-fig__err">火山图需要有效的 genes（每项含数值 lfc 与 0..1 的 padj）</div>;
   }
+  // significance cutoff on the -log10 scale; also the fallback ceiling when nothing is finite.
+  const yThresh = -Math.log10(pT);
   // padj === 0 -> -log10 diverges; represent as Infinity, later capped to the finite maximum.
   const rawY = clean.map((g) => (g.padj > 0 ? -Math.log10(g.padj) : Infinity));
   const finiteYs = rawY.filter((y) => isFinite(y) && y > 0);
-  const yFiniteMax = finiteYs.length ? Math.max(...finiteYs) : 1;
+  // when every gene has padj === 0 there is no finite max; anchor at the threshold (×1.1) so the
+  // capped points land just above the significance line rather than below it.
+  const yFiniteMax = finiteYs.length ? Math.max(...finiteYs) : yThresh * 1.1;
 
   type Pt = { gene: string; lfc: number; padj: number; y: number; cls: "up" | "down" | "ns" };
   const pts: Pt[] = clean.map((g, i) => {
@@ -98,7 +103,6 @@ export function Volcano({ spec: raw, caption }: { spec: string; caption?: string
   // domains: x symmetric around 0 (fold change), y from 0 up.
   const maxAbs = Math.max(...pts.map((p) => Math.abs(p.lfc)), lfcT);
   const xLim = Math.max(maxAbs * 1.05, lfcT * 1.4);
-  const yThresh = -Math.log10(pT);
   const yLim = Math.max(yFiniteMax, yThresh) * 1.08 || 1;
 
   // colors: warm up-reg / cool down-reg / grey n.s. (grey = theme-adaptive ink token).

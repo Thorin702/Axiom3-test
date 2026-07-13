@@ -1147,6 +1147,19 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   border: 0.5px dashed var(--ax-line); border-radius: 10px; background: var(--ax-surface-2);
   color: var(--ax-ink-soft); font-family: var(--ax-sans); font-size: 12.5px; }
 .ax-artref:hover { color: var(--ax-accent); border-color: var(--ax-accent); }
+
+/* end-of-task chat-style wrap-up (summary + suggested next steps), shown in the thread like a reply */
+.ax-recap { margin-top: 14px; padding: 2px 0 2px 14px; border-left: 2px solid var(--ax-accent-soft); }
+.ax-recap .ax-md { font-size: 13.5px; line-height: 1.72; color: var(--ax-ink); }
+.ax-recap .ax-md > *:first-child { margin-top: 0; }
+.ax-recap .ax-md > *:last-child { margin-bottom: 0; }
+.ax-recap .ax-md ul, .ax-recap .ax-md ol { margin: 6px 0 2px; padding-left: 18px; }
+.ax-recap .ax-md li { margin: 3px 0; }
+.ax-recap__pending { display: flex; align-items: center; gap: 8px; color: var(--ax-ink-faint);
+  font-size: 12.5px; font-family: var(--ax-sans); margin: 0; }
+.ax-recap__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ax-accent);
+  animation: ax-recap-pulse 1.1s ease-in-out infinite; }
+@keyframes ax-recap-pulse { 0%, 100% { opacity: 0.35; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
 .ax-chip.is-soon:hover { opacity: 0.7; }
 .ax-chip__d { color: var(--ax-ink-faint); }
 .ax-chip__x { border: none; background: none; color: var(--ax-ink-faint); cursor: pointer; font-size: 14px;

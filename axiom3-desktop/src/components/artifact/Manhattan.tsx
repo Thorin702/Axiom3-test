@@ -129,14 +129,32 @@ export function Manhattan({ spec: raw, caption }: { spec: string; caption?: stri
     .flatMap((b) => b.pts.map((p) => ({ x: xOf(b, p.pos), y: yOf(p.y), label: p.gene || p.snp || "", p })))
     .filter((d) => d.p.y >= thr && d.label)
     .sort((a, b) => a.x - b.x);
+  // Estimated half text width at 8.5px (CJK glyphs ≈ 1.8× a latin glyph) so labels never clip the edges.
+  const halfW = (s: string) => {
+    let wpx = 0;
+    for (const ch of s) wpx += /[⺀-￯]/.test(ch) ? 4.3 : 2.4;
+    return wpx;
+  };
+  const K = 4; // vertical stack slots before wrapping — caps the pile-up at the top clamp
   let prevX = -1e9;
-  let level = 0;
+  let run = 0;
   const labels = hits.map((d) => {
-    if (d.x - prevX < 34) level += 1;
-    else level = 0;
+    if (d.x - prevX < 34) run += 1;
+    else run = 0;
     prevX = d.x;
-    const ly = Math.max(padT + 6, d.y - 9 - level * 11);
-    return { ...d, ly };
+    const level = run % K; // wrap the vertical offset so labels don't all clamp to the same top y
+    const wrap = Math.floor(run / K);
+    const ly = clamp(d.y - 9 - level * 11, padT + 6, plotBottom);
+    // On collisions, nudge sideways and grow the text away from the point (alternate start/end)
+    // so labels sharing a row never sit on top of each other; first label stays centered.
+    const dir = run % 2 === 0 ? 1 : -1;
+    const anchor: "start" | "middle" | "end" = run === 0 ? "middle" : dir > 0 ? "start" : "end";
+    const hw = halfW(d.label);
+    const leftExt = anchor === "end" ? 2 * hw : anchor === "middle" ? hw : 0;
+    const rightExt = anchor === "start" ? 2 * hw : anchor === "middle" ? hw : 0;
+    const off = run === 0 ? 0 : dir * (3 + wrap * 5);
+    const lx = clamp(d.x + off, padL + leftExt, padL + plotW - rightExt);
+    return { ...d, ly, lx, anchor };
   });
 
   return (
@@ -209,8 +227,8 @@ export function Manhattan({ spec: raw, caption }: { spec: string; caption?: stri
           {/* labels for above-threshold loci only */}
           {labels.map((d, i) => (
             <g key={`lb${i}`}>
-              <line x1={d.x} y1={d.y - 4} x2={d.x} y2={d.ly + 1.5} stroke="var(--ax-line)" strokeWidth="0.5" />
-              <text x={d.x} y={d.ly} fontSize="8.5" textAnchor="middle" fill="var(--ax-ink)">{d.label}</text>
+              <line x1={d.x} y1={d.y - 4} x2={d.lx} y2={d.ly + 1.5} stroke="var(--ax-line)" strokeWidth="0.5" />
+              <text x={d.lx} y={d.ly} fontSize="8.5" textAnchor={d.anchor} fill="var(--ax-ink)">{d.label}</text>
             </g>
           ))}
         </svg>

@@ -312,6 +312,7 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
             const parts: ReactNode[] = [];
 
             // violin (behind everything) — only for raw groups, gated by show:["violin"]
+            let violinRendered = false;
             if (wantViolin && s.values && s.values.length >= 3) {
               const bw = bandwidth(s.values, s.q1, s.q3);
               if (bw > 0) {
@@ -320,6 +321,7 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
                   parts.push(
                     <path key="violin" d={path} fill={color} fillOpacity={0.14} stroke={color} strokeOpacity={0.6} strokeWidth="1" />,
                   );
+                  violinRendered = true;
                 }
               }
             }
@@ -350,8 +352,9 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
                   <line x1={x - boxHalf} y1={yMed} x2={x + boxHalf} y2={yMed} stroke={color} strokeWidth="1.8" />
                 </g>,
               );
-            } else if (!(wantViolin && s.values && s.values.length >= 3)) {
-              // no box requested and no violin will render for this group:
+            } else if (!violinRendered) {
+              // no box requested and no violin actually rendered for this group
+              // (not eligible, or degenerate zero-variance → bandwidth 0 → no path):
               // draw a minimal IQR + median mark so the slot isn't empty.
               parts.push(
                 <g key="minbox">

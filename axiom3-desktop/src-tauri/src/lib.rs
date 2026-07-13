@@ -97,6 +97,7 @@ pub fn run() {
             workbench::pause_run,
             workbench::resume_run,
             workbench::coding_run,
+            workbench::recap_run,
             workbench::import_document,
             workbench::vector_self_test,
             workbench::export_provenance,

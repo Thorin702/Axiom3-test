@@ -32,6 +32,7 @@ export function Protein({ source, caption }: { source: string; caption?: string 
   const [loading, setLoading] = useState(true);
   const [style, setStyle] = useState("cartoon");
   const [atoms, setAtoms] = useState<number | null>(null);
+  const [themeTick, setThemeTick] = useState(0);
   const src = source.trim();
   const isId = PDB_ID.test(src);
 
@@ -66,6 +67,9 @@ export function Protein({ source, caption }: { source: string; caption?: string 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const $3Dmol: any = (mod as any).default ?? mod;
         if (!alive || !ref.current) return;
+        // release any prior canvas/WebGL context before mounting a new viewer,
+        // otherwise 3Dmol stacks a second <canvas> in the same div and leaks a GL context
+        ref.current.innerHTML = "";
         viewer = $3Dmol.createViewer(ref.current, { backgroundColor: bg() });
         let pdb = src;
         if (isId) {
@@ -105,15 +109,44 @@ export function Protein({ source, caption }: { source: string; caption?: string 
     };
   }, [src, isId]);
 
+  // watch for OS/app theme flips (3Dmol bakes the background color at createViewer time)
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const bump = (): void => setThemeTick((n) => n + 1);
+    const mo = new MutationObserver(bump);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    mq?.addEventListener?.("change", bump);
+    return () => {
+      mo.disconnect();
+      mq?.removeEventListener?.("change", bump);
+    };
+  }, []);
+
+  // repaint the live viewer's background on theme change — no PDB re-fetch, no viewer rebuild
+  useEffect(() => {
+    const v = viewerRef.current;
+    if (!v) return;
+    try {
+      v.setBackgroundColor(bg());
+      v.render();
+    } catch {
+      /* ignore */
+    }
+  }, [themeTick]);
+
   return (
     <figure className="ax-fig">
       <div className="ax-fig__frame ax-fig__proteinframe">
         {err ? (
           <div className="ax-fig__err">结构无法渲染 · {err}</div>
         ) : (
-          <div ref={ref} className="ax-fig__protein">
+          <>
+            {/* ref div is owned exclusively by 3Dmol so it can be safely cleared on re-render;
+                the loading overlay lives outside it (positioned against the relative frame) */}
+            <div ref={ref} className="ax-fig__protein" />
             {loading && <span className="ax-fig__loading">加载结构…</span>}
-          </div>
+          </>
         )}
       </div>
       {!err && (

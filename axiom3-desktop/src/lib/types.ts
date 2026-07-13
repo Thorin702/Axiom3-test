@@ -154,6 +154,8 @@ export type Task = {
   deep?: boolean; // ran as an adaptive multi-agent (AB-MCTS) search
   result?: DraftCheck;
   synthesis?: string; // workflow runs: the folded multi-agent output (latest version)
+  recap?: string; // chat-style wrap-up (what was done + key findings + next steps), shown in the thread
+  recapPending?: boolean; // recap is being generated (brief, after the task completes)
   review?: string; // the reviewer agent's critique/findings (never a verdict)
   steps?: AgentStepView[]; // workflow runs: each sub-agent's output
   versions?: ArtifactVersion[]; // artifact history (v1…vN); present once iterated

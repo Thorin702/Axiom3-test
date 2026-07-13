@@ -31,9 +31,42 @@ function fmt(v: number): string {
   if (s.includes(".")) s = s.replace(/\.?0+$/, "");
   return s;
 }
-function truncate(s: string, max: number): string {
-  if (max <= 1) return s.length > 1 ? "…" : s;
-  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+// CJK / full-width glyphs render ~1em; Latin ~0.6em. Measure text width in px at a given fontSize
+// so gutters fit Chinese labels (the fixed 6.4px/char undercounts CJK ~2× and clips at negative x).
+function isWide(ch: string): boolean {
+  const c = ch.codePointAt(0) ?? 0;
+  return (
+    (c >= 0x1100 && c <= 0x115f) || // Hangul Jamo
+    (c >= 0x2e80 && c <= 0x303e) || // CJK radicals · Kangxi · CJK punctuation
+    (c >= 0x3041 && c <= 0x33ff) || // Hiragana · Katakana · CJK symbols
+    (c >= 0x3400 && c <= 0x4dbf) || // CJK ext A
+    (c >= 0x4e00 && c <= 0x9fff) || // CJK unified
+    (c >= 0xac00 && c <= 0xd7a3) || // Hangul syllables
+    (c >= 0xf900 && c <= 0xfaff) || // CJK compat ideographs
+    (c >= 0xfe30 && c <= 0xfe4f) || // CJK compat forms
+    (c >= 0xff00 && c <= 0xff60) || // full-width forms
+    (c >= 0xffe0 && c <= 0xffe6) || // full-width signs
+    (c >= 0x20000 && c <= 0x3fffd) // CJK ext B+
+  );
+}
+function textW(s: string, fontSize: number): number {
+  let w = 0;
+  for (const ch of s) w += isWide(ch) ? fontSize : fontSize * 0.6;
+  return w;
+}
+// Truncate to a pixel budget (CJK-aware), reserving room for the trailing ellipsis.
+function truncateToW(s: string, maxW: number, fontSize: number): string {
+  if (textW(s, fontSize) <= maxW) return s;
+  const ellW = textW("…", fontSize);
+  let w = 0;
+  let out = "";
+  for (const ch of s) {
+    const cw = isWide(ch) ? fontSize : fontSize * 0.6;
+    if (w + cw + ellW > maxW) break;
+    out += ch;
+    w += cw;
+  }
+  return out.length ? out + "…" : "…";
 }
 
 // Greedy label de-collision: keep every label ≥ gap apart within [top,bottom], nudging text
@@ -111,15 +144,15 @@ export function Slope({ spec, caption }: { spec: string; caption?: string }) {
   vMin -= pad;
   vMax += pad;
 
-  // ── layout ──
-  const charW = 6.4;
-  const maxLabelChars = 24;
-  const shown = rows.map((r) => truncate(r.label, maxLabelChars));
-  const maxLabelW = Math.max(0, ...shown.map((s) => s.length * charW));
+  // ── layout ── (labels + values render at fontSize 11; measure at that size, CJK-aware)
+  const labelFS = 11;
+  const maxLabelPx = 210; // pixel budget for a row label before it gets ellipsized
+  const shown = rows.map((r) => truncateToW(r.label, maxLabelPx, labelFS));
+  const maxLabelW = Math.max(0, ...shown.map((s) => textW(s, labelFS)));
   const leftValStrs = rows.map((r) => `${fmt(r.from)}${unit}`);
   const rightValStrs = rows.map((r) => `${fmt(r.to)}${unit}`);
-  const maxLeftValW = Math.max(0, ...leftValStrs.map((s) => s.length * charW));
-  const maxRightValW = Math.max(0, ...rightValStrs.map((s) => s.length * charW));
+  const maxLeftValW = Math.max(0, ...leftValStrs.map((s) => textW(s, labelFS)));
+  const maxRightValW = Math.max(0, ...rightValStrs.map((s) => textW(s, labelFS)));
 
   const leftGutter = Math.round(10 + maxLeftValW + 6 + maxLabelW + 6);
   const rightGutter = Math.round(10 + maxRightValW + 6 + maxLabelW + 6);
@@ -222,7 +255,7 @@ export function Slope({ spec, caption }: { spec: string; caption?: string }) {
           {rows.map((r, i) => {
             const vy = leftLabY[i];
             const dy = leftDotY[i];
-            const valW = leftValStrs[i].length * charW;
+            const valW = textW(leftValStrs[i], labelFS);
             return (
               <g key={`ll${i}`}>
                 {Math.abs(vy - dy) > 7 && (
@@ -250,7 +283,7 @@ export function Slope({ spec, caption }: { spec: string; caption?: string }) {
           {rows.map((r, i) => {
             const vy = rightLabY[i];
             const dy = rightDotY[i];
-            const valW = rightValStrs[i].length * charW;
+            const valW = textW(rightValStrs[i], labelFS);
             return (
               <g key={`rl${i}`}>
                 {Math.abs(vy - dy) > 7 && (

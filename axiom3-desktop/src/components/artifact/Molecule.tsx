@@ -14,6 +14,20 @@ function isDark(): boolean {
 export function Molecule({ smiles, caption }: { smiles: string; caption?: string }) {
   const ref = useRef<SVGSVGElement>(null);
   const [err, setErr] = useState(false);
+  const [themeTick, setThemeTick] = useState(0);
+
+  // re-render the structure when the OS/app theme flips (smiles-drawer bakes colors at draw time)
+  useEffect(() => {
+    const bump = (): void => setThemeTick((n) => n + 1);
+    const mo = new MutationObserver(bump);
+    mo.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    mq?.addEventListener?.("change", bump);
+    return () => {
+      mo.disconnect();
+      mq?.removeEventListener?.("change", bump);
+    };
+  }, []);
 
   useEffect(() => {
     if (!ref.current) return;
@@ -38,7 +52,7 @@ export function Molecule({ smiles, caption }: { smiles: string; caption?: string
     } catch {
       setErr(true);
     }
-  }, [smiles]);
+  }, [smiles, themeTick]);
 
   return (
     <figure className="ax-fig">

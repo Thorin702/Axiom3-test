@@ -2559,6 +2559,41 @@ async fn reframe_goal(provider: &str, model_id: &str, raw: &str, cancel: &Cancel
     Some(t.to_string())
 }
 
+const RECAP_SYSTEM: &str = "你是用户的科研助手，刚完成了用户交办的一项分析/研究任务，完整的产物报告在下面。请用**对话口吻**、面向用户写一段简短的收尾汇报（就像你在聊天里向他交代结果那样），包含两部分：\n\
+1) 先用 2-4 句话说清楚你这次实际做了什么、以及最关键的 1-3 个结论——可以引用报告里的具体数字/发现，但只挑最重要的，别罗列全部；\n\
+2) 然后另起一行，用「**建议的下一步**」作小标题，列出 2-3 条具体、可执行的后续方向（每条一句话，要是真正有价值的深化 / 验证 / 扩展，不是套话）。\n\
+硬性要求：不要复述报告全文，不要用一级标题(#)，不要编造报告里没有的内容或数字，不要输出任何图表代码块。全程简体中文，语气自然、专业、简洁。";
+
+/// Generate a short, conversational wrap-up (what was done + key findings + suggested next steps)
+/// over a finished report — the chat-style summary shown in the thread while the FULL report lives in
+/// the artifact panel. Best-effort: returns "" on any failure so the frontend can fall back to a
+/// trimmed slice of the report rather than block the thread. Uses the FAST model (mode "auto").
+#[tauri::command]
+pub async fn recap_run(
+    app: tauri::AppHandle,
+    goal: String,
+    report: String,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<String, String> {
+    use axiom_orchestrate::coding::CodingModel;
+    let report_t = report.trim();
+    if report_t.is_empty() {
+        return Ok(String::new());
+    }
+    let (provider, model_id) = resolve_model(&app, provider, model, false, "auto")?;
+    let m = ProviderModel { provider, model: model_id, timeout_s: 60 };
+    let user = format!(
+        "用户的原始请求：\n{}\n\n=== 完整报告 ===\n{}\n=== 报告结束 ===\n\n现在写你的收尾汇报：",
+        goal.trim().chars().take(600).collect::<String>(),
+        report_t.chars().take(9000).collect::<String>(),
+    );
+    match m.complete(RECAP_SYSTEM, &user, &Cancel::new()).await {
+        Ok(t) if !t.trim().is_empty() => Ok(t.trim().to_string()),
+        _ => Ok(String::new()),
+    }
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri command args bind 1:1 to JS invoke keys
 pub async fn coding_run(

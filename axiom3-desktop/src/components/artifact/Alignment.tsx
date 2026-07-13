@@ -41,6 +41,24 @@ function contrastText(hex: string): string {
   return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "#1b1f1e" : "#f6f6f3";
 }
 
+// CJK / full-width codepoints render ~1em wide; Latin/digits ~0.55em. Used to fit right-anchored
+// sequence ids inside the left gutter by estimated rendered width (a char-count cap over-clips CJK).
+const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿ꀀ-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦]/;
+function fitId(id: string, fs: number, budget: number): string {
+  const cw = (ch: string) => (WIDE.test(ch) ? fs : fs * 0.55);
+  let total = 0;
+  for (const ch of id) total += cw(ch);
+  if (total <= budget) return id;
+  const ell = fs * 0.55; // width reserved for the trailing "…"
+  let acc = 0, out = "";
+  for (const ch of id) {
+    if (acc + cw(ch) + ell > budget) break;
+    acc += cw(ch);
+    out += ch;
+  }
+  return out + "…";
+}
+
 const MAX_COLS = 160;
 const MAX_ROWS = 40;
 
@@ -55,8 +73,12 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
   if (!Array.isArray(spec.seqs) || spec.seqs.length === 0) {
     return <div className="ax-fig__err">序列比对需要 seqs 序列数组</div>;
   }
-  const clean = spec.seqs.filter((s) => s && typeof s.id === "string" && typeof s.seq === "string");
-  if (clean.length === 0) return <div className="ax-fig__err">seqs 需要 {"{ id, seq }"} 字段</div>;
+  // Only `seq` is required; a missing/non-string id gets a synthesized placeholder so the row is
+  // still drawn and counted (dropping it would silently skew the computed consensus/conservation).
+  const clean = spec.seqs
+    .filter((s) => s && typeof s.seq === "string")
+    .map((s, i) => ({ id: typeof s.id === "string" ? s.id : `seq${i + 1}`, seq: s.seq }));
+  if (clean.length === 0) return <div className="ax-fig__err">seqs 需要 {"{ seq }"} 字段</div>;
 
   const maxLen = clean.reduce((m, s) => Math.max(m, s.seq.length), 0);
   if (maxLen === 0) return <div className="ax-fig__err">序列为空,无可比对的位点</div>;
@@ -160,7 +182,7 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
     <figure className="ax-fig">
       <div className="ax-fig__frame" style={{ overflowX: "auto", justifyContent: "flex-start" }}>
         <svg viewBox={`0 0 ${w} ${h}`} width={w} height={h} role="img"
-          aria-label={caption || spec.title || "multiple sequence alignment"} style={{ maxWidth: "100%" }}>
+          aria-label={caption || spec.title || "multiple sequence alignment"} style={{ maxWidth: "none" }}>
           {spec.title && <text x={2} y={14} fontSize="12" fontWeight="600" fill="var(--ax-ink)">{spec.title}</text>}
 
           {/* coordinate ruler (alignment columns, numbered from `start`) */}
@@ -187,7 +209,7 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
           {/* sequence rows */}
           {rows.map((r, i) => (
             <text key={`id${i}`} x={padL - 8} y={gridTop + i * rowH + rowH * 0.72} fontSize="9" textAnchor="end" fill="var(--ax-ink-soft)">
-              {r.id.length > 14 ? r.id.slice(0, 13) + "…" : r.id}
+              {fitId(r.id, 9, padL - 16)}
               <title>{r.id}</title>
             </text>
           ))}

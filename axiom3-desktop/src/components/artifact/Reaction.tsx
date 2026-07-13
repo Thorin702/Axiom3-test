@@ -82,10 +82,15 @@ const PAD = 12;
 const TOP = 12;
 const BOT = 12;
 
-// rough average glyph advance so the arrow spans its labels instead of them
-// bleeding over the neighbouring molecules (Arial ~0.56em average advance).
+// rough glyph advance so the arrow spans its labels instead of them bleeding
+// over the neighbouring molecules. Latin averages ~0.56em, but full-width CJK
+// glyphs are ~1em, so sum per-character advances instead of a flat average —
+// otherwise Chinese reagent/condition labels overflow the arrow region.
+const CJK = /[⺀-鿿豈-﫿＀-￯　-〿]/;
 function estTextW(s: string, fontSize: number): number {
-  return s.length * fontSize * 0.56;
+  let w = 0;
+  for (const ch of s) w += fontSize * (CJK.test(ch) ? 1.0 : 0.56);
+  return w;
 }
 
 type SpeciesBox = { key: string; smiles: string; x: number; side: "reactant" | "product" };

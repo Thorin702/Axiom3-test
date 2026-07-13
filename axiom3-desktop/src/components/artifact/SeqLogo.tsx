@@ -37,10 +37,40 @@ const GROUP_LIGHT: Record<string, string> = { polar: "#008300", neutral: "#4a3aa
 const GROUP_DARK: Record<string, string> = { polar: "#199e70", neutral: "#9085e9", basic: "#3987e5", acidic: "#e66767", hydro: "var(--ax-ink)" };
 const GROUP_LABEL: Record<string, string> = { polar: "极性 polar", neutral: "中性 neutral", basic: "碱性 basic", acidic: "酸性 acidic", hydro: "疏水 hydrophobic" };
 
-// glyph metrics: text drawn at font-size FS has its cap-height ≈ CAP above the baseline; a
-// vertical scale of height/CAP makes a capital letter exactly `height` px tall.
+// glyph metrics: text drawn at font-size FS (in the pinned bold font below) has its cap-height ≈ CAP
+// above the baseline; a vertical scale of height/CAP makes a capital letter exactly `height` px tall.
+// The font is PINNED (not inherited) so the measured natural width and CAP stay consistent.
 const FS = 100;
-const CAP = 71;
+const CAP = 71; // Helvetica/Arial bold cap-height at FS=100 (≈0.717·em)
+const LOGO_FONT_FAMILY = "'Helvetica Neue', Helvetica, Arial, sans-serif";
+
+// Measure a glyph's NATURAL advance width at FS in the pinned font (memoized). A seqlogo letter must
+// fill its cell width AND its information-content height by scaling BOTH axes from the glyph's true
+// proportions — NOT by forcing textLength on a single glyph (which distorts the letter into a thin,
+// stretched shape). Falls back to a typical cap width when canvas is unavailable (tests/SSR).
+const glyphWCache = new Map<string, number>();
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+function glyphWidth(ch: string): number {
+  const cached = glyphWCache.get(ch);
+  if (cached != null) return cached;
+  if (measureCtx === undefined) {
+    try {
+      const cv = document.createElement("canvas");
+      measureCtx = cv.getContext("2d");
+      if (measureCtx) measureCtx.font = `700 ${FS}px ${LOGO_FONT_FAMILY}`;
+    } catch {
+      measureCtx = null;
+    }
+  }
+  let w = 62; // fallback ≈ a typical uppercase advance at FS=100
+  if (measureCtx) {
+    measureCtx.font = `700 ${FS}px ${LOGO_FONT_FAMILY}`;
+    const m = measureCtx.measureText(ch).width;
+    if (Number.isFinite(m) && m > 1) w = m;
+  }
+  glyphWCache.set(ch, w);
+  return w;
+}
 
 function computeColumn(col: unknown, alphabet: string[], maxBits: number): Column {
   const acc: Record<string, number> = {};
@@ -103,8 +133,8 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
   const plotH = 156;
   const rulerH = 20;
   const legendH = isProtein ? 22 : 20;
-  const colPitch = 30;
-  const letterW = 24;
+  const colPitch = 32;
+  const letterW = 27; // fills most of the column so letters read wide, not thin & stretched
   const inset = (colPitch - letterW) / 2;
   const n = cols.length;
   const plotW = n * colPitch;
@@ -172,23 +202,29 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
                   const yTop = y0 - cum * scaleY;
                   const height = yBottom - yTop;
                   if (height < 0.5) return null;
+                  // Fill the cell by scaling the glyph on BOTH axes from its true proportions:
+                  // sx maps the glyph's natural advance to letterW, sy maps cap-height to `height`.
+                  // No textLength → the letter stays a clean, undistorted glyph at any height.
+                  const sx = letterW / glyphWidth(s.res);
                   const sy = height / CAP;
                   return (
-                    <text
+                    <g
                       key={`l${i}_${j}`}
-                      x={0}
-                      y={0}
-                      fontSize={FS}
-                      fontWeight="700"
-                      textAnchor="start"
-                      fill={colorOf(s.res)}
-                      textLength={letterW}
-                      lengthAdjust="spacingAndGlyphs"
-                      transform={`translate(${colLeft(i)}, ${yBottom}) scale(1, ${sy})`}
+                      transform={`translate(${colLeft(i)}, ${yBottom}) scale(${sx}, ${sy})`}
                     >
-                      <title>{`位置 ${start + i} · ${s.res} — 频率 ${(s.p * 100).toFixed(1)}% · ${s.bits.toFixed(2)} bits`}</title>
-                      {s.res}
-                    </text>
+                      <text
+                        x={0}
+                        y={0}
+                        fontSize={FS}
+                        fontWeight="700"
+                        fontFamily={LOGO_FONT_FAMILY}
+                        textAnchor="start"
+                        fill={colorOf(s.res)}
+                      >
+                        <title>{`位置 ${start + i} · ${s.res} — 频率 ${(s.p * 100).toFixed(1)}% · ${s.bits.toFixed(2)} bits`}</title>
+                        {s.res}
+                      </text>
+                    </g>
                   );
                 })}
               </g>

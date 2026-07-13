@@ -33,14 +33,22 @@ export function DotPlot({ spec: raw, caption }: { spec: string; caption?: string
     return <div className="ax-fig__err">点图需要 rows / cols / cells</div>;
   }
 
-  const padL = 96; // row labels
+  // row-label gutter sized from the data (CJK chars ~2x width) so long cell-type names don't clip
+  const rowLen = (s: string) => {
+    let n = 0;
+    for (const ch of String(s)) n += /[⺀-鿿＀-￯　-〿]/.test(ch) ? 2 : 1;
+    return n;
+  };
+  const maxRowLen = Math.max(1, ...spec.rows.map(rowLen));
+  const padL = Math.min(240, Math.max(72, 10 + maxRowLen * 6.2)); // row labels
   const padB = 70; // col labels (rotated)
   const padT = spec.title ? 26 : 10;
   const padR = 92; // legends
   const cell = 24;
   const rMax = 9;
   const w = padL + spec.cols.length * cell + padR;
-  const h = padT + spec.rows.length * cell + padB;
+  const legendBottom = padT + 100 + RAMP.length * 7 + 6; // color legend extends past a short grid
+  const h = Math.max(padT + spec.rows.length * cell + padB, legendBottom);
   const cx = (c: number) => padL + c * cell + cell / 2;
   const cy = (r: number) => padT + r * cell + cell / 2;
 
@@ -65,10 +73,13 @@ export function DotPlot({ spec: raw, caption }: { spec: string; caption?: string
           {/* dots */}
           {spec.cells.map((d, i) => {
             if (d.r < 0 || d.r >= spec.rows.length || d.c < 0 || d.c >= spec.cols.length) return null;
-            const r = 1.5 + Math.max(0, Math.min(1, d.size)) * rMax;
+            // coerce missing / nonnumeric encodings so a bad cell can't NaN the ramp or radius
+            const col = Number.isFinite(d.color) ? d.color : 0;
+            const sz = Number.isFinite(d.size) ? d.size : 0;
+            const r = 1.5 + Math.max(0, Math.min(1, sz)) * rMax;
             return (
-              <circle key={i} cx={cx(d.c)} cy={cy(d.r)} r={r} fill={ramp(d.color)} stroke="var(--ax-surface)" strokeWidth="0.5">
-                <title>{`${spec.rows[d.r]} · ${spec.cols[d.c]} — ${spec.sizeLabel ?? "fraction"} ${(d.size * 100).toFixed(0)}% · ${spec.colorLabel ?? "expr"} ${d.color.toFixed(2)}`}</title>
+              <circle key={i} cx={cx(d.c)} cy={cy(d.r)} r={r} fill={ramp(col)} stroke="var(--ax-surface)" strokeWidth="0.5">
+                <title>{`${spec.rows[d.r]} · ${spec.cols[d.c]} — ${spec.sizeLabel ?? "fraction"} ${(sz * 100).toFixed(0)}% · ${spec.colorLabel ?? "expr"} ${col.toFixed(2)}`}</title>
               </circle>
             );
           })}

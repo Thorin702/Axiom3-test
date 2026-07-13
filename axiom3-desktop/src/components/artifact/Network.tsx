@@ -14,7 +14,9 @@ type NodeSpec = { id?: unknown; group?: unknown; value?: unknown };
 type EdgeSpec = { source?: unknown; target?: unknown; weight?: unknown; sign?: unknown };
 type Spec = { title?: string; directed?: boolean; nodes?: NodeSpec[]; edges?: EdgeSpec[] };
 
-// categorical identity palette (fixed order, indexed by group first-appearance; never cycled).
+// categorical identity palette (fixed order, indexed by group first-appearance). Past the 8 slots
+// the palette CYCLES (gi % len) and wrapped groups gain a distinguishing ring (see ringDash) so
+// identity-by-color survives instead of collapsing to one neutral swatch.
 const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
 const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
 function isDark(): boolean {
@@ -255,9 +257,16 @@ function build(raw: string): Result {
   // right-side legend column: width from the longest group label AND (when directed) the
   // edge-semantics rows; height must cover the whole legend so nothing clips at the viewBox edge.
   const arrowLabel = directed ? (arrowSigned ? "激活 activation" : "指向 directed") : null;
-  const legendChars = Math.max(4, ...groups.map((g) => g.length));
+  // CJK-aware legend width: full-width glyphs advance ~11px, not ~6.6, so Chinese group labels don't
+  // clip at the viewBox right edge (outer SVG overflow is hidden).
+  const legendTextW = (s: string): number => {
+    let wpx = 0;
+    for (const ch of s) wpx += /[⺀-鿿＀-￯　-〿]/.test(ch) ? 11 : 6.6;
+    return wpx;
+  };
+  const legendMaxW = Math.max(26, ...groups.map(legendTextW));
   const edgeLegendMin = directed ? 138 : 0; // room for "激活 activation" / "抑制 repression"
-  const padR = Math.round(Math.min(210, Math.max(96, legendChars * 6.6 + 30, edgeLegendMin)));
+  const padR = Math.round(Math.min(230, Math.max(96, legendMaxW + 30, edgeLegendMin)));
   const w = padL + drawW + padR;
   const groupTop = padT + 4;
   let legendBottom = groupTop + groups.length * 17 + 4;
@@ -339,7 +348,10 @@ export function Network({ spec, caption }: { spec: string; caption?: string }) {
   if ("error" in res) return <div className="ax-fig__err">{res.error}</div>;
 
   const cat = isDark() ? CAT_DARK : CAT_LIGHT;
-  const groupColor = (gi: number): string => (gi < cat.length ? cat[gi] : "var(--ax-lamp-neutral)");
+  // Cycle the palette past 8 groups (was: collapse to one neutral → 9+ groups indistinguishable);
+  // wrapped groups (2nd+ cycle) get a dashed ring so a repeated hue is still tellable apart.
+  const groupColor = (gi: number): string => (gi < 0 ? "var(--ax-lamp-neutral)" : cat[gi % cat.length]);
+  const groupDash = (gi: number): string | undefined => (gi >= cat.length ? "3 2.5" : undefined);
   const label = caption || res.title || "network";
 
   const legendX = res.padL + res.drawW + 12;
@@ -396,6 +408,9 @@ export function Network({ spec, caption }: { spec: string; caption?: string }) {
             <g key={`n${i}`}>
               <title>{`${nd.id} · ${nd.group} · value ${fmt(nd.value)} · degree ${nd.degree}`}</title>
               <circle cx={nd.x} cy={nd.y} r={nd.r} fill={groupColor(nd.gi)} stroke="var(--ax-surface)" strokeWidth={1.5} fillOpacity={0.92} />
+              {nd.gi >= cat.length && (
+                <circle cx={nd.x} cy={nd.y} r={nd.r + 2.2} fill="none" stroke={groupColor(nd.gi)} strokeWidth={1} strokeDasharray={groupDash(nd.gi)} />
+              )}
               <text
                 x={nd.x}
                 y={nd.y + nd.r + 11}
@@ -416,6 +431,9 @@ export function Network({ spec, caption }: { spec: string; caption?: string }) {
           {res.groups.map((g, i) => (
             <g key={`lg${i}`}>
               <circle cx={legendX + 5} cy={groupTop + i * 17 + 4} r={5} fill={groupColor(i)} fillOpacity={0.92} />
+              {i >= cat.length && (
+                <circle cx={legendX + 5} cy={groupTop + i * 17 + 4} r={6.5} fill="none" stroke={groupColor(i)} strokeWidth={1} strokeDasharray="3 2.5" />
+              )}
               <text x={legendX + 15} y={groupTop + i * 17 + 7.5} fontSize="9.5" fill="var(--ax-ink-soft)">
                 {g === "—" ? "（未分组）" : g}
               </text>

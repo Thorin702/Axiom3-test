@@ -130,16 +130,38 @@ export function Spectrum({ spec: raw, caption }: { spec: string; caption?: strin
   // top-N peaks to annotate (by intensity, data-defined). Greedy vertical stagger by x so close
   // labels don't collide; every label still sits over its own peak.
   const N = typeof spec.labelTop === "number" && spec.labelTop > 0 ? Math.floor(spec.labelTop) : 0;
-  const topPeaks = [...pts].sort((a, b) => b.y - a.y).slice(0, N);
+  // candidates for labelling: on a continuous trace (ir/uv) sampled densely, restrict to LOCAL
+  // MAXIMA — points strictly greater than both x-neighbors — so N labels mark N DISTINCT bands
+  // rather than N samples piled on one apex. Discrete sticks (ms/nmr) are each already a peak.
+  let candidates = pts;
+  if (isLine) {
+    const byX = [...pts].sort((a, b) => a.x - b.x);
+    const maxima = byX.filter((p, i) => i > 0 && i < byX.length - 1 && p.y > byX[i - 1].y && p.y > byX[i + 1].y);
+    if (maxima.length > 0) candidates = maxima; // fall back to raw points if the trace is monotone/flat
+  }
+  const topPeaks = [...candidates].sort((a, b) => b.y - a.y).slice(0, N);
   const ordered = topPeaks.map((p) => ({ p, px: xTo(p.x), py: yTo(p.y) })).sort((a, b) => a.px - b.px);
+  const topBand = y0 + 8;
   let prevX = -1e9;
   let level = 0;
+  let clamped = 0; // consecutive labels with no vertical room left → fan out instead of overprint
   const labels = ordered.map((d) => {
     if (d.px - prevX < 30) level += 1;
     else level = 0;
     prevX = d.px;
-    const ly = Math.max(y0 + 8, d.py - 7 - level * 11);
-    return { ...d, ly };
+    const desired = d.py - 7 - level * 11;
+    if (desired >= topBand) {
+      clamped = 0;
+      return { ...d, ly: desired, dx: 0, anchor: "middle" as const };
+    }
+    // no headroom to stack higher: fan close, tall peaks' labels HORIZONTALLY (alternate side with
+    // start/end anchor) and step each down a touch so they never collapse onto the same ~1px band.
+    const rightSide = clamped % 2 === 0;
+    const dx = rightSide ? 4 : -4;
+    const anchor = rightSide ? ("start" as const) : ("end" as const);
+    const ly = topBand + clamped * 10;
+    clamped += 1;
+    return { ...d, ly, dx, anchor };
   });
 
   // polyline path for continuous spectra (sorted by data-x so the curve is a proper trace).
@@ -207,9 +229,9 @@ export function Spectrum({ spec: raw, caption }: { spec: string; caption?: strin
           {/* top-N peak annotations (value at the peak x; connector when raised to clear overlap) */}
           {labels.map((d, i) => (
             <g key={`lb${i}`}>
-              {d.ly < d.py - 8 && <line x1={d.px} y1={d.py - 3} x2={d.px} y2={d.ly + 1.5} stroke="var(--ax-line)" strokeWidth="0.5" />}
+              {d.ly < d.py - 8 && <line x1={d.px} y1={d.py - 3} x2={d.px + d.dx} y2={d.ly + 1.5} stroke="var(--ax-line)" strokeWidth="0.5" />}
               <circle cx={d.px} cy={d.py} r={1.8} fill="var(--ax-accent)" />
-              <text x={d.px} y={d.ly} fontSize="8.5" textAnchor="middle" fill="var(--ax-ink)">{trim(d.p.x)}</text>
+              <text x={d.px + d.dx} y={d.ly} fontSize="8.5" textAnchor={d.anchor} fill="var(--ax-ink)">{trim(d.p.x)}</text>
             </g>
           ))}
         </svg>

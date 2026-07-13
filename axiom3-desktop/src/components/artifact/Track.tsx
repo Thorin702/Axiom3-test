@@ -39,6 +39,26 @@ function niceStep(range: number, count: number): number {
   return s * mag;
 }
 
+// CJK-aware SVG text width estimate: full-width glyphs (CJK/Kana/Hangul) ≈ fontSize px,
+// Latin/other ≈ 0.6·fontSize — so a "激酶结构域" label is not undercounted like Latin.
+function isFullWidth(cp: number): boolean {
+  return (
+    (cp >= 0x1100 && cp <= 0x115f) || // Hangul Jamo
+    (cp >= 0x2e80 && cp <= 0xa4cf) || // CJK radicals … Yi
+    (cp >= 0xac00 && cp <= 0xd7a3) || // Hangul syllables
+    (cp >= 0xf900 && cp <= 0xfaff) || // CJK compat ideographs
+    (cp >= 0xfe30 && cp <= 0xfe4f) || // CJK compat forms
+    (cp >= 0xff00 && cp <= 0xff60) || // fullwidth forms
+    (cp >= 0xffe0 && cp <= 0xffe6) ||
+    (cp >= 0x20000 && cp <= 0x3fffd) // CJK ext B+
+  );
+}
+function textW(s: string, fontSize: number): number {
+  let w = 0;
+  for (const ch of s) w += isFullWidth(ch.codePointAt(0) ?? 0) ? fontSize : 0.6 * fontSize;
+  return w;
+}
+
 // perceptual luminance of an #rrggbb fill → pick a readable label ink for text drawn on it.
 function inkOn(hex: string): string {
   const h = hex.replace("#", "");
@@ -119,7 +139,7 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
   pm.sort((a, b) => a.x - b.x);
   const rowLastX: number[] = [];
   for (const m of pm) {
-    const halfW = Math.max(11, m.label.length * 2.9 + 4);
+    const halfW = Math.max(11, textW(m.label, 8.5) / 2 + 4); // CJK-aware: full-width ~0.5·fs/char, Latin ~0.3·fs
     let row = 0;
     while (row < rowLastX.length && m.x - rowLastX[row] < halfW) row += 1;
     m.row = row;
@@ -190,7 +210,7 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
             const dw = Math.max(2, resX(to) - x);
             const color = cat[i % cat.length];
             const name = String(dm.name ?? "");
-            const fits = dw - 6 >= name.length * 5.6;
+            const fits = dw - 6 >= textW(name, 9); // CJK-aware: full-width ~9px/char, Latin ~5.4px/char
             return (
               <g key={`dm${i}`}>
                 <rect x={x} y={backboneY - domainH / 2} width={dw} height={domainH} rx={3} fill={color} stroke="var(--ax-surface)" strokeWidth={0.75}>

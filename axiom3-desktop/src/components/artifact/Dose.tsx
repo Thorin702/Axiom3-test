@@ -194,7 +194,9 @@ export function Dose({ spec: raw, caption }: { spec: string; caption?: string })
   const plotW = 430;
   const plotH = 300;
   const w = padL + plotW + padR;
-  const h = padT + plotH + padB;
+  // legend grows one ~30px row per curve (name + IC50 sub-line); size the canvas so many
+  // curves are never clipped below the viewBox (cf. Roc.tsx).
+  const h = Math.max(padT + plotH + padB, padT + 6 + curves.length * 30 + 12);
   const x0 = padL;
   const y0 = padT;
   const plotBottom = y0 + plotH;

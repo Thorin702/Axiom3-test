@@ -147,8 +147,11 @@ export function Band({ spec: raw, caption }: { spec: string; caption?: string })
     const maxX = w - padR;
     let row: Chip[] = [];
     let cursor = padL;
+    // CJK glyphs at fontSize 10.5 render ~10.5px wide vs ~6.2px for Latin; measure per-char
+    // so Chinese series names aren't under-budgeted (which overprints the next legend chip).
+    const cw = (ch: string): number => (/[　-鿿＀-￯]/.test(ch) ? 10.5 : 6.2);
     for (const sd of seriesData) {
-      const tw = sd.name.length * 6.2 + 32;
+      const tw = [...sd.name].reduce((a, ch) => a + cw(ch), 0) + 32;
       if (cursor + tw > maxX && row.length > 0) {
         legendRows.push(row);
         row = [];

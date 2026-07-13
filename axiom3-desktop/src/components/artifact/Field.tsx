@@ -153,8 +153,10 @@ export function Field({ spec: raw, caption }: { spec: string; caption?: string }
   const plotX0 = padL;
   const plotY0 = padT;
 
-  const px = (v: number) => plotX0 + ((v - xMin) / (xMax - xMin)) * plotW;
-  const py = (v: number) => plotY0 + plotH - ((v - yMin) / (yMax - yMin)) * plotH; // physical y up
+  const xDen = (xMax - xMin) || 1;
+  const yDen = (yMax - yMin) || 1;
+  const px = (v: number) => plotX0 + ((v - xMin) / xDen) * plotW;
+  const py = (v: number) => plotY0 + plotH - ((v - yMin) / yDen) * plotH; // physical y up
   const gpx = (ix: number) => px(x[ix]);
   const gpy = (iy: number) => py(y[iy]);
 
