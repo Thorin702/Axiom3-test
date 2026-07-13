@@ -1264,6 +1264,35 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-modepick__txt { display: flex; flex-direction: column; min-width: 0; }
 .ax-modepick__txt b { font-size: 13px; font-weight: 600; line-height: 1.2; }
 .ax-modepick__txt span { font-size: 11px; color: var(--ax-ink-faint); }
+/* mode picker collapsed to an icon-only button */
+.ax-modepick__btn.is-icon { padding: 0; width: 30px; height: 30px; justify-content: center; gap: 0; }
+
+/* context-window meter (composer, left of the mode picker) */
+.ax-ctx { position: relative; }
+.ax-ctx__btn { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 9px; line-height: 1;
+  border-radius: 9px; border: 0.5px solid var(--ax-line); background: var(--ax-paper); color: var(--ax-ink-soft);
+  cursor: pointer; transition: background .12s ease, color .12s ease, border-color .12s ease; }
+.ax-ctx__btn:hover, .ax-ctx__btn.on { background: var(--ax-surface); color: var(--ax-ink); }
+.ax-ctx__bar { width: 34px; height: 5px; border-radius: 3px; background: var(--ax-line); overflow: hidden; }
+.ax-ctx__fill { display: block; height: 100%; background: var(--ax-accent); border-radius: 3px; }
+.ax-ctx__pct { font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.ax-ctx__scrim { position: fixed; inset: 0; z-index: 40; }
+.ax-ctx__panel { position: absolute; bottom: calc(100% + 8px); right: 0; z-index: 41; width: 270px;
+  padding: 12px 13px; background: var(--ax-surface); border: 1px solid var(--ax-line); border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(0,0,0,.18); }
+.ax-ctx__head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px;
+  font-weight: 600; color: var(--ax-ink); margin-bottom: 9px; }
+.ax-ctx__total { font-size: 11.5px; font-weight: 400; color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
+.ax-ctx__track { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--ax-line); margin-bottom: 10px; }
+.ax-ctx__seg { height: 100%; }
+.ax-ctx__seg--free { background: var(--ax-surface-2); }
+.ax-ctx__list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+.ax-ctx__list li { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+.ax-ctx__dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.ax-ctx__name { color: var(--ax-ink); }
+.ax-ctx__val { margin-left: auto; color: var(--ax-ink-soft); font-variant-numeric: tabular-nums; }
+.ax-ctx__p { width: 42px; text-align: right; color: var(--ax-ink-faint); font-variant-numeric: tabular-nums; }
+.ax-ctx__note { margin: 10px 0 0; font-size: 10.5px; color: var(--ax-ink-faint); line-height: 1.4; }
 
 /* ── session settings popover (composer) ─────────────────────────── */
 .ax-cfg { position: relative; display: inline-flex; }

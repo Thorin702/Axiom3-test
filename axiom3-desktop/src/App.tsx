@@ -12,6 +12,7 @@ import { ReviewerPanel } from "./components/ReviewerPanel";
 import { AgentSteps } from "./components/AgentSteps";
 import { ThreadActivity } from "./components/ThreadActivity";
 import { RunStatusPill } from "./components/RunStatusPill";
+import { ContextWindow } from "./components/ContextWindow";
 import { ResizeHandle } from "./components/ResizeHandle";
 import { SessionSettings, DEFAULT_CFG, type SessionCfg } from "./components/SessionSettings";
 import { runStore } from "./lib/runStore";
@@ -31,7 +32,7 @@ import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, BookOpen, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
   Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
-  MoreHorizontal, Pencil, Mic, ChevronDown, Info, Pause, Play, type LucideIcon,
+  MoreHorizontal, Pencil, Mic, Info, Pause, Play, type LucideIcon,
 } from "lucide-react";
 
 // Composer modes (the icon-button popover, Claude-style). Each maps to backend behaviour:
@@ -1203,19 +1204,25 @@ function App() {
               {/* Mode picker: a compact icon button that expands to choose 自动/研究/分析
                   (Claude-style). The backend chooses thinking vs non-thinking per mode. */}
               <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <ContextWindow
+                  run={liveRuns.find((r) => r.id === (activeTask?.liveRunId ?? activeTask?.id))}
+                  specialist={!!sessionCfg.specialist}
+                  memory={sessionCfg.memory}
+                  lang={lang}
+                />
                 <div className="ax-modepick">
                   {(() => {
                     const cur = MODES.find((m) => m.k === mode) ?? MODES[0];
                     return (
                       <button
-                        className={`ax-modepick__btn ${modeMenuOpen ? "on" : ""}`}
+                        className={`ax-modepick__btn is-icon ${modeMenuOpen ? "on" : ""}`}
                         onClick={() => setModeMenuOpen((o) => !o)}
                         aria-haspopup="listbox"
                         aria-expanded={modeMenuOpen}
-                        title={lang === "zh" ? "选择模式" : "Choose mode"}
+                        title={`${lang === "zh" ? "模式" : "Mode"} · ${lang === "zh" ? cur.zh : cur.en}`}
+                        aria-label={`${lang === "zh" ? "模式" : "Mode"}: ${lang === "zh" ? cur.zh : cur.en}`}
                       >
-                        <cur.Icon size={14} aria-hidden /> {lang === "zh" ? cur.zh : cur.en}
-                        <ChevronDown size={13} aria-hidden style={{ opacity: 0.6 }} />
+                        <cur.Icon size={16} aria-hidden />
                       </button>
                     );
                   })()}
