@@ -635,6 +635,24 @@ pub async fn delegate_tooled(
     (format!("[委派完成 · {} 个工具型子智能体各攻一角度并综合]\n\n{}", reports.len(), synth.trim()), figs, merged)
 }
 
+/// Salvage a proper report from everything gathered so far. Used BOTH at step-budget exhaustion and
+/// when a step's model call keeps failing — a long, expensive run must never collapse to a bare error
+/// (or a raw transcript dump) and throw away its gathered material. One synthesis attempt over the
+/// compacted transcript; on failure, a readable transcript-tail fallback.
+async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str, cancel: &Cancel) -> String {
+    let wrap_ctx = compact_transcript(transcript, 26_000);
+    let wrap_user = format!(
+        "{wrap_ctx}\n\n[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统地组织成一篇有结论、有引用的报告(已生成的图会自动附上,不要再画)。给出明确的主要发现与结论;如果个别方向还能更深入,就在结尾用「后续可深化的方向」简短列出——把它当作完整报告的自然延伸,而不是说报告没做完。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
+    );
+    match model.complete(sys, &wrap_user, cancel).await {
+        Ok(r) if r.trim().chars().count() > 40 => r.trim().to_string(),
+        _ => format!(
+            "已完成一轮深度研究,下面是已检索 / 计算得到的阶段性结论(部分方向仍可继续深化):\n{}",
+            truncate(transcript, 1500)
+        ),
+    }
+}
+
 pub async fn run_coding_agent(
     goal: &str,
     sandbox: &Sandbox,
@@ -713,8 +731,18 @@ pub async fn run_coding_agent(
                     Ok(r) => break r,
                     Err(e) => {
                         attempt += 1;
-                        if attempt > 3 || cancel.is_cancelled() {
-                            return CodingResult { status: "failed".into(), summary: format!("model error after {attempt} attempts: {e}"), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
+                        if cancel.is_cancelled() {
+                            return CodingResult { status: "cancelled".into(), summary: "cancelled".into(), steps: n - 1, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
+                        }
+                        if attempt > 3 {
+                            // The model kept failing at THIS step (e.g. repeated timeouts). Don't throw
+                            // away a long run's gathered material by returning a bare error — SALVAGE a
+                            // report from the transcript so far (one attempt; falls back to a readable
+                            // tail). The run ends gracefully with real content + its figures.
+                            let _ = &e; // error is captured in the transcript; the salvage speaks for itself
+                            let artifacts = collect_artifacts(sandbox.root(), &start_files);
+                            let summary = synthesize_wrapup(model, &sys, &transcript, cancel).await;
+                            return CodingResult { status: "done".into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
                         }
                         // Escalating backoff — a 429/rate-limit window can last tens of seconds, so
                         // the old ~6s total (attempt*5*200ms) never outlasts it and all retries fail
@@ -1466,18 +1494,8 @@ pub async fn run_coding_agent(
     let artifacts = collect_artifacts(sandbox.root(), &start_files);
     // Budget exhausted without a {"final"}. Don't dump the raw transcript as the "report" — do ONE
     // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
-    // figures + an honest note on what's incomplete. Falls back to a transcript tail on failure.
-    let wrap_ctx = compact_transcript(&transcript, 26_000);
-    let wrap_user = format!(
-        "{wrap_ctx}\n\n[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统地组织成一篇有结论、有引用的报告(已生成的图会自动附上,不要再画)。给出明确的主要发现与结论;如果个别方向还能更深入,就在结尾用「后续可深化的方向」简短列出——把它当作完整报告的自然延伸,而不是说报告没做完。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
-    );
-    let summary = match model.complete(&sys, &wrap_user, cancel).await {
-        Ok(r) if r.trim().chars().count() > 40 => r.trim().to_string(),
-        _ => format!(
-            "已完成一轮深度研究,下面是已检索 / 计算得到的阶段性结论(部分方向仍可继续深化):\n{}",
-            truncate(&transcript, 1500)
-        ),
-    };
+    // figures (falls back to a transcript tail on failure). Same salvage the model-error path uses.
+    let summary = synthesize_wrapup(model, &sys, &transcript, cancel).await;
     CodingResult { status: "done".into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
 

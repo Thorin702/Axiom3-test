@@ -2856,7 +2856,12 @@ pub async fn coding_run(
         phase: "executing".into(),
     });
 
-    let model = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: 90 };
+    // Per-call HTTP timeout. Deep research runs a slow "thinking" model over a large compacted
+    // context and the final synthesis can genuinely take >90s — a too-tight 90s cap made GLM time
+    // out repeatedly and (before salvage) killed the whole run. Give research generous headroom;
+    // analysis a middle tier; a plain read-only code task the tight default.
+    let model_timeout_s: u64 = if is_research { 240 } else if is_analyze { 150 } else { 90 };
+    let model = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: model_timeout_s };
     // Analysis runs (real data download + a full domain pipeline + figures) need more headroom than a
     // read-only code task. QUALITY-FIRST: a heavy pipeline (single-cell / phylo / velocity) must be
     // able to finish CORRECTLY rather than get cut off mid-analysis — cost/time is not the constraint,
