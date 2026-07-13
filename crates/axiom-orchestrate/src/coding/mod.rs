@@ -12,6 +12,7 @@ use crate::kernel::PyKernel;
 use crate::skills;
 use axiom_providers::message::{ContentBlock, Message, Request};
 use axiom_runtime::litsearch::LitSearch;
+use axiom_runtime::web::WebClient;
 use axiom_runtime::supervisor::{is_retryable_error, retry_async, Cancel, RetryPolicy};
 use axiom_runtime::complete_by_name;
 use sandbox::{Sandbox, SandboxMode};
@@ -289,6 +290,21 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool) -> String {
              it to FRAME an analysis around a real published study, to find the canonical dataset/method \
              for a task, or to ground a claim in a citation. Retrieving an abstract is evidence, not \
              proof; cite what you found and stay honest about what it does and doesn't show.)\n\
+             {\"tool\":\"web_search\",\"query\":\"<search terms>\"}   (search the WHOLE WEB, not just \
+             papers — official databases (GEO/SRA/UniProt/PDB/Ensembl/PubChem), datasets, tool docs, \
+             preprints, standards, org/news pages. Returns titles + URLs + snippets. Use it to FIND a \
+             source or dataset you don't yet have a URL for.)\n\
+             {\"tool\":\"web_fetch\",\"url\":\"<https URL>\"}   (READ one public URL as text — an article, \
+             a database record page, a documentation page you found via web_search. Returns the page's \
+             cleaned text. Only public http(s) URLs.)\n\
+             ── WHICH TOOL WHEN (pick the RIGHT one each step) ──\n\
+             • Peer-reviewed papers / citations → litsearch.  • Anything else on the web (databases, \
+             datasets, docs, preprints, orgs) you need to FIND → web_search.  • READ a specific page you \
+             already have a URL for → web_fetch.  • DOWNLOAD + PARSE a structured dataset (CSV/TSV/JSON, \
+             an accession, an FTP/HTTPS data file) or COMPUTE anything → python (pandas/urllib), NOT \
+             web_fetch (which returns prose text, not a parsed table).  • A domain has a known pipeline → \
+             search_skills + load_skill FIRST.  Don't write python to scrape a web page when web_fetch \
+             does it; don't web_fetch a data table when python can parse it.\n\
              Use python to COMPUTE results and figures from real data — never state a number, table, \
              or trend you did not actually compute. In your final answer, describe what the computed \
              results and figures show; the figures themselves are attached automatically.\n\
@@ -434,6 +450,7 @@ pub async fn run_coding_agent(
     let mut fig_seen: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup identical figures (re-run plots)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
+    let mut web_queries: Vec<String> = Vec::new(); // web_search queries so far — dedup + soft breadth nudge
     // Snapshot the workspace so we can report the files the agent produces (per-file artifacts).
     let start_files = snapshot_files(sandbox.root());
     for n in 1..=budget.max_steps {
@@ -801,6 +818,45 @@ pub async fn run_coding_agent(
                 };
                 (q, obs)
             }
+            "web_search" => {
+                // General web search (DuckDuckGo) — for anything that is NOT a peer-reviewed paper:
+                // official databases, datasets, docs, preprints, news, org pages. Distinct from
+                // litsearch (papers) — the decision guide in the prompt tells the model which to use.
+                let q = arg_str(&v, "query").to_string();
+                let dup = web_queries.iter().any(|p| query_overlap(p, &q) >= 0.85);
+                let obs = if dup {
+                    "[skip] 这条 web 检索与之前高度重复,未执行。换一个真正不同的角度,或用 web_fetch 打开已找到的链接细读。".to_string()
+                } else {
+                    web_queries.push(q.clone());
+                    match WebClient::new().search(&q, 8).await {
+                        Ok(rs) if rs.is_empty() => "(web 检索无结果 — 换个说法,或改用 litsearch(论文)/直接 web_fetch 一个已知 URL)".to_string(),
+                        Ok(rs) => rs
+                            .iter()
+                            .enumerate()
+                            .map(|(i, r)| format!("[{}] {}\n    {}\n    {}", i + 1, r.title, r.url, r.snippet))
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                        Err(e) => format!("ERROR: web_search failed: {e}. 可改用 litsearch 或 web_fetch 已知 URL。"),
+                    }
+                };
+                (q, obs)
+            }
+            "web_fetch" => {
+                // Read ONE specific public URL as text (HTML stripped, bounded, SSRF-guarded). Use it
+                // to actually READ a page/doc found via web_search or a known database URL. For a
+                // structured DATASET (csv/json by URL/accession) prefer python (pandas) so you can parse it.
+                let url = arg_str(&v, "url").to_string();
+                let obs = if url.trim().is_empty() {
+                    "ERROR: web_fetch needs a `url`".to_string()
+                } else {
+                    match WebClient::new().fetch(&url).await {
+                        Ok(t) if t.trim().is_empty() => "(fetched, but no readable text — likely a binary/dynamic page; try a different source or python)".to_string(),
+                        Ok(t) => t,
+                        Err(e) => format!("ERROR: web_fetch failed: {e}"),
+                    }
+                };
+                (url, obs)
+            }
             "run" => {
                 ran_command = true;
                 let argv: Vec<String> = v
@@ -1087,7 +1143,8 @@ pub async fn run_coding_agent(
         let input = match tool.as_str() {
             "python" => arg_str(&v, "code").to_string(),
             "read_file" | "list_dir" | "write_file" | "edit" => arg_str(&v, "path").to_string(),
-            "search" | "litsearch" | "search_skills" => arg_str(&v, "query").to_string(),
+            "search" | "litsearch" | "search_skills" | "web_search" => arg_str(&v, "query").to_string(),
+            "web_fetch" => arg_str(&v, "url").to_string(),
             "load_skill" => arg_str(&v, "name").to_string(),
             "glob" => arg_str(&v, "pattern").to_string(),
             "job_start" => arg_str(&v, "code").to_string(),

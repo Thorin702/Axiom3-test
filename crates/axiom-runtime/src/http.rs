@@ -20,6 +20,26 @@ pub async fn json_bounded(resp: reqwest::Response) -> anyhow::Result<serde_json:
     json_bounded_to(resp, MAX_RESPONSE_BYTES).await
 }
 
+/// Read a response body as raw bytes with a hard size cap, streaming and stopping at the cap. Unlike
+/// [`json_bounded`], this TRUNCATES at the cap rather than failing — a web page/document that exceeds
+/// the cap should still yield readable partial text, not an error.
+pub async fn bytes_bounded(resp: reqwest::Response, max: usize) -> anyhow::Result<Vec<u8>> {
+    let mut resp = resp;
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    while let Some(chunk) = resp.chunk().await.map_err(|e| anyhow::anyhow!(e.to_string()))? {
+        let room = max.saturating_sub(buf.len());
+        if room == 0 {
+            break;
+        }
+        let take = chunk.len().min(room);
+        buf.extend_from_slice(&chunk[..take]);
+        if take < chunk.len() {
+            break;
+        }
+    }
+    Ok(buf)
+}
+
 /// [`json_bounded`] with an explicit cap — the seam the tests drive with a tiny limit.
 async fn json_bounded_to(resp: reqwest::Response, max: usize) -> anyhow::Result<serde_json::Value> {
     // Cheap pre-check: reject before reading a byte when the server declares an

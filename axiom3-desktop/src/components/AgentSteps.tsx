@@ -12,7 +12,7 @@ import { Pyfig } from "./artifact/Pyfig";
 // to a dark PYTHON code cell with a "Show output" toggle.
 
 // Tools that fold into a run-summary group (vs. a code/plan/figure step that stands alone).
-const ROUTINE = new Set(["litsearch", "search", "search_skills", "load_skill", "read_file", "list_dir", "glob", "run", "job_status"]);
+const ROUTINE = new Set(["litsearch", "web_search", "web_fetch", "search", "search_skills", "load_skill", "read_file", "list_dir", "glob", "run", "job_status"]);
 
 type Item =
   | { kind: "narr"; text: string }
@@ -46,15 +46,17 @@ function group(steps: AgentStepView[]): Item[] {
 }
 
 function summarize(steps: AgentStepView[], zh: boolean): string {
-  let search = 0, cmd = 0, read = 0, load = 0;
+  let search = 0, cmd = 0, read = 0, load = 0, web = 0;
   for (const s of steps) {
-    if (s.role === "litsearch" || s.role === "search" || s.role === "search_skills") search++;
+    if (s.role === "litsearch" || s.role === "search" || s.role === "search_skills" || s.role === "web_search") search++;
+    else if (s.role === "web_fetch") web++;
     else if (s.role === "run" || s.role === "job_status") cmd++;
     else if (s.role === "read_file" || s.role === "list_dir" || s.role === "glob") read++;
     else if (s.role === "load_skill") load++;
   }
   const parts: string[] = [];
   if (search) parts.push(zh ? `检索 ${search} 次` : `ran ${search} search${search > 1 ? "es" : ""}`);
+  if (web) parts.push(zh ? `读网页 ${web} 个` : `read ${web} page${web > 1 ? "s" : ""}`);
   if (cmd) parts.push(zh ? `执行命令 ${cmd} 次` : cmd > 1 ? `ran ${cmd} commands` : `ran a command`);
   if (read) parts.push(zh ? `读取 ${read} 项` : `read ${read} file${read > 1 ? "s" : ""}`);
   if (load) parts.push(zh ? `加载技能` : `loaded a skill`);

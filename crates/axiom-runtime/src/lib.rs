@@ -16,6 +16,7 @@ pub mod http;
 pub mod litsearch;
 pub mod plan;
 pub mod supervisor;
+pub mod web;
 
 use axiom_providers::message::{ContentBlock, Request, Role};
 use rig_core::client::{CompletionClient, ProviderClient};
