@@ -129,13 +129,19 @@ function GroupRow({ steps, lang }: { steps: AgentStepView[]; lang: Lang }) {
 }
 
 function SoloRow({ step, lang, nested }: { step: AgentStepView; lang: Lang; nested?: boolean }) {
-  const [open, setOpen] = useState(false);
   const zh = lang === "zh";
   const title = step.title || step.role;
   const body = (step.output || "").trim();
   const hasBody = body.length > 0;
   const failed = step.status === "failed" || step.status === "err";
   const isPy = step.role === "python";
+  // Parse a python step up-front so its computed FIGURES can render ALWAYS (a real-time plot is the
+  // point of the thinking chain), while the code+output stay behind the collapsible toggle.
+  const py = isPy && hasBody ? parsePython(body) : null;
+  const figures = py?.figures ?? [];
+  const hasFigures = figures.length > 0;
+  // Figures show by default; the code/output cell (and non-figure bodies) default to COLLAPSED.
+  const [open, setOpen] = useState(false);
   const figMeta = figureMeta(step, zh);
   const meta = figMeta ?? (step.lines != null ? `${step.lines} ${zh ? "行" : step.lines === 1 ? "line" : "lines"}` : "");
 
@@ -152,17 +158,16 @@ function SoloRow({ step, lang, nested }: { step: AgentStepView; lang: Lang; nest
         {meta && <span className="ax-chain__count">{meta}</span>}
         {hasBody && <ChevronRight size={13} className={`ax-chain__chev ${open ? "is-open" : ""}`} aria-hidden />}
       </button>
+      {/* real-time figures — ALWAYS visible under the step, not hidden behind the toggle */}
+      {hasFigures && (
+        <div className="ax-chain__figs">
+          {figures.map((f, i) => <Pyfig key={i} spec={f} />)}
+        </div>
+      )}
+      {/* collapsible detail: code + text output (python), or the markdown body (other steps) */}
       {open && hasBody && (
-        isPy
-          ? (() => {
-              const { code, output, figures } = parsePython(body);
-              return (
-                <>
-                  <CodeBlock code={code} output={output} uiLang={lang} />
-                  {figures.map((f, i) => <Pyfig key={i} spec={f} />)}
-                </>
-              );
-            })()
+        isPy && py
+          ? <CodeBlock code={py.code} output={py.output} uiLang={lang} />
           : <div className="ax-chain__body"><ArtifactBody text={body} /></div>
       )}
     </div>

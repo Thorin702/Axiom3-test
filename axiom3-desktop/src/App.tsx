@@ -874,7 +874,7 @@ function App() {
         return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps: st };
       })
     );
-    if (r?.status === "done" && r.synthesis) generateRecap(sessionId, g, r.synthesis);
+    if (r?.synthesis && r.status !== "cancelled") generateRecap(sessionId, g, r.synthesis);
   }
 
   // After a task produces a report, generate the chat-style wrap-up (what was done + key findings +
@@ -892,7 +892,13 @@ function App() {
       recap = "";
     }
     if (!recap.trim()) {
-      recap = rep.replace(/^#+\s.*$/gm, "").replace(/```[\s\S]*?```/g, "").trim().split(/\n\n/).slice(0, 2).join("\n\n").slice(0, 600);
+      // Fallback must NEVER be empty (else the thread shows nothing): strip headers + figure/code
+      // blocks for a prose lead-in, but if that leaves nothing (a figure-heavy report), fall back to
+      // the raw opening, and finally to a generic line — so a wrap-up always appears.
+      const prose = rep.replace(/^#+\s.*$/gm, "").replace(/```[\s\S]*?```/g, "").trim();
+      const lead = prose.split(/\n\n/).filter((p) => p.trim().length > 0).slice(0, 2).join("\n\n").slice(0, 600);
+      recap = lead || rep.replace(/```[\s\S]*?```/g, "").trim().slice(0, 500)
+        || (lang === "zh" ? "本次分析已完成,完整结果(含图表)见右侧「产物」面板。" : "Analysis complete — see the full result and figures in the Artifact panel.");
     }
     setTasks((ts) => ts.map((x) => (x.id === sessionId ? { ...x, recap, recapPending: false } : x)));
   }
@@ -961,7 +967,7 @@ function App() {
         return { ...x, status, synthesis: r.synthesis, steps };
       })
     );
-    if (r?.status === "done" && r.synthesis) generateRecap(sessionId, g, r.synthesis);
+    if (r?.synthesis && r.status !== "cancelled") generateRecap(sessionId, g, r.synthesis);
   }
 
   async function cancelCheck() {

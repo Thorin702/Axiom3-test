@@ -2588,10 +2588,21 @@ pub async fn recap_run(
         goal.trim().chars().take(600).collect::<String>(),
         report_t.chars().take(9000).collect::<String>(),
     );
-    match m.complete(RECAP_SYSTEM, &user, &Cancel::new()).await {
-        Ok(t) if !t.trim().is_empty() => Ok(t.trim().to_string()),
-        _ => Ok(String::new()),
+    // Retry with escalating backoff: a long, heavy analysis hammers the provider, so the FINAL recap
+    // call routinely lands on a 429 the moment the run ends — a single try then returned "" and the
+    // thread showed no wrap-up at all. Give the rate limit time to clear before giving up.
+    let backoffs = [2000u64, 8000, 20000];
+    for (attempt, wait) in backoffs.iter().enumerate() {
+        match m.complete(RECAP_SYSTEM, &user, &Cancel::new()).await {
+            Ok(t) if !t.trim().is_empty() => return Ok(t.trim().to_string()),
+            _ => {
+                if attempt + 1 < backoffs.len() {
+                    tokio::time::sleep(std::time::Duration::from_millis(*wait)).await;
+                }
+            }
+        }
     }
+    Ok(String::new())
 }
 
 #[tauri::command]
