@@ -2472,7 +2472,12 @@ capable research agent will execute. The user speaks casually; make their intent
 — never invent scope, domain, or specifics they did not ask for, and keep their actual question and any \
 concrete details. Into the directive, bake the depth a good researcher brings:\n\
 - DELIVERABLE: state exactly what the final answer must contain (e.g. a mechanism diagram + testable \
-predictions; a ranked comparison; a decision with its justification).\n\
+predictions; a ranked comparison; a decision with its justification). MATCH the deliverable to the \
+QUESTION TYPE — a mechanism / data-analysis / modeling question warrants a computed figure, but a pure \
+literature-review, methodology / how-to, or feasibility question usually does NOT need one (a good \
+researcher answers those in prose and only draws when a relationship is genuinely too complex for \
+words). Do NOT force a figure onto a question that doesn't call for one — knowing when NOT to draw is \
+part of the rigor.\n\
 - BREADTH FIRST: have the agent survey SEVERAL DISTINCT angles / candidate mechanisms / competing \
 explanations via litsearch — DIVERSE queries, not variations of one — before committing to any.\n\
 - COMPETING HYPOTHESES: require at least 2-3 genuinely different hypotheses/approaches, each weighed \
