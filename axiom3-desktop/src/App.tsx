@@ -1980,6 +1980,11 @@ function App() {
                         ) : null
                       )}
 
+                      {/* the reviewer agent, inline — like Claude Science's Reviewer panel. Sits ABOVE
+                          the conversational summary (collapsed by default) so the wrap-up stays the
+                          headline while the critique is one click away. */}
+                      {tk.review && <ReviewerPanel lang={lang} review={tk.review} />}
+
                       {/* When the artifact pane is open, the FULL report lives THERE; the thread keeps
                           the conversation — a chat-style wrap-up (what was done + key findings + next
                           steps) then a pointer into the panel. */}
@@ -2008,9 +2013,6 @@ function App() {
                           <ArtifactBody text={tk.synthesis} sources={tk.sources} />
                         </div>
                       )}
-
-                      {/* the reviewer agent, inline — like Claude Science's Reviewer panel */}
-                      {tk.review && <ReviewerPanel lang={lang} review={tk.review} />}
 
                       {!tk.result && !tk.synthesis && tk.status !== "running" && (
                         <p className="ax-hint" style={{ marginTop: 14 }}>

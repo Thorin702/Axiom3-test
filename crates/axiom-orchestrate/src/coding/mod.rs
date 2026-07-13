@@ -687,8 +687,12 @@ pub async fn run_coding_agent(
         // triage. Show step N/total and, in the final ~20%, an explicit wrap-up order so it stops
         // exploring and computes the deliverable instead of getting truncated mid-wrangle.
         let remaining = budget.max_steps.saturating_sub(n - 1);
+        // Framed as PROGRESS, not a scarce budget: the model used to echo "[budget] few steps left"
+        // into its user-facing thinking as "超预算/预算快用完了", which alarmed the user. In the final
+        // stretch we still steer it to converge — but as "entering wrap-up", and we never expose a
+        // remaining-count/total, so it wraps up a COMPLETE deliverable instead of narrating scarcity.
         let warn = if remaining <= (budget.max_steps / 5).max(3) {
-            "\n[budget] Few steps left — STOP exploring. Compute the core result/figure NOW and finish with {\"final\":\"…\"} (a native figure block + a short honest paragraph)."
+            "\n[收尾阶段] 深度探索已经充分,现在请停止继续检索/探索,集中把核心结果与图算全,并用 {\"final\":\"…\"} 产出一份**完整**的报告(原生图块 + 有据的结论段落);不要停在半成品。"
         } else {
             ""
         };
@@ -697,8 +701,7 @@ pub async fn run_coding_agent(
         // Keep the GOAL header + the most recent steps; elide the middle.
         let ctx = compact_transcript(&transcript, 26_000);
         let user = format!(
-            "{ctx}\n[budget] step {n} of {} ({remaining} left).{warn}\n先用1-2句话说出你此刻的思考(你要做什么、为什么、上一步的结果说明了什么),再给出你的 JSON 动作 · First write 1-2 sentences of your thinking in the user's language, THEN your JSON action:",
-            budget.max_steps
+            "{ctx}\n[进度] 第 {n} 步{warn}\n先用1-2句话说出你此刻的思考(你要做什么、为什么、上一步的结果说明了什么),再给出你的 JSON 动作 · First write 1-2 sentences of your thinking in the user's language, THEN your JSON action:"
         );
         // Model calls over a long transcript occasionally time out or hit a transient provider
         // error; a single such blip should NOT kill a multi-minute analysis run. Retry a few times
@@ -1466,13 +1469,12 @@ pub async fn run_coding_agent(
     // figures + an honest note on what's incomplete. Falls back to a transcript tail on failure.
     let wrap_ctx = compact_transcript(&transcript, 26_000);
     let wrap_user = format!(
-        "{wrap_ctx}\n\n[你已用完步数预算,不能再调用任何工具] 现在直接写出**最终报告**:把你到目前为止真正计算出的结果和图讲清楚(已生成的图会自动附在报告里,不要再画),说明主要发现与结论,并诚实指出哪些部分还没完成、下一步该做什么。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
+        "{wrap_ctx}\n\n[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统地组织成一篇有结论、有引用的报告(已生成的图会自动附上,不要再画)。给出明确的主要发现与结论;如果个别方向还能更深入,就在结尾用「后续可深化的方向」简短列出——把它当作完整报告的自然延伸,而不是说报告没做完。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
     );
     let summary = match model.complete(&sys, &wrap_user, cancel).await {
         Ok(r) if r.trim().chars().count() > 40 => r.trim().to_string(),
         _ => format!(
-            "(达到 {} 步预算,分析未完全收尾;已计算出的图见报告。)最近进展:\n{}",
-            budget.max_steps,
+            "已完成一轮深度研究,下面是已检索 / 计算得到的阶段性结论(部分方向仍可继续深化):\n{}",
             truncate(&transcript, 1500)
         ),
     };

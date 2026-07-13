@@ -9,25 +9,14 @@
 import { useState } from "react";
 import { ScanSearch, ChevronRight, ChevronDown, AlertTriangle, Check } from "lucide-react";
 import type { Lang } from "../i18n";
-
-// Split a bullet/line-based critique into discrete findings. "The outputs are solid" style
-// single-line all-clears collapse to zero findings.
-function toFindings(review: string): string[] {
-  const clean = review.trim();
-  const lines = clean
-    .split("\n")
-    .map((l) => l.replace(/^\s*[-*•·]\s?/, "").trim())
-    .filter((l) => l.length > 1);
-  return lines;
-}
-
-const ALL_CLEAR = /^(no (issues|problems|concerns|critique)|the outputs are solid|looks (good|solid)|nothing to flag)/i;
+import { toFindings, isAllClear, renderInlineMd } from "../lib/reviewText";
 
 export function ReviewerPanel({ lang, review }: { lang: Lang; review: string }) {
   const zh = lang === "zh";
-  const [open, setOpen] = useState(true);
+  // Collapsed by default — the reviewer is an advisory strip above the summary, not the headline.
+  const [open, setOpen] = useState(false);
   const findings = toFindings(review);
-  const allClear = findings.length <= 1 && ALL_CLEAR.test(review.trim());
+  const allClear = isAllClear(review, findings);
   const n = allClear ? 0 : findings.length;
 
   return (
@@ -51,7 +40,7 @@ export function ReviewerPanel({ lang, review }: { lang: Lang; review: string }) 
             findings.map((f, i) => (
               <div className="ax-reviewer__finding" key={i}>
                 <AlertTriangle size={14} aria-hidden />
-                <span>{f}</span>
+                <span dangerouslySetInnerHTML={{ __html: renderInlineMd(f) }} />
               </div>
             ))
           )}

@@ -13,6 +13,7 @@ import { AgentSteps } from "./AgentSteps";
 import { ArtifactProvenance } from "./ArtifactProvenance";
 import { ArtifactInspector } from "./ArtifactInspector";
 import { buildReportHtml } from "../lib/exportReport";
+import { toFindings, renderInlineMd } from "../lib/reviewText";
 
 type Tab = "artifact" | "messages" | "review" | "provenance";
 
@@ -83,9 +84,7 @@ export function ArtifactPane({
   }
 
   const steps = ver.steps ?? [];
-  const reviewFindings = ver.review
-    ? ver.review.split("\n").map((l) => l.replace(/^\s*[-*•·]\s?/, "").trim()).filter((l) => l.length > 1)
-    : [];
+  const reviewFindings = ver.review ? toFindings(ver.review) : [];
 
   // For code/analysis sessions the steps ARE the execution log (the code the agent ran +
   // each result), so name the tab accordingly — it's how you independently re-check the work.
@@ -334,7 +333,7 @@ export function ArtifactPane({
                     : `Reviewer · ${reviewFindings.length} findings — consistency, gaps, unsupported claims. Reduces but doesn't eliminate errors; not a truth judgment.`}
               </p>
               {reviewFindings.map((f, i) => (
-                <div className="ax-reviewer__finding" key={i}>{f}</div>
+                <div className="ax-reviewer__finding" key={i} dangerouslySetInnerHTML={{ __html: renderInlineMd(f) }} />
               ))}
             </div>
           )

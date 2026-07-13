@@ -2595,10 +2595,11 @@ async fn reframe_goal(provider: &str, model_id: &str, raw: &str, cancel: &Cancel
 /// fabricate). Run on a DIFFERENT model than the author when possible for an independent perspective.
 const RESEARCH_REVIEW_SYSTEM: &str = "你是一位独立、严格的科研审稿人,正在评审下面这份研究报告(它由另一个智能体产出)。请只做【评审、不要改写报告】,简明列点指出:①有没有过度声明/未被证据支撑的断言(尤其「最新颖/完全空白/一定」这类);②有没有引用与结论不匹配或缺引用的关键论断;③论证/方法有没有明显缺口或逻辑跳跃;④如果报告本身扎实、诚实,就明确说「整体扎实」并只列少数可改进点。要具体(指到具体论断),别泛泛。绝不编造报告里没有的事实。用简体中文,控制在 6-10 条以内。";
 
-const RECAP_SYSTEM: &str = "你是用户的科研助手，刚完成了用户交办的一项分析/研究任务，完整的产物报告在下面。请用**对话口吻**、面向用户写一段简短的收尾汇报（就像你在聊天里向他交代结果那样），包含两部分：\n\
-1) 先用 2-4 句话说清楚你这次实际做了什么、以及最关键的 1-3 个结论——可以引用报告里的具体数字/发现，但只挑最重要的，别罗列全部；\n\
-2) 然后另起一行，用「**建议的下一步**」作小标题，列出 2-3 条具体、可执行的后续方向（每条一句话，要是真正有价值的深化 / 验证 / 扩展，不是套话）。\n\
-硬性要求：不要复述报告全文，不要用一级标题(#)，不要编造报告里没有的内容或数字，不要输出任何图表代码块。全程简体中文，语气自然、专业、简洁。";
+const RECAP_SYSTEM: &str = "你是用户的科研助手，刚完成用户交办的一项分析/研究任务，完整报告在下面。请用**对话口吻**、面向用户写一段收尾汇报（像在聊天里向他交代结果那样），分三部分：\n\
+1) 用「**核心结论**」作小标题，列 2-4 条一针见血的关键发现（每条一句），直击这次最重要的结果——**把每条里的关键数字、名称或结论用 `**加粗**` 高亮**；只挑最有分量的，别罗列全部，别写套话式的正确废话。\n\
+2) 另起一行用「**建议下一步**」作小标题，结合你对用户真实意图的判断，列 2-3 条具体、可执行、真正有价值的深化/验证/扩展方向（每条一句，落到具体动作，不要泛泛而谈）。\n\
+3) 最后用一句话主动提问：预判用户此刻最可能想让你继续做的**那一件事**，直接问他要不要现在就做（例如「要我把 X 展开成一张对比图，或就 Y 再深挖一层吗？」）。\n\
+硬性要求：不复述报告全文；不用一级标题(#)；绝不编造报告里没有的内容或数字；不输出任何图表代码块。全程简体中文，语气自然、专业、锐利。";
 
 /// Generate a short, conversational wrap-up (what was done + key findings + suggested next steps)
 /// over a finished report — the chat-style summary shown in the thread while the FULL report lives in
@@ -2862,7 +2863,10 @@ pub async fn coding_run(
     // so the step budget and per-cell timeout are generous (auto-checkpoint/restore protects state).
     let budget = if is_research {
         // DEEP RESEARCH: effectively no budget control — run until the research is genuinely thorough.
-        CodingBudget { max_steps: 200, per_call_timeout_s: 180, cmd_timeout_s: 180, cell_timeout_s: 900 }
+        // 320 parent steps is deliberately generous headroom (heavy/long is fine — quality first); the
+        // model normally finishes via {"final"} well before this, and the meter is framed as "progress"
+        // (not a scarce budget) so a run near the cap wraps up cleanly instead of narrating "超预算".
+        CodingBudget { max_steps: 320, per_call_timeout_s: 180, cmd_timeout_s: 180, cell_timeout_s: 900 }
     } else if is_analyze {
         CodingBudget { max_steps: 80, per_call_timeout_s: 150, cmd_timeout_s: 150, cell_timeout_s: 900 }
     } else {

@@ -1182,12 +1182,19 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-artref:hover { color: var(--ax-accent); border-color: var(--ax-accent); }
 
 /* end-of-task chat-style wrap-up (summary + suggested next steps), shown in the thread like a reply */
-.ax-recap { margin-top: 14px; padding: 2px 0 2px 14px; border-left: 2px solid var(--ax-accent-soft); }
+/* The conversational wrap-up is the thread's headline — a highlighted card (accent-tinted, thicker
+   rail) with its bolded key conclusions rendered in accent ink so they pop at a glance. */
+.ax-recap { margin-top: 14px; padding: 12px 14px 12px 15px; border-left: 3px solid var(--ax-accent);
+  border-radius: 0 10px 10px 0; background: color-mix(in srgb, var(--ax-accent) 5%, var(--ax-surface)); }
 .ax-recap .ax-md { font-size: 13.5px; line-height: 1.72; color: var(--ax-ink); }
 .ax-recap .ax-md > *:first-child { margin-top: 0; }
 .ax-recap .ax-md > *:last-child { margin-bottom: 0; }
 .ax-recap .ax-md ul, .ax-recap .ax-md ol { margin: 6px 0 2px; padding-left: 18px; }
-.ax-recap .ax-md li { margin: 3px 0; }
+.ax-recap .ax-md li { margin: 4px 0; }
+/* bolded key numbers/conclusions the recap emphasizes — lift them into accent ink so they stand out */
+.ax-recap .ax-md strong { color: var(--ax-accent-strong, var(--ax-accent)); font-weight: 650; }
+/* the recap's closing "shall I do X next?" question — a soft call-to-action tint */
+.ax-recap .ax-md p:last-child { margin-top: 8px; color: var(--ax-ink-soft); }
 .ax-recap__pending { display: flex; align-items: center; gap: 8px; color: var(--ax-ink-faint);
   font-size: 12.5px; font-family: var(--ax-sans); margin: 0; }
 .ax-recap__dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ax-accent);
