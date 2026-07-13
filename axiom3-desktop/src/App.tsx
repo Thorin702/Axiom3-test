@@ -1547,7 +1547,7 @@ function App() {
 
   return (
     <>
-      {booting && <Splash lang={lang} onDone={() => setBooting(false)} />}
+      {booting && <Splash onDone={() => setBooting(false)} />}
       {!onboarded && <OnboardingWizard lang={lang} onDone={() => setOnboarded(true)} />}
       {settingsOpen && <SettingsModal lang={lang} onLang={setLang} initialCat={settingsCat} onClose={() => setSettingsOpen(false)} />}
       {paletteOpen && (

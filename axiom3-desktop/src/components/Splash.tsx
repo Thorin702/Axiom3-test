@@ -1,47 +1,35 @@
-// Boot splash — a brief branded loading screen shown while the app mounts, then fades
-// out. Uses the design tokens, so it tracks the active theme/palette. The accent
-// "scanline" evokes the product's checking-as-it-goes identity.
+// Boot splash — the app's knowledge-graph mark, highlighted and pulsing, centered on the app surface
+// for ~1.5s before the workbench / onboarding appears. Pure ornament: NO text, just the pulsing icon.
+// Reuses the exact graph shape from the run-status pill so the launch mark matches the app's identity.
 import { useEffect, useState } from "react";
-import type { Lang } from "../i18n";
+import { NODES, EDGES, GRAPH_VIEWBOX } from "./RunStatusPill";
 
-// Staged boot progress (feature-list #5): keychain → encrypted store → session → models.
-const STAGES = {
-  zh: ["解锁钥匙串", "打开加密库", "恢复会话", "探测模型", "就绪"],
-  en: ["Unlocking keychain", "Opening store", "Restoring session", "Probing models", "Ready"],
-};
-
-export function Splash({ lang, onDone }: { lang: Lang; onDone: () => void }) {
+export function Splash({ onDone }: { onDone: () => void }) {
   const [leaving, setLeaving] = useState(false);
-  const [stage, setStage] = useState(0);
-  const stages = STAGES[lang];
-
   useEffect(() => {
-    const iv = setInterval(() => setStage((s) => Math.min(s + 1, stages.length - 1)), 280);
-    const t1 = setTimeout(() => setLeaving(true), 1500);
-    const t2 = setTimeout(onDone, 1900);
+    const t1 = setTimeout(() => setLeaving(true), 1500); // ~1.5s of pulse, then fade out
+    const t2 = setTimeout(onDone, 1820);
     return () => {
-      clearInterval(iv);
       clearTimeout(t1);
       clearTimeout(t2);
     };
-  }, [onDone, stages.length]);
+  }, [onDone]);
 
   return (
     <div className={`ax-splash ${leaving ? "is-leaving" : ""}`} aria-hidden>
-      <div className="ax-splash__mark">
-        <span className="ax-splash__word">Axiom3</span>
-        <span className="ax-splash__scan">
-          <span />
-        </span>
-      </div>
-      <div className="ax-splash__stages">
-        {stages.map((label, i) => (
-          <span key={label} className={`ax-splash__stage ${i < stage ? "is-done" : i === stage ? "is-now" : ""}`}>
-            <span className="ax-splash__dot" />
-            {label}
-          </span>
+      <svg className="ax-splash__mark" viewBox={GRAPH_VIEWBOX} width="132" height="132">
+        <path className="ax-splash__edges" d={EDGES} />
+        {NODES.map(([cx, cy, r], i) => (
+          <circle
+            key={i}
+            className="ax-splash__node"
+            cx={cx}
+            cy={cy}
+            r={r}
+            style={{ animationDelay: `${i * 0.11}s` }}
+          />
         ))}
-      </div>
+      </svg>
     </div>
   );
 }

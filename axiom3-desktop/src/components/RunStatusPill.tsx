@@ -19,11 +19,12 @@ function fmtTokens(n: number): string {
 // JUST the knowledge-graph shape from the app icon — nodes + edges, no background. It inherits
 // currentColor (near-white in dark, ink in light); each node pulses on a staggered delay while
 // running, and holds static once done.
-const NODES: [number, number, number][] = [
+export const NODES: [number, number, number][] = [
   [13, 15, 3.3], [30, 11, 3.3], [41, 21, 3.3], [24, 30, 4.3], [38, 35, 3.3], [16, 42, 3.3], [31, 43, 3.3],
 ];
-const EDGES =
+export const EDGES =
   "M13 15 L30 11 M30 11 L41 21 M13 15 L24 30 M30 11 L24 30 M41 21 L38 35 M24 30 L38 35 M24 30 L16 42 M38 35 L31 43 M16 42 L31 43";
+export const GRAPH_VIEWBOX = "7 5 40 44";
 
 function GraphMark({ active }: { active: boolean }) {
   return (
