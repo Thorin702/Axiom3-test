@@ -475,6 +475,83 @@ pub async fn run_delegate(model: &impl CodingModel, task: &str, cancel: &Cancel)
     format!("[委派完成 · {} 个子智能体各攻一角度并综合]\n\n{}", parts.len(), synth.trim())
 }
 
+/// The TOOL-USING delegate (upgrade of `run_delegate`): decompose the subtask into ≤2 angles and give
+/// EACH to a focused sub-agent that runs the FULL tool loop (litsearch / web_search / web_fetch /
+/// python / figures), then synthesize their reports. Sub-agents SHARE the parent's sandbox + kernel
+/// (the parent is parked awaiting, so no concurrent kernel access), get a bounded budget, and CANNOT
+/// delegate again (their Pause never sets delegate_allowed → depth guard, no infinite recursion).
+///
+/// The recursion into the generic `run_coding_agent` is made finite two ways: the sub-agent's
+/// callbacks are passed as `&mut (dyn FnMut + Send)` trait objects (so every level instantiates the
+/// SAME closure types — monomorphization converges) and the recursive call is `Box::pin`'d (so the
+/// future has a fixed size instead of containing itself). Returns (observation, sub-agent figures).
+pub async fn delegate_tooled(
+    model: &impl CodingModel,
+    sandbox: &Sandbox,
+    kernel: &Option<Arc<PyKernel>>,
+    sub_budget: &CodingBudget,
+    cancel: &Cancel,
+    task: &str,
+) -> (String, Vec<String>) {
+    let decomp = model
+        .complete(
+            "把给定的研究子任务拆成 1-2 个可以各自独立、用工具(检索/联网/计算)深挖的角度,每行一个,只输出角度本身。若本身已足够聚焦,就只输出一行。",
+            &format!("子任务:\n{task}"),
+            cancel,
+        )
+        .await
+        .unwrap_or_default();
+    let mut angles: Vec<String> = decomp
+        .lines()
+        .map(|l| l.trim().trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '-' | '*' | '·' | '.' | ')' | '(' | ' ' | '、')).trim().to_string())
+        .filter(|l| l.chars().count() > 3)
+        .take(2)
+        .collect();
+    if angles.is_empty() {
+        angles.push(task.to_string());
+    }
+    let mut reports: Vec<String> = Vec::new();
+    let mut figs: Vec<String> = Vec::new();
+    for a in &angles {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let sub_pause = Pause::new();
+        sub_pause.disable_asks(); // headless sub-agent; delegate_allowed NOT set → cannot re-delegate
+        let sub_goal = format!(
+            "你是深度研究团队里的一个专注子智能体,负责下面这一个子问题。请**用工具**(litsearch 找论文、web_search 找其它来源、web_fetch 读网页、python 计算/画图)去查证与深挖,不要只凭记忆:\n【子问题】{a}\n\n【总课题背景】{task}\n\n深入、有据、带引用地攻坚它,最后给出这一子问题的清晰结论。"
+        );
+        let mut log: Vec<String> = Vec::new();
+        let mut on_s = |r: CodingStepRec| {
+            if log.len() < 40 {
+                log.push(format!("· {} {}", r.tool, r.detail.chars().take(48).collect::<String>()));
+            }
+        };
+        let mut on_a = |_: String, _: String| {};
+        let sd: &mut (dyn FnMut(CodingStepRec) + Send) = &mut on_s;
+        let ad: &mut (dyn FnMut(String, String) + Send) = &mut on_a;
+        let sub = Box::pin(run_coding_agent(&sub_goal, sandbox, model, cancel, &sub_pause, sub_budget, kernel.clone(), sd, ad)).await;
+        figs.extend(sub.figures);
+        reports.push(format!("### 子智能体角度:{a}\n{}", sub.summary.trim()));
+    }
+    if reports.is_empty() {
+        return ("[委派未产出结果 —— 请自己完成这个子任务]".to_string(), figs);
+    }
+    if reports.len() == 1 {
+        return (format!("[委派完成 · 1 个工具型子智能体]\n\n{}", reports[0]), figs);
+    }
+    let body = reports.join("\n\n");
+    let synth = model
+        .complete(
+            "把多个工具型子智能体各自子问题的结论综合成对总子任务的一个连贯、去重、有取舍的结论:忠实于各部分与其引用,指出一致与冲突,不要编造。",
+            &format!("总子任务:{task}\n\n各子智能体结论:\n{body}\n\n综合结论:"),
+            cancel,
+        )
+        .await
+        .unwrap_or_else(|_| body.clone());
+    (format!("[委派完成 · {} 个工具型子智能体各攻一角度并综合]\n\n{}", reports.len(), synth.trim()), figs)
+}
+
 pub async fn run_coding_agent(
     goal: &str,
     sandbox: &Sandbox,
@@ -920,12 +997,20 @@ pub async fn run_coding_agent(
                 ("delegate".to_string(), "[此处不开子智能体委派 —— 请自己完成这个子任务]".to_string())
             }
             "delegate" => {
-                // Spawn a bounded multi-agent sub-workflow for ONE complex, separable subtask.
+                // Spawn a bounded multi-agent sub-team of TOOL-USING sub-agents for ONE complex,
+                // separable subtask (each sub-agent runs the full litsearch/web/python loop).
                 let task = arg_str(&v, "task").to_string();
                 if task.trim().is_empty() {
                     ("delegate".to_string(), "ERROR: delegate needs a `task` — a self-contained subtask worth a whole sub-team.".to_string())
                 } else {
-                    let obs = run_delegate(model, &task, cancel).await;
+                    let sub_budget = CodingBudget {
+                        max_steps: 18,
+                        per_call_timeout_s: budget.per_call_timeout_s,
+                        cmd_timeout_s: budget.cmd_timeout_s,
+                        cell_timeout_s: budget.cell_timeout_s,
+                    };
+                    let (obs, figs) = delegate_tooled(model, sandbox, &kernel, &sub_budget, cancel, &task).await;
+                    step_figures = figs; // sub-agents' computed figures flow into the parent report (deduped downstream)
                     (task.chars().take(60).collect::<String>(), obs)
                 }
             }
