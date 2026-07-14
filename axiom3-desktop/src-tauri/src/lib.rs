@@ -1,3 +1,4 @@
+mod deliverables;
 mod workbench;
 
 use workbench::AppState;
@@ -119,6 +120,11 @@ pub fn run() {
             workbench::delete_connection,
             workbench::test_connection,
             workbench::close_project,
+            deliverables::deliverable_save,
+            deliverables::deliverable_list,
+            deliverables::deliverable_load,
+            deliverables::deliverable_delete,
+            deliverables::deliverable_rename,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -5,7 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Lang, t } from "./i18n";
 import "./theme.css";
-import type { ProjectStatus, DraftCheck, ExportSummary, Task, Source, AgentStepView, CiteSource } from "./lib/types";
+import type { ProjectStatus, DraftCheck, ExportSummary, Task, AgentStepView, CiteSource } from "./lib/types";
 import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
@@ -21,8 +21,7 @@ import { ArtifactBody } from "./components/artifact/ArtifactBody";
 import { ArtifactPane } from "./components/ArtifactPane";
 import { OnboardingWizard } from "./components/OnboardingWizard";
 import { Settings as SettingsModal, applyTheme } from "./components/Settings";
-import { ReadingView } from "./components/ReadingView";
-import { ProjectsView } from "./components/ProjectsView";
+import { DeliverablesView } from "./components/DeliverablesView";
 import { MetricsView } from "./components/MetricsView";
 import { NotificationsView } from "./components/NotificationsView";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
@@ -31,7 +30,7 @@ import { Splash } from "./components/Splash";
 import { AppBanner } from "./components/AppBanner";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
-  Sparkles, BookOpen, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
+  Sparkles, Database, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
   Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
   MoreHorizontal, Pencil, Mic, Info, Pause, Play, type LucideIcon,
 } from "lucide-react";
@@ -90,8 +89,7 @@ type NavGroup = "work" | "trust" | "overview";
 // (search over your materials), 笔记本 lives inside a session, 舰队 into 概览.
 const NAV: { key: NavKey; zh: string; en: string; icon: LucideIcon; group: NavGroup }[] = [
   { key: "tasks", zh: "会话", en: "Sessions", icon: Sparkles, group: "work" },
-  { key: "projects", zh: "项目", en: "Projects", icon: FolderOpen, group: "work" },
-  { key: "reading", zh: "材料", en: "Materials", icon: BookOpen, group: "work" },
+  { key: "projects", zh: "产出物库", en: "Deliverables", icon: Database, group: "work" },
   { key: "metrics", zh: "概览", en: "Overview", icon: Gauge, group: "overview" },
 ];
 // Model choices offered in the task control bar (the connected provider is DeepSeek).
@@ -128,6 +126,22 @@ function stripLiveFigure(s: AgentStepView): AgentStepView {
   return { ...s, output: s.output.replace(/\n*```pyfig\n[\s\S]*?```/g, "") };
 }
 
+// Replace base64 ```pyfig``` figure payloads with a tiny placeholder — used ONLY for the localStorage
+// copy (a few 200KB+ figures blow the ~5MB quota and used to wipe all deliverables). The in-memory
+// task keeps its figures for this session; the full deliverable (with figures) is backed up on disk.
+function stripFigPayload(s?: string): string | undefined {
+  if (!s || !s.includes("```pyfig")) return s;
+  return s.replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "```pyfig\n[图形已存入产出物库]\n```");
+}
+function leanTaskForStorage(t: Task): Task {
+  return {
+    ...t,
+    synthesis: stripFigPayload(t.synthesis),
+    versions: t.versions?.map((v) => ({ ...v, synthesis: stripFigPayload(v.synthesis) })),
+    steps: t.steps?.map((s) => (s.output?.includes("```pyfig") ? { ...s, output: s.output.replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "") } : s)),
+  };
+}
+
 function App() {
   const [lang, setLangState] = useState<Lang>(
     (localStorage.getItem("axiom3.lang") as Lang) || "zh"
@@ -162,13 +176,6 @@ function App() {
   const [codeWritable, setCodeWritable] = useState(false);
   const [codeAnalyze, setCodeAnalyze] = useState(false); // give the agent a live Python kernel
   const [codeAttachments, setCodeAttachments] = useState<string[]>([]); // data files for analysis
-  const [sources, setSources] = useState<Source[]>(() => {
-    try {
-      return JSON.parse(localStorage.getItem("axiom3.sources") || "[]");
-    } catch {
-      return [];
-    }
-  });
   const [taskModel, setTaskModel] = useState(() => localStorage.getItem("axiom3.taskModel") ?? ""); // "" = auto
   const [wfAgents, setWfAgents] = useState(() => {
     const n = parseInt(localStorage.getItem("axiom3.wfAgents") || "", 10);
@@ -328,7 +335,6 @@ function App() {
     });
   }
   // Multiple sessions can be open at once as tabs (an "Open tabs" bar shows when ≥2).
-  const [openTabs, setOpenTabs] = useState<string[]>([]);
   // Per-session actions menu (⋯) + inline rename state.
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -360,17 +366,36 @@ function App() {
     applyTheme((localStorage.getItem("axiom3.theme") as "light" | "dark" | "system") || "light");
   }, []);
 
-  // Persist the task history (most recent first, ≤50). A task's result carries all its
-  // evidence text, so a big check can exceed the localStorage quota; on failure, keep as
-  // many RECENT tasks as fit rather than silently dropping the entire history.
+  // Persist the task history (most recent first, ≤50). CRITICAL: a report embeds base64 ```pyfig```
+  // figures (100s of KB each) — a few of them blew the ~5MB localStorage quota, and the old
+  // keep-fewer-on-failure loop then wrote `[]`, WIPING all deliverables. So we persist a LEAN copy
+  // (figure payloads stripped — the full deliverable incl. figures is backed up durably on disk via
+  // the deliverables store). Never drop to zero: if even one lean task won't fit, keep the newest 1.
   useEffect(() => {
-    for (let n = Math.min(tasks.length, 50); n >= 0; n--) {
+    const lean = tasks.map(leanTaskForStorage);
+    for (let n = Math.min(lean.length, 50); n >= 1; n--) {
       try {
-        localStorage.setItem("axiom3.tasks", JSON.stringify(tasks.slice(0, n)));
+        localStorage.setItem("axiom3.tasks", JSON.stringify(lean.slice(0, n)));
         break;
       } catch {
-        /* over quota — keep fewer and retry */
+        /* over quota — keep fewer and retry (but never write []) */
       }
+    }
+    if (lean.length === 0) localStorage.setItem("axiom3.tasks", "[]");
+  }, [tasks]);
+
+  // BACKUP: every finished deliverable is written FULL (report + figures) to the durable on-disk
+  // deliverables store — the 产出物库. localStorage is only the live UI cache (lean, quota-bound); the
+  // disk store is the real, un-capped backup. Re-saves only when a task's content changes (signature).
+  const savedSigRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    for (const t of tasks) {
+      if (t.status !== "done") continue;
+      if (!t.synthesis && !(t.versions?.length)) continue;
+      const sig = `${t.title}|${t.synthesis?.length ?? 0}|${t.versions?.length ?? 0}|${t.review?.length ?? 0}|${t.sources?.length ?? 0}`;
+      if (savedSigRef.current[t.id] === sig) continue;
+      savedSigRef.current[t.id] = sig;
+      invoke("deliverable_save", { id: t.id, json: JSON.stringify(t) }).catch(() => {});
     }
   }, [tasks]);
 
@@ -399,28 +424,6 @@ function App() {
     localStorage.setItem("axiom3.mode", mode);
   }, [taskModel, wfAgents, deepSearch, mode]);
 
-  // Persist the source library (most recent first, ≤12). A full document's text can be
-  // megabytes, so capping to 12 ENTRIES doesn't bound the payload — bound it by BYTES: if
-  // the write exceeds quota, drop the TEXT of the OLDEST sources (keeping their metadata)
-  // and retry, so the library is never silently lost wholesale. Recent sources keep their
-  // text (still openable); older ones degrade to name/size only.
-  useEffect(() => {
-    const capped = sources.slice(0, 12);
-    for (let keepText = capped.length; keepText >= 0; keepText--) {
-      const payload = capped.map((s, i) => (i < keepText ? s : { ...s, text: "" }));
-      try {
-        localStorage.setItem("axiom3.sources", JSON.stringify(payload));
-        return;
-      } catch {
-        /* too big — drop one more full text (oldest first) and retry */
-      }
-    }
-    try {
-      localStorage.setItem("axiom3.sources", "[]");
-    } catch {
-      /* give up — nothing more we can do */
-    }
-  }, [sources]);
 
   // Garbage-collect the reviewed map: drop claim ids that belong to no retained task, so it
   // can't grow without bound as tasks are deleted or age out of the persisted history.
@@ -578,32 +581,17 @@ function App() {
 
   function removeTask(id: string) {
     setTasks((ts) => ts.filter((tk) => tk.id !== id));
-    dropTab(id);
+    if (activeId === id) {
+      setActiveId(null);
+      setView("home");
+    }
   }
 
-  // ── open-tabs bar: several sessions open at once, like Claude's tab strip ──
-  const TAB_CAP = 8;
-  function pushTab(id: string) {
-    setOpenTabs((prev) => (prev.includes(id) ? prev : [...prev, id].slice(-TAB_CAP)));
-  }
-  // Open a session: surface it as a tab and show its thread.
+  // Open a session: show its thread.
   function openTask(id: string) {
-    pushTab(id);
     setNav("tasks");
     setActiveId(id);
     setView("thread");
-  }
-  // Remove a tab (and, if it was active, fall back to a neighbour or home).
-  function dropTab(id: string) {
-    setOpenTabs((prev) => {
-      const next = prev.filter((x) => x !== id);
-      if (activeId === id) {
-        const fallback = next[next.length - 1] ?? null;
-        setActiveId(fallback);
-        setView(fallback ? "thread" : "home");
-      }
-      return next;
-    });
   }
 
   // ── rename a session (a title override that persists in the task history) ──
@@ -702,7 +690,6 @@ function App() {
       const text = await run(() => invoke<string>("import_document", { path }));
       if (text !== undefined) {
         setter(text);
-        recordSource(path.split(/[/\\]/).pop() || "document", text);
         note(
           `${t(lang, "imported")}: ${path.split(/[/\\]/).pop()} · ${text.length.toLocaleString()} ${t(lang, "chars")}`
         );
@@ -715,7 +702,6 @@ function App() {
     const text = await run(() => invoke<string>("import_document", { path }));
     if (text !== undefined) {
       const name = path.split(/[/\\]/).pop() || "document";
-      recordSource(name, text); // always keep it in the library
       const lg = langRef.current; // fresh language, not the drop-listener's captured one
       note(`${t(lg, "imported")}: ${name} · ${text.length.toLocaleString()} ${t(lg, "chars")}`);
       // Only load it into the editor (replacing the draft) if that won't lose unsaved prose.
@@ -729,7 +715,23 @@ function App() {
     }
   }
 
-  // ── source library (阅读/摄入) ──
+  // Open a deliverable from the 产出物库 (durable disk store): load its FULL record (report + figures),
+  // merge it back into the live session list, and jump to its thread + artifact panel.
+  async function openDeliverable(id: string) {
+    try {
+      const json = await invoke<string>("deliverable_load", { id });
+      const tk: Task = JSON.parse(json);
+      setTasks((ts) => (ts.some((x) => x.id === tk.id) ? ts.map((x) => (x.id === tk.id ? tk : x)) : [tk, ...ts]));
+      setActiveId(tk.id);
+      setNav("tasks");
+      setView("thread");
+      setRailOpen(true);
+      localStorage.setItem("axiom3.rail", "1");
+    } catch {
+      /* missing/corrupt file — ignore */
+    }
+  }
+
   // Guard the draft against a silent overwrite when loading a source: only ask if there's
   // unsaved prose that would be lost.
   function confirmReplaceDraft(): boolean {
@@ -739,42 +741,6 @@ function App() {
         ? "这会替换编辑器中的当前草稿,继续?"
         : "This will replace the current draft in the editor. Continue?"
     );
-  }
-  function recordSource(name: string, text: string) {
-    const src: Source = { id: `s${Date.now()}`, name, chars: text.length, ts: Date.now(), text };
-    // Signal when the 12-entry cap silently drops the oldest source.
-    setSources((ss) => {
-      const next = [src, ...ss.filter((x) => x.name !== name)];
-      if (next.length > 12) {
-        note(lang === "zh" ? "来源库已满(12),已移除最早的一条。" : "Source library full (12) — dropped the oldest.");
-      }
-      return next.slice(0, 12);
-    });
-  }
-  async function importSource() {
-    const path = await open({
-      multiple: false,
-      filters: [{ name: "Documents", extensions: ["pdf", "docx", "txt", "md", "markdown"] }],
-    });
-    if (typeof path === "string") {
-      const text = await run(() => invoke<string>("import_document", { path }));
-      if (text !== undefined) {
-        const name = path.split(/[/\\]/).pop() || "document";
-        recordSource(name, text);
-        note(`${t(lang, "imported")}: ${name} · ${text.length.toLocaleString()} ${t(lang, "chars")}`);
-      }
-    }
-  }
-  function openSource(src: Source) {
-    if (!confirmReplaceDraft()) return;
-    setNav("tasks");
-    setActiveId(null);
-    setView("home");
-    setCmd("check_draft");
-    setDraft(src.text);
-  }
-  function removeSource(id: string) {
-    setSources((ss) => ss.filter((x) => x.id !== id));
   }
 
   async function runCheckDraft(draftText?: string) {
@@ -788,7 +754,6 @@ function App() {
     setTasks((ts) => [{ id, type: "check_draft", title, status: "running", ts: Date.now(), goal: useDraft, forkedFrom: forkOrigin ?? undefined }, ...ts]);
     setForkOrigin(null);
     setActiveId(id);
-    pushTab(id);
     setNav("tasks");
     setView("thread");
     setCmd(null);
@@ -837,12 +802,10 @@ function App() {
       // version's steps so the stale v1 log isn't shown as if it were the live v2 stream.
       setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running", liveRunId: runid, steps: undefined } : x)));
       setActiveId(appendTo);
-      pushTab(appendTo);
     } else {
       setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: mode === "research", forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
       setForkOrigin(null);
       setActiveId(runid);
-      pushTab(runid);
     }
     setNav("tasks");
     setView("thread");
@@ -944,12 +907,10 @@ function App() {
       // an earlier version. Clear the stale recap so it doesn't linger above the new run.
       setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running", liveRunId: runid, steps: undefined, goal: g, recap: undefined, recapPending: false } : x)));
       setActiveId(appendTo);
-      pushTab(appendTo);
     } else {
       setTasks((ts) => [{ id: runid, type: research ? "research" : "code", title, status: "running", ts: Date.now(), goal: g, deep: research || undefined, forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
       setForkOrigin(null);
       setActiveId(runid);
-      pushTab(runid);
     }
     setNav("tasks");
     setView("thread");
@@ -1862,43 +1823,10 @@ function App() {
           </div>
         </header>
 
-        {(() => {
-          // Open-tabs bar (like Claude): several sessions open at once. Shown only when ≥2
-          // live tabs exist, on the Sessions surface — a single session keeps the clean header.
-          const liveTabs = openTabs.filter((id) => tasks.some((tk) => tk.id === id));
-          if (nav !== "tasks" || liveTabs.length < 2) return null;
-          return (
-            <div className="ax-tabs" role="tablist">
-              {liveTabs.map((id) => {
-                const tk = tasks.find((x) => x.id === id)!;
-                const on = activeId === id && view === "thread";
-                return (
-                  <div key={id} className={`ax-tab ${on ? "is-active" : ""}`} role="tab" aria-selected={on}>
-                    <button
-                      className="ax-tab__main"
-                      title={tk.title}
-                      onClick={() => { setNav("tasks"); setActiveId(id); setView("thread"); }}
-                    >
-                      <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
-                      <span className="ax-tab__title">{tk.title}</span>
-                    </button>
-                    <button className="ax-tab__x" onClick={() => dropTab(id)} title={t(lang, "close")} aria-label={t(lang, "close")}>
-                      <X size={12} aria-hidden />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          );
-        })()}
-
         <div className={`ax-content ${nav === "tasks" && view === "thread" ? "ax-content--thread" : ""}`}>
           {nav !== "tasks" ? (
             <div className="ax-canvas">
-              {nav === "projects" && <ProjectsView lang={lang} />}
-              {nav === "reading" && (
-                <ReadingView lang={lang} sources={sources} onImport={importSource} onOpen={openSource} onRemove={removeSource} />
-              )}
+              {nav === "projects" && <DeliverablesView lang={lang} onOpen={openDeliverable} />}
               {/* 检索 / 笔记本 / 舰队 removed (aggressive simplification); 证据/护盾/溯源/完整性
                   live on the artifact's own inspector tabs, not the sidebar. */}
               {nav === "metrics" && <MetricsView lang={lang} tasks={tasks} />}

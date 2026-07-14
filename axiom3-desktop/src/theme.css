@@ -1391,3 +1391,40 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 /* ── artifact pane: expand to fill the window ─────────────────────── */
 .ax-artpane.is-expanded { position: fixed; inset: 0; z-index: 45; width: 100vw; max-width: 100vw;
   border-left: none; box-shadow: 0 0 0 1px var(--ax-line); }
+
+/* ── 产出物库 + 概览看板 ───────────────────────────────────────────────── */
+.ax-panel { padding: 22px 26px; max-width: 1000px; }
+.ax-panel__head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 4px; }
+.ax-panel__title { display: inline-flex; align-items: center; gap: 8px; font-family: var(--ax-serif); font-size: 19px; color: var(--ax-ink); }
+.ax-panel__title svg { color: var(--ax-accent); }
+.ax-deliv__meta { font-size: 12px; color: var(--ax-ink-faint); }
+.ax-deliv__empty { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 60px 0; color: var(--ax-ink-faint); text-align: center; }
+.ax-deliv__empty svg { opacity: .5; }
+.ax-deliv__list { display: flex; flex-direction: column; gap: 8px; }
+.ax-deliv__row { display: flex; align-items: center; gap: 10px; padding: 11px 13px; background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 10px; transition: border-color .12s, background .12s; }
+.ax-deliv__row:hover { border-color: var(--ax-line); background: color-mix(in srgb, var(--ax-accent) 3%, var(--ax-surface)); }
+.ax-deliv__main { flex: 1; min-width: 0; cursor: pointer; }
+.ax-deliv__title { display: block; font-size: 14px; font-weight: 550; color: var(--ax-ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 5px; }
+.ax-deliv__tags { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11.5px; color: var(--ax-ink-faint); }
+.ax-deliv__kind { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 5px; }
+.ax-deliv__kind.is-research { color: var(--ax-accent); background: color-mix(in srgb, var(--ax-accent) 12%, transparent); }
+.ax-deliv__kind.is-analysis { color: var(--ax-ink-soft); background: var(--ax-surface-2); }
+.ax-deliv__stat { display: inline-flex; align-items: center; gap: 3px; }
+.ax-deliv__stat svg { opacity: .55; }
+.ax-deliv__stat.is-on { color: var(--ax-accent); }
+.ax-deliv__stat.is-on svg { opacity: 1; }
+.ax-deliv__date { margin-left: auto; color: var(--ax-ink-faint); }
+.ax-deliv__actions { display: flex; gap: 2px; flex-shrink: 0; }
+.ax-deliv__del:hover { color: #c0392b; }
+.ax-deliv__rename { display: inline-flex; align-items: center; gap: 4px; }
+.ax-deliv__input { font-size: 14px; padding: 3px 7px; border: 1px solid var(--ax-accent); border-radius: 6px; background: var(--ax-surface); color: var(--ax-ink); min-width: 260px; }
+.ax-dash__cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.ax-dash__card { padding: 13px 15px; background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 11px; }
+.ax-dash__chead { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ax-ink-soft); margin-bottom: 8px; }
+.ax-dash__chead svg { color: var(--ax-accent); opacity: .8; }
+.ax-dash__num { font-family: var(--ax-serif); font-size: 26px; line-height: 1; color: var(--ax-ink); }
+.ax-dash__sub { font-size: 11px; color: var(--ax-ink-faint); margin-top: 4px; }
+.ax-dash__hist { display: flex; align-items: flex-end; gap: 5px; height: 130px; padding: 8px 0 0; }
+.ax-dash__bar { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; }
+.ax-dash__barfill { width: 66%; min-height: 2px; background: var(--ax-accent); border-radius: 4px 4px 0 0; transition: height .3s; }
+.ax-dash__barlabel { font-size: 9.5px; color: var(--ax-ink-faint); margin-top: 5px; white-space: nowrap; }
