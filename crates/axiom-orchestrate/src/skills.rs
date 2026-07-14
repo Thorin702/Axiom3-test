@@ -14,6 +14,54 @@ pub struct Skill {
 
 pub const SKILLS: &[Skill] = &[
     Skill {
+        name: "protein-structure-figure",
+        keywords: "pymol protein structure figure cartoon ribbon active site catalytic residue mutation binding pocket domain fold pdb crystal cryo-em zinc metal coordination publication figure 结构图 蛋白 活性位点 突变",
+        summary: "Publication-grade PROTEIN/STRUCTURE figures with headless ray-traced PyMOL (matplotlib cannot make these) + measured geometry + a composed, captioned panel.",
+        card: "# Publication-grade protein STRUCTURE figures (PyMOL, headless ray-traced)\n\
+            USE THIS whenever the figure is a protein / enzyme / complex: overall fold, active site, a mutation, a binding pocket, domain architecture.\n\
+            matplotlib CANNOT make these (no cartoon secondary structure, no ray tracing, no atom selection language). Hand-drawing one in matplotlib always looks amateurish — use PyMOL.\n\
+            \n\
+            0. INSTALL once (slow conda solve → it runs as a BACKGROUND job; poll with job_status until DONE):\n\
+               {\"tool\":\"conda_install\",\"packages\":[\"pymol-open-source\",\"biopython\",\"pillow\",\"matplotlib\"]}\n\
+            \n\
+            1. STRUCTURE. Prefer a REAL experimental structure — RCSB has 200k+. Fetch by id inside the script: `cmd.fetch('5grr', type='pdb', async_=0)` (writes 5grr.pdb into the cwd). Use the `pdb` tool first to confirm the id/method/resolution.\n\
+            \n\
+            2. RUN IT — from the PYTHON KERNEL by subprocess, using the ABSOLUTE binary path. Do NOT use the `run` tool (its allowlist has no `pymol`, and its 45 s shell timeout can cut a ray-trace off). The kernel cell timeout is generous (600 s):\n\
+               ```\n\
+               import os, subprocess\n\
+               PYMOL = os.path.expanduser('~/.axiom3/bioenv/bin/pymol')   # absolute → survives a kernel restart, no PATH dependency\n\
+               open('render.py','w').write(SCRIPT)\n\
+               r = subprocess.run([PYMOL,'-cq','render.py'], capture_output=True, text=True)\n\
+               print(r.returncode, r.stdout[-2000:], r.stderr[-2000:])    # ALWAYS print rc+stderr, or a silent failure looks like success\n\
+               ```\n\
+               Headless: NO GPU and NO display needed (PyMOL ray-traces in software; ~2-30 s per panel).\n\
+               *** GOTCHA (bit me): under `pymol -cq`, __file__ is NOT your script — so os.path.dirname(__file__) points INSIDE the pymol package and your PNGs silently vanish there. ALWAYS write ABSOLUTE output paths into the script (os.getcwd() of the KERNEL is the workspace — bake it in). ***\n\
+            \n\
+            3. PUBLICATION STYLING — this is what separates a figure from a screenshot. Set ALL of it:\n\
+               cmd.bg_color('white'); cmd.set('ray_opaque_background',1); cmd.set('antialias',2); cmd.set('ray_shadows',0)\n\
+               cmd.set('ambient_occlusion_mode',1)   # AO = the depth that makes it read as 3D. Do not skip.\n\
+               cmd.set('ambient',0.22); cmd.set('direct',0.58); cmd.set('reflect',0.22); cmd.set('specular',0.10)\n\
+               cmd.set('cartoon_fancy_helices',1); cmd.set('cartoon_smooth_loops',1); cmd.set('stick_radius',0.18)\n\
+               cmd.set('depth_cue',0); cmd.set('ray_trace_fog',0)\n\
+               COLOUR muted + SEMANTIC: grey85 base; `skyblue` for 'ss H'; `wheat` for 'ss S'; `firebrick` sticks for catalytic residues; `grey65` sticks for the 5 Å shell; `purple` sphere for a metal. NEVER full-saturation primaries.\n\
+            \n\
+            4. PANELS (mirror a journal figure):\n\
+               A) Overall fold: cmd.orient(sel); cmd.zoom(sel,2); cmd.ray(1500,1300); cmd.png(ABS_PATH, dpi=300).\n\
+               B) Site zoom: cmd.set('cartoon_transparency',0.86) AND hide the cartoon outside ~15 Å, so the CHEMISTRY reads instead of being buried by ribbons; show sticks for the catalytic residues + the 5 Å shell; label ONLY the key residues:\n\
+                  cmd.label(sel+' and name CA', '\\\"%s%s\\\" % (resn.capitalize(), resi)')\n\
+               *** GOTCHA: if the structure has SEVERAL metal sites, pick the CATALYTIC one by PROXIMITY to the nucleophile (e.g. the Zn within 2.5 Å of the Ser/Thr OG) — otherwise your distances are nonsense. ***\n\
+               *** GOTCHA: draw coordination bonds with cmd.distance(...), then cmd.hide('labels', name) — the numeric labels pile up and wreck the image. The numbers belong in the CAPTION. ***\n\
+            \n\
+            5. MEASURE, NEVER ASSERT. Compute every number from the coordinates:\n\
+               zx = cmd.get_model(ZN).atom[0].coord; for a in cmd.get_model(CAT+' and not elem C').atom: d = ((zx[0]-a.coord[0])**2+(zx[1]-a.coord[1])**2+(zx[2]-a.coord[2])**2)**0.5\n\
+               Real bond lengths, distance-to-active-site, SASA (freesasa), residue counts. A number you did not compute is a fabrication.\n\
+            \n\
+            6. COMPOSE + CAPTION (the last 20% of the polish) — do this in matplotlib so the kernel captures it as the report figure:\n\
+               mpimg.imread the PyMOL PNGs → gridspec → bold panel letters (A/B) → one-line sub-caption per panel → a CAPTION BAR carrying the MEASURED numbers + a legend line (\"red sticks = catalytic; grey = 5 Å shell; purple = Zn; blue = helix, wheat = strand\").\n\
+               Use a GENEROUS figsize (e.g. 18×9): the kernel captures at dpi=110, so a small figsize throws away the ray-traced detail.\n\
+               ALSO savefig the full-resolution PNG into the workspace — it then appears under 产物文件 and the user can download the print-quality original.\n",
+    },
+    Skill {
         name: "single-cell-rnaseq",
         keywords: "scrna scRNA-seq scanpy anndata umap leiden cluster cell type marker harmony batch integration immune",
         summary: "scRNA-seq: QC → normalize → HVG → PCA → batch-correct → Leiden → UMAP → annotate.",
@@ -140,6 +188,18 @@ mod tests {
         assert!(!hits.is_empty());
         assert_eq!(hits[0].name, "single-cell-rnaseq", "expected scRNA skill first, got {:?}", hits.iter().map(|s| s.name).collect::<Vec<_>>());
         assert!(search("volcano fdr differential").iter().any(|s| s.name == "differential-expression"));
+        // The structure-figure skill must WIN the queries an agent actually types when it needs a
+        // protein figure — a skill nobody retrieves is a skill that doesn't exist. It is also loadable
+        // straight by name, which is how the system prompt routes to it.
+        for q in ["pymol protein structure figure", "active site zinc coordination figure", "enzyme fold cartoon ribbon"] {
+            let hits = search(q);
+            assert_eq!(hits.first().map(|s| s.name), Some("protein-structure-figure"), "query {q:?} → {:?}", hits.iter().map(|s| s.name).collect::<Vec<_>>());
+        }
+        let card = get("protein-structure-figure").expect("loadable by name").card;
+        // The card must carry the two things that make it WORK rather than merely sound right: the
+        // absolute-path kernel invocation (the `run` allowlist has no pymol) and measured-not-asserted geometry.
+        assert!(card.contains("~/.axiom3/bioenv/bin/pymol"), "card must give the absolute binary path");
+        assert!(card.contains("MEASURE, NEVER ASSERT"), "card must forbid asserted numbers");
         assert!(get("phylogenetics").is_some());
         assert!(get("nonexistent").is_none());
         // A miss returns nothing; the catalogue still lists everything.

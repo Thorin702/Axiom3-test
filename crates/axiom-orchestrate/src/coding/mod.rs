@@ -233,6 +233,12 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              `mpl.rcParams['font.sans-serif']=['PingFang SC','Heiti TC','Arial Unicode MS','DejaVu Sans']; \
              mpl.rcParams['axes.unicode_minus']=False` — then verify no missing-glyph boxes; only if no CJK \
              font is available fall back to English on the figure. \
+             STRUCTURE figures (a PROTEIN / enzyme / complex / active site / mutation / binding pocket / \
+             fold): NEVER hand-draw these in matplotlib — matplotlib physically cannot render a cartoon \
+             ribbon or ray-trace, and the attempt always looks amateurish. Instead `load_skill` \
+             `protein-structure-figure` and follow it: it installs headless PyMOL via `conda_install` and \
+             ray-traces a publication-grade panel from a REAL PDB entry, with every distance MEASURED from \
+             the coordinates. Whenever the subject of a figure is a 3-D structure, this is the route. \
              MECHANISM / PATHWAY / CONCEPT diagrams: PREFER a NATIVE figure block over hand-drawn \
              matplotlib — the native renderers emit clean publication-grade SVG, whereas hand-placing \
              matplotlib patches (Ellipse/FancyArrowPatch/…) reliably looks amateurish. Pick by what the \
