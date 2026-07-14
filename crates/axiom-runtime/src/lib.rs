@@ -36,6 +36,8 @@ pub enum Provider {
     Qwen,
     /// Zhipu GLM (智谱, e.g. glm-5.2 / glm-5-turbo) via the BigModel OpenAI-compatible endpoint.
     Zhipu,
+    /// SCNet 超算互联网 LLM gateway (OpenAI-compatible, e.g. GLM-5.2). Key: SCNET_API_KEY.
+    Scnet,
 }
 
 /// DashScope's OpenAI-compatible base URL (Chat Completions API), used for Qwen.
@@ -43,6 +45,9 @@ const QWEN_BASE_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
 /// Zhipu BigModel's OpenAI-compatible base URL (Chat Completions API), used for GLM.
 const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+
+/// SCNet 超算互联网's OpenAI-compatible base URL (Chat Completions API).
+const SCNET_BASE_URL: &str = "https://api.scnet.cn/api/llm/v1";
 
 /// Canonical OpenAI base URL — PINNED. rig's `openai::Client::from_env()` honors an
 /// `OPENAI_BASE_URL` env override; if that pointed the `openai` family at a shared
@@ -64,6 +69,7 @@ impl Provider {
             "gemini" | "google" => Some(Provider::Gemini),
             "qwen" | "dashscope" => Some(Provider::Qwen),
             "zhipu" | "glm" | "bigmodel" => Some(Provider::Zhipu),
+            "scnet" | "scnetcloud" => Some(Provider::Scnet),
             _ => None,
         }
     }
@@ -76,6 +82,7 @@ impl Provider {
             Provider::Gemini => "gemini",
             Provider::Qwen => "qwen",
             Provider::Zhipu => "zhipu",
+            Provider::Scnet => "scnet",
         }
     }
     /// The env var its API key is read from.
@@ -87,6 +94,7 @@ impl Provider {
             Provider::Gemini => "GEMINI_API_KEY",
             Provider::Qwen => "QWEN_API_KEY",
             Provider::Zhipu => "ZHIPU_API_KEY",
+            Provider::Scnet => "SCNET_API_KEY",
         }
     }
 }
@@ -154,6 +162,19 @@ pub async fn complete_with(provider: Provider, req: &Request) -> anyhow::Result<
                 openai::CompletionsClient::builder()
                     .api_key(&key)
                     .base_url(ZHIPU_BASE_URL)
+                    .build()
+                    .map_err(anyerr)?,
+                req
+            )
+        }
+        // OpenAI-compatible (Chat Completions) at SCNet 超算互联网's endpoint (GLM-5.2 etc.).
+        Provider::Scnet => {
+            let key = std::env::var(Provider::Scnet.env_var())
+                .map_err(|_| anyhow::anyhow!("{} not set", Provider::Scnet.env_var()))?;
+            run_provider_agent!(
+                openai::CompletionsClient::builder()
+                    .api_key(&key)
+                    .base_url(SCNET_BASE_URL)
                     .build()
                     .map_err(anyerr)?,
                 req

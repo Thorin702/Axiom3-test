@@ -1064,13 +1064,14 @@ pub async fn vector_self_test(state: tauri::State<'_, AppState>) -> Result<Strin
 
 /// The five cloud families the fleet can dispatch to (the unit of cross-vendor
 /// independence). Local engines (Ollama/vLLM) are a separate family handled elsewhere.
-const CLOUD_PROVIDERS: [Provider; 6] = [
+const CLOUD_PROVIDERS: [Provider; 7] = [
     Provider::Anthropic,
     Provider::OpenAi,
     Provider::DeepSeek,
     Provider::Gemini,
     Provider::Qwen,
     Provider::Zhipu,
+    Provider::Scnet,
 ];
 
 /// Keychain entry name for a provider's BYO key (under [`KEYCHAIN_SERVICE`]).
@@ -1472,6 +1473,11 @@ fn resolve_model(
     deep: bool,
     mode: &str,
 ) -> Result<(String, String), String> {
+    // SCNet 超算互联网 gateway is the app's SOLE model when its key is set: EVERY call goes to GLM-5.2
+    // there (the user's supercomputing token plan). This overrides all the routing below.
+    if std::env::var("SCNET_API_KEY").is_ok() {
+        return Ok(("scnet".to_string(), "GLM-5.2".to_string()));
+    }
     let want_thinking = matches!(mode, "research" | "analysis");
     let model = model.filter(|m| !m.trim().is_empty());
     // Explicit provider/connection wins.
@@ -3048,14 +3054,13 @@ pub async fn coding_run(
     let mut synthesis = result.summary;
     // RELIABILITY NET: if the in-agent synthesis FELL BACK (the author model couldn't write the final
     // report even after retries — its salvage produced the sources-list placeholder), re-synthesize a
-    // proper cited report on the fast, independent DeepSeek model FROM THE RETRIEVED SOURCES. A heavy
-    // deep-research run must reliably yield a real report, not a placeholder. [Sn] markers stay valid
-    // (they map to result.sources, which is returned) so the report's citations remain clickable.
+    // proper cited report FROM THE RETRIEVED SOURCES (a fresh attempt on the run's model — SCNet
+    // GLM-5.2; DeepSeek fallback removed). [Sn] markers stay valid (they map to result.sources).
     let synth_fell_back = synthesis.starts_with("## 研究要点(基于已检索到的来源)")
         || synthesis.starts_with("本次研究已收集材料并生成了图");
-    if is_research && synth_fell_back && !result.sources.is_empty() && std::env::var("DEEPSEEK_API_KEY").is_ok() {
+    if is_research && synth_fell_back && !result.sources.is_empty() {
         use axiom_orchestrate::coding::CodingModel;
-        let m = ProviderModel { provider: "deepseek".into(), model: "deepseek-v4-flash".into(), timeout_s: 180 };
+        let m = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: 240 };
         let mut src_block = String::new();
         for s in result.sources.iter().take(40) {
             let head = if s.title.trim().is_empty() { s.url.clone() } else { s.title.clone() };
@@ -3100,17 +3105,12 @@ pub async fn coding_run(
             synthesis.push_str(&format!("- `{}` — {sz}\n", a.path));
         }
     }
-    // DEEP RESEARCH: an INDEPENDENT cross-model reviewer flags gaps / overclaims / unsupported claims.
-    // Prefer a DIFFERENT model (DeepSeek if its key is set) — it catches what the author model misses
-    // and dodges the GLM rate limit; REVIEW ONLY, so it never rewrites the report and can't fabricate.
+    // DEEP RESEARCH: an independent reviewer flags gaps / overclaims / unsupported claims. Runs on
+    // the same model as the run (SCNet GLM-5.2 — the DeepSeek cross-model fallback was removed);
+    // REVIEW ONLY, so it never rewrites the report and can't fabricate.
     let review = if is_research && synthesis.trim().chars().count() > 200 {
         use axiom_orchestrate::coding::CodingModel;
-        let (rp, rm) = if std::env::var("DEEPSEEK_API_KEY").is_ok() {
-            ("deepseek".to_string(), "deepseek-v4-flash".to_string())
-        } else {
-            (provider.clone(), model_id.clone())
-        };
-        let reviewer = ProviderModel { provider: rp, model: rm, timeout_s: 90 };
+        let reviewer = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: 120 };
         let user = format!("研究报告:\n{}", synthesis.chars().take(9000).collect::<String>());
         match reviewer.complete(RESEARCH_REVIEW_SYSTEM, &user, &Cancel::new()).await {
             Ok(t) if t.trim().chars().count() > 20 => Some(t.trim().to_string()),
