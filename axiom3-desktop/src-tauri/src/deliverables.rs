@@ -112,6 +112,10 @@ pub fn deliverable_save(app: tauri::AppHandle, id: String, json: String) -> Resu
                                 }
                                 o.insert(k.clone(), v.clone());
                             }
+                            // The incoming copy OMITS `recapPending` (it's transient), and a merge only
+                            // overwrites keys it carries — so an old stale `recapPending: true` would
+                            // survive forever. Drop it explicitly.
+                            o.remove("recapPending");
                             json = serde_json::to_string(&old).map_err(|e| e.to_string())?;
                         }
                     }

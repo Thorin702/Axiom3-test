@@ -768,7 +768,9 @@ function App() {
   async function openDeliverable(id: string) {
     try {
       const json = await invoke<string>("deliverable_load", { id });
-      const tk: Task = JSON.parse(json);
+      // Clear any stale `recapPending` baked into an older record — it would otherwise render as a
+      // summary that spins forever with nothing to finish it.
+      const tk: Task = { ...JSON.parse(json), recapPending: false };
       setTasks((ts) => (ts.some((x) => x.id === tk.id) ? ts.map((x) => (x.id === tk.id ? tk : x)) : [tk, ...ts]));
       setActiveId(tk.id);
       setNav("tasks");
