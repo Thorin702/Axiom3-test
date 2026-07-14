@@ -2760,6 +2760,11 @@ pub async fn coding_run(
         None
     };
     let base_goal = reframed.clone().unwrap_or_else(|| goal.clone());
+    // The RunStarted title must be the user's CLEAN topic — captured from the ORIGINAL goal BEFORE it
+    // gets wrapped below (a follow-up wraps it in the "You are CONTINUING…" prior-findings scaffold,
+    // and older paths prepend directives). Using the wrapped goal leaked internal prompt text as the
+    // run title in the activity rail.
+    let run_title: String = goal.trim().chars().take(60).collect();
     // DEEP RESEARCH: the mode directive (literature/web-first, no budget pressure, deep cited report)
     // is passed as SYSTEM STEERING via run_coding_agent_steered — NOT concatenated into the goal. That
     // keeps the goal (→ transcript GOAL header → report subject → recap input → session title) the
@@ -2833,7 +2838,7 @@ pub async fn coding_run(
 
     let sink: Arc<dyn EventSink> = Arc::new(TauriSink { app: app.clone() });
     let em = SeqEmitter::new(sink, runid.clone());
-    let title: String = goal.trim().chars().take(60).collect();
+    let title: String = run_title;
     // Research is NOT a "coding" agent to the user — name the run + its agent for the mode, not the
     // implementation. (task_kind drives labels in the activity rail; the role drives the in-thread
     // "启动智能体 · …" name.)

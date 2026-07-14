@@ -5,7 +5,7 @@
 // draft-check sessions keep their claim-by-claim flow in the thread.
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, Copy, Check, Maximize2, Minimize2, Palette, Newspaper, Wand2, PenLine, CornerDownLeft, Loader2 } from "lucide-react";
+import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, ChevronDown, Copy, Check, Maximize2, Minimize2, Palette, Newspaper, Wand2, PenLine, CornerDownLeft, Loader2 } from "lucide-react";
 import type { Lang } from "../i18n";
 import type { Task } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
@@ -69,6 +69,7 @@ export function ArtifactPane({
   // Version history: a follow-up iterates the artifact (v1 → v2 …). Default to the latest.
   const versions = task.versions ?? [{ synthesis: task.synthesis, review: task.review, steps: task.steps, ts: task.ts, goal: task.goal ?? "" }];
   const [vIdx, setVIdx] = useState(versions.length - 1);
+  const [verMenuOpen, setVerMenuOpen] = useState(false);
   useEffect(() => setVIdx(versions.length - 1), [task.id, versions.length]);
   const ver = versions[Math.min(vIdx, versions.length - 1)];
   async function copyArtifact() {
@@ -210,10 +211,31 @@ export function ArtifactPane({
             <button className="ax-artpane__vbtn" disabled={vIdx <= 0} onClick={() => setVIdx((i) => Math.max(0, i - 1))} title={zh ? "上一版" : "previous version"}>
               <ChevronLeft size={13} aria-hidden />
             </button>
-            <span className="ax-artpane__ver" title={zh ? "版本" : "version"}>v{vIdx + 1}/{versions.length}</span>
+            {/* click the chip → a collapsed list of every round's artifact, by index + its topic */}
+            <button className="ax-artpane__ver ax-artpane__ver--btn" onClick={() => setVerMenuOpen((o) => !o)} title={zh ? "选择产物版本" : "select version"}>
+              v{vIdx + 1}/{versions.length}
+              <ChevronDown size={11} aria-hidden />
+            </button>
             <button className="ax-artpane__vbtn" disabled={vIdx >= versions.length - 1} onClick={() => setVIdx((i) => Math.min(versions.length - 1, i + 1))} title={zh ? "下一版" : "next version"}>
               <ChevronRight size={13} aria-hidden />
             </button>
+            {verMenuOpen && (
+              <>
+                <div className="ax-artpane__vscrim" onClick={() => setVerMenuOpen(false)} />
+                <div className="ax-artpane__vmenu" role="menu">
+                  {versions.map((v, i) => (
+                    <button
+                      key={i}
+                      className={`ax-artpane__vitem ${i === vIdx ? "is-active" : ""}`}
+                      onClick={() => { setVIdx(i); setVerMenuOpen(false); }}
+                    >
+                      <span className="ax-artpane__vnum">v{i + 1}</span>
+                      <span className="ax-artpane__vgoal">{(v.goal || "").trim() || (zh ? `第 ${i + 1} 版` : `Version ${i + 1}`)}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </span>
         ) : (
           <span className="ax-artpane__ver" title={zh ? "版本" : "version"}>v1</span>

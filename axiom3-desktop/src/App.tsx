@@ -927,10 +927,22 @@ function App() {
     const runid = `run-${crypto.randomUUID()}`;
     const sessionId = appendTo ?? runid;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
-    // Prior round's findings → carried into the run so the agent continues the investigation.
-    const prior = appendTo ? tasks.find((x) => x.id === appendTo)?.synthesis : undefined;
+    // Prior round's findings → carried into the run so the agent continues the investigation. STRIP the
+    // figure appendix first: a report ends with base64 ```pyfig``` blocks + a files list, which are
+    // useless as text context and would blow up the prior-findings payload (the agent can't read base64).
+    const priorRaw = appendTo ? tasks.find((x) => x.id === appendTo)?.synthesis : undefined;
+    const prior = priorRaw
+      ? priorRaw
+          .replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "") // drop base64 figure payloads
+          .split(/\n#{1,3}\s*(?:计算得到的图|产物文件|Computed figures|Files produced)/)[0] // drop the appendix
+          .replace(/\[S\d+\]/g, "") // drop stale [Sn] — they index the PRIOR round's sources, not the new run's
+          .trim()
+      : undefined;
     if (appendTo) {
-      setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running", liveRunId: runid, steps: undefined } : x)));
+      // A follow-up ROUND on the same session: the thread now shows the NEW follow-up as the user's
+      // message + its live thinking; the prior round's report/recap move to the right artifact pane as
+      // an earlier version. Clear the stale recap so it doesn't linger above the new run.
+      setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running", liveRunId: runid, steps: undefined, goal: g, recap: undefined, recapPending: false } : x)));
       setActiveId(appendTo);
       pushTab(appendTo);
     } else {
@@ -1023,12 +1035,17 @@ function App() {
   const activeTask = tasks.find((x) => x.id === activeId) ?? null;
   // A finished workflow/coding session shows its result in the right-side ARTIFACT pane
   // (Claude-Science-style). Draft-check sessions keep their claim flow in the thread.
+  // Show the right-side artifact pane whenever this session has ANY produced artifact — including
+  // WHILE a follow-up round is running (the prior round's report stays on the right; the thread shows
+  // only the new round's live thinking). Without this, a running follow-up hid the pane and dumped the
+  // old report inline in the thread above the composer.
   const showArtifactPane =
     view === "thread" &&
     !!activeTask &&
     (activeTask.type === "workflow" || activeTask.type === "code" || activeTask.type === "research") &&
-    activeTask.status !== "running" &&
-    (!!activeTask.synthesis || (activeTask.steps?.length ?? 0) > 0);
+    (!!activeTask.synthesis ||
+      (activeTask.versions?.some((v) => v.synthesis) ?? false) ||
+      (activeTask.steps?.length ?? 0) > 0);
   // Auto-open the right column when an artifact becomes available.
   useEffect(() => {
     if (showArtifactPane && !railOpen) {
