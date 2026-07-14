@@ -113,6 +113,12 @@ macro_rules! run_provider_agent {
         if let Some(sys) = &$req.system {
             b = b.preamble(sys);
         }
+        // Honor the request's output-token budget (previously dropped) — a reasoning model like GLM-5.2
+        // spends most of the budget on hidden reasoning, so a generous cap is required or long reports
+        // get truncated before the answer.
+        if let Some(mt) = $req.max_tokens {
+            b = b.max_tokens(mt as u64);
+        }
         let agent = b.build();
         agent.prompt(last_user_text($req)).await.map_err(anyerr)
     }};

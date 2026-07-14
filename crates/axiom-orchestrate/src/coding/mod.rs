@@ -125,7 +125,10 @@ impl CodingModel for ProviderModel {
                 system: Some(system),
                 messages: vec![Message::user(vec![ContentBlock::text(user)])],
                 model,
-                max_tokens: None,
+                // Generous output budget — GLM-5.2 is a reasoning model that spends most tokens on
+                // hidden reasoning, so a small/absent cap truncated long reports before the answer.
+                // Quality-first: 32k leaves ample room for heavy reasoning PLUS a long final report.
+                max_tokens: Some(32000),
                 reasoning_effort: None,
                 tools: Vec::new(),
             };
