@@ -2686,6 +2686,9 @@ pub async fn coding_run(
     // pressure, literature/web-first (not local data), and steered toward a deep, cited, high-value
     // report. Implies analyze (it still gets a Python kernel to analyze fetched data).
     research: Option<bool>,
+    // Session setting "自动审查": when true, a deep-research report is passed through the independent
+    // reviewer before it's delivered; when false, no reviewer runs (the deliverable ships un-reviewed).
+    review: Option<bool>,
 ) -> Result<CodingRunResult, String> {
     let goal = prepend_skill(goal, skill);
     if goal.trim().is_empty() {
@@ -2907,6 +2910,29 @@ pub async fn coding_run(
     let mut acc_in: u64 = goal.chars().count() as u64 / 3 + 1800; // task + system-prompt baseline
     let mut acc_out: u64 = 0;
     let result = run_coding_agent_steered(&goal, steer, &sandbox, &model, &cancel, &pause, &budget, kernel, |step| {
+        // Sub-agent lifecycle sentinels from delegate_tooled → surface each delegated expert as its OWN
+        // agent (its own status lamp), instead of hiding it inside the main "coder" step stream.
+        if step.tool == "agent_spawn" {
+            em.emit(RunEventBody::AgentSpawned {
+                agent_id: step.input.clone(),
+                role: step.detail.clone(),
+                model: model_id.clone(),
+                vendor: provider.clone(),
+                phase: "executing".into(),
+            });
+            return;
+        }
+        if step.tool == "agent_done" {
+            em.emit(RunEventBody::AgentFinished {
+                agent_id: step.input.clone(),
+                outcome: "ok".into(),
+                tokens_in: 0,
+                tokens_out: 0,
+                error: None,
+                summary: Some(step.detail.chars().take(80).collect()),
+            });
+            return;
+        }
         let think: String = step.reasoning.chars().take(600).collect();
         let mut note = if think.is_empty() {
             format!("{} {}", step.tool, step.detail)
@@ -3040,14 +3066,8 @@ pub async fn coding_run(
         error: None,
         summary: Some(result.summary.chars().take(120).collect()),
     });
-    em.emit(RunEventBody::PhaseChanged { phase: "done".into(), index: 2, total: 3 });
-    em.emit(RunEventBody::RunFinished {
-        status: result.status.clone(),
-        agents_total: 1,
-        agents_ok: if outcome == "ok" { 1 } else { 0 },
-        agents_err: if outcome == "err" { 1 } else { 0 },
-        error: None,
-    });
+    // NOTE: the run's PhaseChanged("done") + RunFinished are emitted at the VERY END (after the
+    // resynth + reviewer agents), so those post-run experts still show as LIVE lamps while they work.
 
     // Attach the figures the agent COMPUTED (base64 PNG) to the artifact as native
     // ```pyfig blocks, so the report shows results drawn from real data, not asserted.
@@ -3060,6 +3080,7 @@ pub async fn coding_run(
         || synthesis.starts_with("本次研究已收集材料并生成了图");
     if is_research && synth_fell_back && !result.sources.is_empty() {
         use axiom_orchestrate::coding::CodingModel;
+        em.emit(RunEventBody::AgentSpawned { agent_id: "resynth".into(), role: "综合专家".into(), model: model_id.clone(), vendor: provider.clone(), phase: "executing".into() });
         let m = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: 240 };
         let mut src_block = String::new();
         for s in result.sources.iter().take(40) {
@@ -3081,6 +3102,7 @@ pub async fn coding_run(
                 synthesis = t.trim().to_string();
             }
         }
+        em.emit(RunEventBody::AgentFinished { agent_id: "resynth".into(), outcome: "ok".into(), tokens_in: 0, tokens_out: 0, error: None, summary: Some("综合报告已生成".into()) });
     }
     if !result.figures.is_empty() {
         synthesis.push_str("\n\n## 计算得到的图 · Computed figures\n");
@@ -3105,20 +3127,32 @@ pub async fn coding_run(
             synthesis.push_str(&format!("- `{}` — {sz}\n", a.path));
         }
     }
-    // DEEP RESEARCH: an independent reviewer flags gaps / overclaims / unsupported claims. Runs on
-    // the same model as the run (SCNet GLM-5.2 — the DeepSeek cross-model fallback was removed);
+    // DEEP RESEARCH: an independent reviewer flags gaps / overclaims / unsupported claims — but ONLY
+    // when the session's 自动审查 setting is on. Runs on the same model as the run (SCNet GLM-5.2);
     // REVIEW ONLY, so it never rewrites the report and can't fabricate.
-    let review = if is_research && synthesis.trim().chars().count() > 200 {
+    let review = if is_research && review.unwrap_or(false) && synthesis.trim().chars().count() > 200 {
         use axiom_orchestrate::coding::CodingModel;
+        em.emit(RunEventBody::AgentSpawned { agent_id: "reviewer".into(), role: "审查员".into(), model: model_id.clone(), vendor: provider.clone(), phase: "executing".into() });
         let reviewer = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: 120 };
         let user = format!("研究报告:\n{}", synthesis.chars().take(9000).collect::<String>());
-        match reviewer.complete(RESEARCH_REVIEW_SYSTEM, &user, &Cancel::new()).await {
+        let r = match reviewer.complete(RESEARCH_REVIEW_SYSTEM, &user, &Cancel::new()).await {
             Ok(t) if t.trim().chars().count() > 20 => Some(t.trim().to_string()),
             _ => None,
-        }
+        };
+        em.emit(RunEventBody::AgentFinished { agent_id: "reviewer".into(), outcome: "ok".into(), tokens_in: 0, tokens_out: 0, error: None, summary: Some("审查完成".into()) });
+        r
     } else {
         None
     };
+    // NOW the whole run (main agent + delegated experts + resynth + reviewer) is truly done.
+    em.emit(RunEventBody::PhaseChanged { phase: "done".into(), index: 2, total: 3 });
+    em.emit(RunEventBody::RunFinished {
+        status: result.status.clone(),
+        agents_total: 1,
+        agents_ok: if outcome == "ok" { 1 } else { 0 },
+        agents_err: if outcome == "err" { 1 } else { 0 },
+        error: None,
+    });
     Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace, review, sources: result.sources })
 }
 

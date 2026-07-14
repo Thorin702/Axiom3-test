@@ -562,6 +562,10 @@ pub async fn delegate_tooled(
     cancel: &Cancel,
     task: &str,
     base: u32, // parent's current src_n — sub-agent sources are renumbered from base+1 upward
+    // Lifecycle sink: emitted once per sub-agent as a sentinel step (tool "agent_spawn"/"agent_done",
+    // `input` = a unique id, `detail` = a display name) so the shell can surface each delegated expert
+    // as its OWN live agent (its own status lamp), not hidden inside the parent's step stream.
+    on_life: &mut (dyn FnMut(CodingStepRec) + Send),
 ) -> (String, Vec<String>, Vec<Source>) {
     let decomp = model
         .complete(
@@ -587,10 +591,22 @@ pub async fn delegate_tooled(
     // clickable, correctly-attributed provenance — no collision with the parent or sibling sub-agents.
     let mut merged: Vec<Source> = Vec::new();
     let mut next = base; // ids consumed so far (parent + earlier sub-agents); this sub's offset
-    for a in &angles {
+    for (i, a) in angles.iter().enumerate() {
         if cancel.is_cancelled() {
             break;
         }
+        // Announce this expert's START so it lights up as its own live agent in the UI.
+        let sub_id = format!("sub-{base}-{i}");
+        let short: String = a.chars().take(22).collect();
+        on_life(CodingStepRec {
+            n: 0,
+            tool: "agent_spawn".into(),
+            detail: format!("子专家 {}·{}", i + 1, short),
+            observation: String::new(),
+            input: sub_id.clone(),
+            reasoning: String::new(),
+            figures: Vec::new(),
+        });
         let sub_pause = Pause::new();
         sub_pause.disable_asks(); // headless sub-agent; delegate_allowed NOT set → cannot re-delegate
         let sub_goal = format!(
@@ -617,6 +633,16 @@ pub async fn delegate_tooled(
         }
         next += sub_src_count;
         reports.push(format!("### 子智能体角度:{a}\n{}", remap_cite_markers(sub.summary.trim(), offset)));
+        // Announce this expert's END → its lamp turns green.
+        on_life(CodingStepRec {
+            n: 0,
+            tool: "agent_done".into(),
+            detail: format!("完成 · {short}"),
+            observation: String::new(),
+            input: sub_id,
+            reasoning: String::new(),
+            figures: Vec::new(),
+        });
     }
     if reports.is_empty() {
         return ("[委派未产出结果 —— 请自己完成这个子任务]".to_string(), figs, merged);
@@ -696,7 +722,7 @@ pub async fn run_coding_agent(
     pause: &Pause,
     budget: &CodingBudget,
     kernel: Option<Arc<PyKernel>>,
-    on_step: impl FnMut(CodingStepRec),
+    on_step: impl FnMut(CodingStepRec) + Send,
     on_ask: impl FnMut(String, String),
 ) -> CodingResult {
     run_coding_agent_steered(goal, "", sandbox, model, cancel, pause, budget, kernel, on_step, on_ask).await
@@ -716,7 +742,7 @@ pub async fn run_coding_agent_steered(
     pause: &Pause,
     budget: &CodingBudget,
     kernel: Option<Arc<PyKernel>>,
-    mut on_step: impl FnMut(CodingStepRec),
+    mut on_step: impl FnMut(CodingStepRec) + Send,
     // Called when the agent invokes `ask_user`: (card_id, card_json) — the shell emits an AskUser
     // event so the UI can render the question card. The loop then parks until the answer arrives.
     mut on_ask: impl FnMut(String, String),
@@ -1238,7 +1264,7 @@ pub async fn run_coding_agent_steered(
                         cmd_timeout_s: budget.cmd_timeout_s,
                         cell_timeout_s: budget.cell_timeout_s,
                     };
-                    let (obs, figs, merged) = delegate_tooled(model, sandbox, &kernel, &sub_budget, cancel, &task, src_n).await;
+                    let (obs, figs, merged) = delegate_tooled(model, sandbox, &kernel, &sub_budget, cancel, &task, src_n, &mut on_step).await;
                     step_figures = figs; // sub-agents' computed figures flow into the parent report (deduped downstream)
                     // Renumber-merge: the sub-agents' real sources come back in the parent's global [Sn]
                     // space (ids src_n+1…); adopt them so delegated findings are clickable in the report.

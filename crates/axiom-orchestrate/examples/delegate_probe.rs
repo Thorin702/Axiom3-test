@@ -25,7 +25,8 @@ async fn main() {
         let sub_budget = CodingBudget { max_steps: 6, per_call_timeout_s: 150, cmd_timeout_s: 120, cell_timeout_s: 300 };
         let task = std::env::var("AXIOM_TASK").unwrap_or_else(|_| "查证:端粒酶激活是否是衰老细胞免疫逃逸的一个已被报道的机制?给出结论与依据。".into());
         println!("=== delegate_tooled (model={model_id}) ===\n=== task: {task}\n");
-        let (obs, figs, merged) = delegate_tooled(&m, &sb, &kernel, &sub_budget, &cancel, &task, 0).await;
+        let mut on_life = |_: axiom_orchestrate::coding::CodingStepRec| {};
+        let (obs, figs, merged) = delegate_tooled(&m, &sb, &kernel, &sub_budget, &cancel, &task, 0, &mut on_life).await;
         println!("{obs}\n\n[figures produced by sub-agents: {}] [merged sources: {}]", figs.len(), merged.len());
         let _ = std::fs::remove_dir_all(&dir);
     } else {

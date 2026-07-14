@@ -12,6 +12,7 @@ import { ArtifactInspector } from "./components/ArtifactInspector";
 import { ReviewerPanel } from "./components/ReviewerPanel";
 import { AgentSteps } from "./components/AgentSteps";
 import { ThreadActivity } from "./components/ThreadActivity";
+import { RoundHistory } from "./components/RoundHistory";
 import { RunStatusPill } from "./components/RunStatusPill";
 import { ContextWindow } from "./components/ContextWindow";
 import { ResizeHandle } from "./components/ResizeHandle";
@@ -36,12 +37,11 @@ import {
 } from "lucide-react";
 
 // Composer modes (the icon-button popover, Claude-style). Each maps to backend behaviour:
-// 自动 infers intent + thinking depth; 研究 runs literature/multi-agent research; 分析 spins up
-// the Python kernel. The backend picks thinking vs non-thinking per mode.
+// Two modes only. Glob-DAgent = global deep tool agent (research); Loc-SAgent = local single agent
+// (analysis, Python kernel). The backend picks thinking vs non-thinking per mode.
 const MODES = [
-  { k: "auto", zh: "自动", en: "Auto", Icon: Sparkles, tzh: "读懂请求,自己选研究/分析/校验与思考深度", ten: "infer intent + thinking depth" },
-  { k: "research", zh: "研究", en: "Research", Icon: Search, tzh: "深度研究:无预算 · 联网/文献优先 · 带引用高价值报告", ten: "deep research: no budget · web/literature-first · cited report" },
-  { k: "analysis", zh: "分析", en: "Analysis", Icon: TerminalSquare, tzh: "分析你的本地数据:Python 内核真跑 → 计算图 + 统计(有预算)", ten: "analyze your local data: Python kernel → figures + stats" },
+  { k: "research", zh: "Glob-DAgent", en: "Glob-DAgent", Icon: Search, tzh: "全局深度智能体:无预算 · 联网/文献优先 · 多智能体委派 · 带引用高价值报告", ten: "global deep agent: no budget · web/literature-first · multi-agent · cited report" },
+  { k: "analysis", zh: "Loc-SAgent", en: "Loc-SAgent", Icon: TerminalSquare, tzh: "本地单智能体:Python 内核在你的本地数据上真跑 → 计算图 + 统计(有预算)", ten: "local single agent: Python kernel on your data → figures + stats" },
 ] as const;
 type ModeKey = (typeof MODES)[number]["k"];
 
@@ -133,12 +133,26 @@ function stripFigPayload(s?: string): string | undefined {
   if (!s || !s.includes("```pyfig")) return s;
   return s.replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "```pyfig\n[图形已存入产出物库]\n```");
 }
+// A step's output can embed a base64 ```pyfig``` image — strip it for the localStorage copy.
+function stripStepFig(s: AgentStepView): AgentStepView {
+  if (!s.output?.includes("```pyfig")) return s;
+  return { ...s, output: s.output.replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "") };
+}
 function leanTaskForStorage(t: Task): Task {
   return {
     ...t,
+    // never persist the transient "recap is generating" flag — a restart would strand it as a
+    // spinner that nothing can ever clear.
+    recapPending: undefined,
     synthesis: stripFigPayload(t.synthesis),
-    versions: t.versions?.map((v) => ({ ...v, synthesis: stripFigPayload(v.synthesis) })),
-    steps: t.steps?.map((s) => (s.output?.includes("```pyfig") ? { ...s, output: s.output.replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "") } : s)),
+    // Rounds archive their execution chain into `versions[].steps` — those step outputs carry base64
+    // figures too, so they MUST be stripped as well or the ~5MB localStorage quota blows again.
+    versions: t.versions?.map((v) => ({
+      ...v,
+      synthesis: stripFigPayload(v.synthesis),
+      steps: v.steps?.map(stripStepFig),
+    })),
+    steps: t.steps?.map(stripStepFig),
   };
 }
 
@@ -187,10 +201,18 @@ function App() {
   // Composer mode (next to Send): 自动 infers intent + thinking depth in the backend; 研究 runs a
   // literature/multi-agent research pass; 分析 spins up the Python kernel. Replaces the old
   // deep-search toggle + model dropdown — the backend picks thinking/non-thinking per mode.
-  const [mode, setMode] = useState<ModeKey>(() => (localStorage.getItem("axiom3.mode") as ModeKey) || "auto");
+  const [mode, setMode] = useState<ModeKey>(() => (localStorage.getItem("axiom3.mode") === "analysis" ? "analysis" : "research"));
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [appVer, setAppVer] = useState(""); // app version from tauri.conf (single source), shown in the sidebar
   useEffect(() => { getVersion().then(setAppVer).catch(() => {}); }, []);
+  // Models actually connected right now — the ONLY ones offered as reviewer-model options in settings.
+  const [connectedModels, setConnectedModels] = useState<string[]>([]);
+  useEffect(() => {
+    const label: Record<string, string> = { scnet: "GLM-5.2", zhipu: "glm-5.2", deepseek: "deepseek-v4-flash", qwen: "qwen-plus", openai: "gpt-4o", anthropic: "claude-sonnet", gemini: "gemini-2.0" };
+    invoke<{ family: string; connected: boolean }[]>("provider_status")
+      .then((ps) => setConnectedModels(ps.filter((p) => p.connected).map((p) => label[p.family]).filter(Boolean)))
+      .catch(() => {});
+  }, []);
   const [skillMenu, setSkillMenu] = useState(false); // /技能 picker open
   const [pendingSkill, setPendingSkill] = useState<string | null>(null); // skill key to inject into the next run
   // Persistent run settings (the composer's settings popover). `specialist` maps to the skill
@@ -209,7 +231,13 @@ function App() {
     try {
       const raw: Task[] = JSON.parse(localStorage.getItem("axiom3.tasks") || "[]");
       bootInterrupted = raw.filter((tk) => tk.status === "running").length;
-      return raw.map((tk) => (tk.status === "running" ? { ...tk, status: "cancelled" } : tk));
+      // A task left "running" when the app closed can't still be running. Likewise, a persisted
+      // `recapPending` would spin forever with nothing to finish it — clear it so the heal effect
+      // can regenerate the missing summary once.
+      return raw.map((tk) => {
+        const t: Task = tk.status === "running" ? { ...tk, status: "cancelled" } : tk;
+        return t.recapPending ? { ...t, recapPending: false } : t;
+      });
     } catch {
       return [];
     }
@@ -217,7 +245,6 @@ function App() {
   const [interrupted, setInterrupted] = useState(bootInterrupted);
   const [view, setView] = useState<"home" | "thread">("home");
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [taskFilter, setTaskFilter] = useState<"all" | "check_draft" | "workflow" | "code">("all");
   const [cmd, setCmd] = useState<string | null>(null);
   const [slash, setSlash] = useState("");
   const [slashIdx, setSlashIdx] = useState(0);
@@ -392,10 +419,31 @@ function App() {
     for (const t of tasks) {
       if (t.status !== "done") continue;
       if (!t.synthesis && !(t.versions?.length)) continue;
-      const sig = `${t.title}|${t.synthesis?.length ?? 0}|${t.versions?.length ?? 0}|${t.review?.length ?? 0}|${t.sources?.length ?? 0}`;
+      // `recap` is produced AFTER the run finishes — it MUST be part of the signature. Without it the
+      // backup written moments earlier (recap-less) was never refreshed, so the library showed a
+      // summary that was stuck "generating" forever.
+      const sig = `${t.title}|${t.synthesis?.length ?? 0}|${t.versions?.length ?? 0}|${t.review?.length ?? 0}|${t.sources?.length ?? 0}|${t.recap?.length ?? 0}`;
       if (savedSigRef.current[t.id] === sig) continue;
       savedSigRef.current[t.id] = sig;
-      invoke("deliverable_save", { id: t.id, json: JSON.stringify(t) }).catch(() => {});
+      // NEVER persist the transient "recap is generating" flag — a restart would strand it as a
+      // spinner nothing can clear. A lean copy is safe to send: deliverable_save field-MERGES it,
+      // keeping the full figure payloads already on disk while taking the fresh metadata (recap).
+      const persist = { ...t, recapPending: undefined };
+      invoke("deliverable_save", { id: t.id, json: JSON.stringify(persist) }).catch(() => {});
+    }
+  }, [tasks]);
+
+  // HEAL: a run that was closed while its recap was still generating persisted `recapPending`, leaving
+  // a summary that spins forever with nothing to finish it. If a finished session has a report but no
+  // recap, produce it ONCE (never re-generate one that already exists).
+  const healedRecapRef = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    for (const t of tasks) {
+      if (t.status !== "done" || t.recap || t.recapPending) continue;
+      if (!t.synthesis || t.synthesis.length < 200) continue;
+      if (healedRecapRef.current[t.id]) continue;
+      healedRecapRef.current[t.id] = true;
+      generateRecap(t.id, t.goal ?? t.title, t.synthesis);
     }
   }, [tasks]);
 
@@ -798,9 +846,21 @@ function App() {
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
     const priorSynth = appendTo ? tasks.find((x) => x.id === appendTo)?.synthesis : undefined; // continue prior research
     if (appendTo) {
-      // Point the live chain at THIS run (a fresh runid ≠ the session id) and drop the prior
-      // version's steps so the stale v1 log isn't shown as if it were the live v2 stream.
-      setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running", liveRunId: runid, steps: undefined } : x)));
+      // Point the live chain at THIS run (a fresh runid ≠ the session id). ARCHIVE the finished round
+      // (its own goal + steps) FIRST, then clear `steps` so the stale log isn't shown as the live
+      // stream — clearing without archiving destroyed the previous round's execution history.
+      setTasks((ts) =>
+        ts.map((x) => {
+          if (x.id !== appendTo) return x;
+          const hasRound = !!(x.synthesis || (x.steps?.length ?? 0) > 0);
+          const archived =
+            x.versions ??
+            (hasRound
+              ? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }]
+              : []);
+          return { ...x, status: "running", liveRunId: runid, steps: undefined, versions: archived };
+        })
+      );
       setActiveId(appendTo);
     } else {
       setTasks((ts) => [{ id: runid, type: "workflow", title, status: "running", ts: Date.now(), goal: g, deep: mode === "research", forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
@@ -902,10 +962,23 @@ function App() {
           .trim()
       : undefined;
     if (appendTo) {
-      // A follow-up ROUND on the same session: the thread now shows the NEW follow-up as the user's
-      // message + its live thinking; the prior round's report/recap move to the right artifact pane as
-      // an earlier version. Clear the stale recap so it doesn't linger above the new run.
-      setTasks((ts) => ts.map((x) => (x.id === appendTo ? { ...x, status: "running", liveRunId: runid, steps: undefined, goal: g, recap: undefined, recapPending: false } : x)));
+      // A follow-up ROUND on the same session. CRITICAL: ARCHIVE the round that just finished — with
+      // ITS OWN goal + execution steps — BEFORE clearing steps / retargeting the goal. The old code
+      // wiped `steps` and overwrote `goal` first, so the completion handler's
+      // `x.versions ?? [{ steps: x.steps, goal: x.goal }]` fallback archived an EMPTY, mislabelled
+      // round: the previous round's execution history was destroyed, not merely hidden.
+      setTasks((ts) =>
+        ts.map((x) => {
+          if (x.id !== appendTo) return x;
+          const hasRound = !!(x.synthesis || (x.steps?.length ?? 0) > 0);
+          const archived =
+            x.versions ??
+            (hasRound
+              ? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }]
+              : []);
+          return { ...x, status: "running", liveRunId: runid, steps: undefined, goal: g, recap: undefined, recapPending: false, versions: archived };
+        })
+      );
       setActiveId(appendTo);
     } else {
       setTasks((ts) => [{ id: runid, type: research ? "research" : "code", title, status: "running", ts: Date.now(), goal: g, deep: research || undefined, forkedFrom: forkOrigin ?? undefined, liveRunId: runid }, ...ts]);
@@ -919,7 +992,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string; review?: string; sources?: CiteSource[]; trace?: AgentStepView[] }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute, research })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute, research, review: sessionCfg.autoReview })
     );
     if (!appendTo) { setCodeAttachments([]); }
     setPendingSkill(null);
@@ -1108,10 +1181,8 @@ function App() {
     //   so every number is computed, not asserted.
     // 研究 (Opus tier) = the SAME rich tool agent but NO budget, literature/web-first (not local data),
     //   steered to a deep, cited, high-value report (backend research=true; multi-agent delegation next).
-    else if (mode === "analysis") runCoding(text, true);
-    else if (mode === "research") runCoding(text, true, undefined, true);
-    else if (codeAttachments.length > 0) runCoding(text, true); // attached data → analyze it locally
-    else runCheckDraft(text);
+    else if (mode === "analysis" || codeAttachments.length > 0) runCoding(text, true); // Loc-SAgent
+    else runCoding(text, true, undefined, true); // Glob-DAgent (research) — the default mode
     return true;
   }
 
@@ -1196,7 +1267,7 @@ function App() {
                   <Paperclip size={15} aria-hidden />
                 </button>
                 {/* session settings popover — between attach and voice, per the reference design */}
-                <SessionSettings cfg={sessionCfg} onChange={setSessionCfg} lang={lang} skills={SKILLS} models={MODELS.map((m) => m.label)} />
+                <SessionSettings cfg={sessionCfg} onChange={setSessionCfg} lang={lang} skills={SKILLS} models={connectedModels} />
                 <button
                   className={`ax-iconbtn ${listening ? "is-active" : ""}`}
                   onClick={toggleDictation}
@@ -1608,20 +1679,6 @@ function App() {
           <Plus size={16} aria-hidden /> {!sidebarCollapsed && (lang === "zh" ? "新建研究会话" : "New session")}
         </button>
 
-        {!sidebarCollapsed && tasks.length > 4 && (
-          <select
-            className="ax-select"
-            style={{ width: "100%", fontSize: 12 }}
-            value={taskFilter}
-            onChange={(e) => setTaskFilter(e.currentTarget.value as typeof taskFilter)}
-          >
-            <option value="all">{lang === "zh" ? "全部任务" : "All tasks"}</option>
-            <option value="check_draft">{lang === "zh" ? "校对" : "Check"}</option>
-            <option value="workflow">{lang === "zh" ? "工作流" : "Workflow"}</option>
-            <option value="code">{lang === "zh" ? "编程" : "Code"}</option>
-          </select>
-        )}
-
         <div className="ax-side-scroll">
           {sidebarCollapsed ? null : tasks.length === 0 ? (
             <p className="ax-hint" style={{ padding: "6px 9px" }}>
@@ -1629,7 +1686,7 @@ function App() {
             </p>
           ) : (
             RECENT_GROUPS.map((g) => {
-              const items = tasks.filter((tk) => (taskFilter === "all" || tk.type === taskFilter) && groupOf(tk.ts) === g.key);
+              const items = tasks.filter((tk) => groupOf(tk.ts) === g.key);
               if (!items.length) return null;
               return (
                 <div key={g.key}>
@@ -1659,7 +1716,7 @@ function App() {
                           onDoubleClick={() => startRename(tk)}
                         >
                           <span className="ax-recent__title">
-                            <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber" : "is-neutral"}`} />
+                            <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber is-running" : "is-neutral"}`} />
                             {tk.forkedFrom && <span className="ax-fork-mark" title={lang === "zh" ? "由其他会话分叉" : "forked from another session"}>↳</span>}
                             <b>{tk.title}</b>
                             {tk.deep && <span className="ax-recent__deep" title={lang === "zh" ? "深度搜索(AB-MCTS)" : "deep search (AB-MCTS)"}>深</span>}
@@ -1879,7 +1936,20 @@ function App() {
                         )}
                       </div>
 
-                      {/* the user's own message — what they typed — pinned at the top of the thread */}
+                      {/* MULTI-ROUND HISTORY: every FINISHED round keeps its own message + execution
+                          chain in the thread (collapsed), so a previous round's process stays
+                          traceable after a new round starts instead of being replaced. */}
+                      {(() => {
+                        const archived = tk.versions ?? [];
+                        // Once a run has finished, the LAST archived entry IS the current round rendered
+                        // below — so it's history only while a new round is in flight.
+                        const history = tk.status === "running" ? archived : archived.slice(0, -1);
+                        return history.map((v, i) => (
+                          <RoundHistory key={`${tk.id}-r${i}`} lang={lang} n={i + 1} goal={v.goal} steps={v.steps} />
+                        ));
+                      })()}
+
+                      {/* the CURRENT round's message — what the user typed for this round */}
                       {tk.goal && (
                         <div className="ax-usermsg">
                           <span className="ax-usermsg__who">{lang === "zh" ? "你" : "You"}</span>
@@ -2036,24 +2106,9 @@ function App() {
             lang={lang}
             task={activeTask}
             forkedFromTitle={tasks.find((x) => x.id === activeTask.forkedFrom)?.title}
+            liveRun={liveRuns.find((r) => r.id === (activeTask.liveRunId ?? activeTask.id))}
             onExport={exportProvenance}
             onSaveReport={saveReport}
-            onRedraw={(tool) => {
-              const g = (activeTask.goal || "").trim();
-              if (!g) return;
-              runCoding(
-                `${g}\n\n【重绘要求】请改用 ${tool} 重新绘制本次分析的全部图表:保持相同的数据、统计与结论,仅更换绘图库。若 ${tool} 不是 matplotlib,请先用 pip_install 安装它,再把图导出为 PNG 展示。`,
-                true
-              );
-            }}
-            onRelayout={() => {
-              const g = (activeTask.goal || "").trim();
-              if (!g) return;
-              runCoding(
-                `${g}\n\n【重排要求】把本次分析的最终报告重新组织成一篇学术论文的结构:标题、摘要(Abstract)、引言、方法、结果(含图表与统计)、讨论、(如有)参考文献。保持相同的数据、计算与结论,只调整叙述结构与排版,并复用/重绘必要的图表。`,
-                true
-              );
-            }}
             onRevise={(newSynthesis, note) => {
               // Splice a surgically-revised passage in as a NEW artifact version (v_n+1),
               // leaving the computed data/figures and prior versions intact.

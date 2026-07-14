@@ -5,9 +5,9 @@
 // draft-check sessions keep their claim-by-claim flow in the thread.
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, ChevronDown, Copy, Check, Maximize2, Minimize2, Palette, Newspaper, Wand2, PenLine, CornerDownLeft, Loader2 } from "lucide-react";
+import { X, FileDown, FileText, ScanSearch, ChevronLeft, ChevronRight, ChevronDown, Copy, Check, Maximize2, Minimize2, PenLine, CornerDownLeft, Loader2 } from "lucide-react";
 import type { Lang } from "../i18n";
-import type { Task } from "../lib/types";
+import type { Task, RunView } from "../lib/types";
 import { ArtifactBody } from "./artifact/ArtifactBody";
 import { AgentSteps } from "./AgentSteps";
 import { ArtifactProvenance } from "./ArtifactProvenance";
@@ -17,25 +17,26 @@ import { toFindings, renderInlineMd } from "../lib/reviewText";
 
 type Tab = "artifact" | "messages" | "review" | "provenance";
 
-// Mainstream plotting libraries the analysis agent can redraw with. matplotlib + seaborn are
-// pre-seeded; the others the agent pip-installs on demand and exports to PNG.
-const PLOT_TOOLS: { k: string; label: string; zh: string; en: string }[] = [
-  { k: "matplotlib", label: "Matplotlib", zh: "默认 · 稳定", en: "default · stable" },
-  { k: "seaborn", label: "Seaborn", zh: "统计美化", en: "statistical style" },
-  { k: "plotly", label: "Plotly", zh: "交互风格", en: "interactive style" },
-  { k: "altair", label: "Altair", zh: "声明式", en: "declarative" },
-  { k: "pandas", label: "pandas.plot", zh: "快速", en: "quick" },
-];
+// A friendly name for a live agent's status lamp (research → 研究员, analysis → 分析师, etc.).
+function agentLabel(role: string, id: string, zh: boolean): string {
+  const r = (role || id).trim();
+  const map: Record<string, string> = {
+    reframe: zh ? "理解课题" : "Framing",
+    coder: zh ? "智能体" : "Agent",
+    reviewer: zh ? "审查员" : "Reviewer",
+    analyst: zh ? "分析师" : "Analyst",
+  };
+  return map[r] ?? r;
+}
 
 export function ArtifactPane({
   lang,
   task,
   forkedFromTitle,
+  liveRun,
   onExport,
   onSaveReport,
   onClose,
-  onRedraw,
-  onRelayout,
   onRevise,
   expanded,
   onToggleExpand,
@@ -44,11 +45,10 @@ export function ArtifactPane({
   lang: Lang;
   task: Task;
   forkedFromTitle?: string;
+  liveRun?: RunView; // the in-flight run for this session — drives the live agent-status strip
   onExport: () => void;
   onSaveReport?: (html: string, defaultName: string) => void;
   onClose: () => void;
-  onRedraw?: (tool: string) => void; // re-run the analysis, drawing figures with a chosen library
-  onRelayout?: () => void; // re-run the analysis, reformatting the report as an academic paper
   onRevise?: (newSynthesis: string, note: string) => void; // splice a surgically-revised passage in as a new version
   expanded?: boolean;
   onToggleExpand?: () => void;
@@ -98,8 +98,6 @@ export function ArtifactPane({
   ];
 
   const [tab, setTab] = useState<Tab>("artifact");
-  const [toolsOpen, setToolsOpen] = useState(false);
-  const [paper, setPaper] = useState(() => localStorage.getItem("axiom3.paperLayout") === "1"); // academic-paper typography
 
   // ── Select-to-revise: highlight a passage of the report → give a plain instruction →
   // the model rewrites ONLY that passage and it's spliced back in as a new version. A
@@ -263,6 +261,20 @@ export function ArtifactPane({
         </div>
       </div>
 
+      {/* live agent-status strip — while the run works, each agent/expert/reviewer as a status lamp
+          (Claude-desktop style: green=done, amber pulse=running, red=error). */}
+      {liveRun && liveRun.status === "running" && (
+        <div className="ax-agentbar">
+          <span className="ax-agentbar__phase">{zh ? "执行中" : "Running"}</span>
+          {liveRun.agents.map((a) => (
+            <span className="ax-agentbar__agent" key={a.id} title={a.model ? `${a.role || a.id} · ${a.model}` : a.role || a.id}>
+              <span className={`ax-lamp ${a.status === "ok" ? "is-green" : a.status === "err" ? "is-red" : a.status === "running" ? "is-amber is-running" : "is-neutral"}`} />
+              <span className="ax-agentbar__name">{agentLabel(a.role, a.id, zh)}</span>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="ax-artpane__tabs" role="tablist">
         {TABS.map((tb) => (
           <button
@@ -281,55 +293,12 @@ export function ArtifactPane({
       <div className="ax-artpane__body">
         {tab === "artifact" && (
           <>
-            {/* paper-style typography toggle + one-click re-layout (reformat the report) */}
-            {ver.synthesis && (
-              <div className="ax-artbar">
-                <button
-                  className={`ax-artbar__btn ${paper ? "is-on" : ""}`}
-                  onClick={() => { const n = !paper; setPaper(n); localStorage.setItem("axiom3.paperLayout", n ? "1" : "0"); }}
-                  title={zh ? "论文式排版(标题/分节/图注)" : "Academic-paper typography"}
-                >
-                  <Newspaper size={13} aria-hidden /> {zh ? "论文排版" : "Paper"}
-                </button>
-                {onRelayout && isRun && (
-                  <button className="ax-artbar__btn" disabled={busy} onClick={onRelayout} title={zh ? "让模型把报告重排成论文结构(重跑)" : "Re-run to reformat the report as a paper"}>
-                    <Wand2 size={13} aria-hidden /> {zh ? "一键重排" : "Re-layout"}
-                  </button>
-                )}
-              </div>
-            )}
-            {/* redraw the figures with a different plotting library (re-runs the analysis) */}
-            {onRedraw && isRun && (
-              <div className="ax-redraw">
-                <button className="ax-redraw__head" onClick={() => setToolsOpen((o) => !o)} aria-expanded={toolsOpen}>
-                  <Palette size={13} aria-hidden />
-                  {zh ? "绘图工具 · 重绘" : "Plotting tool · redraw"}
-                  <ChevronRight size={14} className={`ax-redraw__chev ${toolsOpen ? "is-open" : ""}`} aria-hidden />
-                </button>
-                {toolsOpen && (
-                  <div className="ax-redraw__grid">
-                    {PLOT_TOOLS.map((pt) => (
-                      <button
-                        key={pt.k}
-                        className="ax-redraw__opt"
-                        disabled={busy}
-                        onClick={() => { onRedraw(pt.k); setToolsOpen(false); }}
-                        title={zh ? pt.zh : pt.en}
-                      >
-                        <b>{pt.label}</b>
-                        <span>{zh ? pt.zh : pt.en}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
             {versions.length > 1 && (
               <p className="ax-hint" style={{ marginBottom: 10 }}>
                 {zh ? `第 ${vIdx + 1} 版 · 目标:${ver.goal}` : `Version ${vIdx + 1} · goal: ${ver.goal}`}
               </p>
             )}
-            <div ref={artifactRef} className={paper ? "ax-artbody--paper" : ""} onMouseUp={onArtifactMouseUp}>
+            <div ref={artifactRef} onMouseUp={onArtifactMouseUp}>
               {ver.synthesis ? <ArtifactBody text={ver.synthesis} sources={task.sources} /> : <p className="ax-hint">{zh ? "无产物内容。" : "No artifact content."}</p>}
             </div>
           </>

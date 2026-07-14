@@ -82,11 +82,45 @@ fn meta_from(id: &str, json: &str, bytes: u64) -> DeliverableMeta {
     }
 }
 
+/// The placeholder the UI leaves behind when it strips a base64 figure for its localStorage cache.
+const LEAN_MARK: &str = "[图形已存入产出物库]";
+
 #[tauri::command]
 pub fn deliverable_save(app: tauri::AppHandle, id: String, json: String) -> Result<(), String> {
     let d = dir(&app)?;
     let stem = safe_id(&id);
     let f = d.join(format!("{stem}.json"));
+    // SAFETY NET — the disk store is the BACKUP: it only ever gets richer, never poorer.
+    // A copy coming from the UI's LEAN localStorage cache has had its base64 figure payloads stripped,
+    // so writing it wholesale would destroy the figures on every restart. But it may still carry NEWER
+    // metadata (notably the `recap`, which is produced AFTER the first backup). So field-MERGE:
+    // keep the figure-bearing fields from disk, take everything else from the incoming copy.
+    let mut json = json;
+    if f.exists() && json.contains(LEAN_MARK) {
+        if let Ok(existing) = fs::read_to_string(&f) {
+            if !existing.contains(LEAN_MARK) {
+                match (
+                    serde_json::from_str::<serde_json::Value>(&existing),
+                    serde_json::from_str::<serde_json::Value>(&json),
+                ) {
+                    (Ok(mut old), Ok(new)) => {
+                        if let (Some(o), Some(n)) = (old.as_object_mut(), new.as_object()) {
+                            for (k, v) in n {
+                                // these carry the base64 figures — never take them from a lean copy
+                                if k == "synthesis" || k == "versions" || k == "steps" {
+                                    continue;
+                                }
+                                o.insert(k.clone(), v.clone());
+                            }
+                            json = serde_json::to_string(&old).map_err(|e| e.to_string())?;
+                        }
+                    }
+                    // unparseable on either side → keep the full record untouched
+                    _ => return Ok(()),
+                }
+            }
+        }
+    }
     let tmp = d.join(format!(".{stem}.tmp"));
     fs::write(&tmp, json.as_bytes()).map_err(|e| e.to_string())?;
     fs::rename(&tmp, &f).map_err(|e| e.to_string())?;

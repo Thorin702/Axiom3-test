@@ -8,7 +8,7 @@ import { useState } from "react";
 import type { RunView } from "../lib/types";
 import type { Lang } from "../i18n";
 
-const LIMIT = 128_000; // glm-5.2 context window, tokens
+const LIMIT = 1_000_000; // GLM-5.2 (1M) context window, tokens
 
 type Slice = { key: string; zh: string; en: string; tok: number; color: string };
 
@@ -66,7 +66,21 @@ export function ContextWindow({ run, specialist, memory, lang }: {
         title={`${zh ? "上下文窗口" : "Context window"} · ${fmt(used)}/${fmt(LIMIT)} (${pct}%)`}
         aria-label={`${zh ? "上下文窗口" : "Context window"} ${pct}%`}
       >
-        <span className="ax-ctx__bar"><span className="ax-ctx__fill" style={{ width: `${pct}%` }} /></span>
+        <svg className="ax-ctx__ring" viewBox="0 0 24 24" width="15" height="15" aria-hidden>
+          <circle className="ax-ctx__ring-bg" cx="12" cy="12" r="9" fill="none" strokeWidth="3" />
+          <circle
+            className="ax-ctx__ring-fg"
+            cx="12"
+            cy="12"
+            r="9"
+            fill="none"
+            strokeWidth="3"
+            strokeLinecap="round"
+            transform="rotate(-90 12 12)"
+            strokeDasharray={2 * Math.PI * 9}
+            strokeDashoffset={2 * Math.PI * 9 * (1 - Math.max(pct, used > 0 ? 1.5 : 0) / 100)}
+          />
+        </svg>
         <span className="ax-ctx__pct">{pct}%</span>
       </button>
       {open && (
