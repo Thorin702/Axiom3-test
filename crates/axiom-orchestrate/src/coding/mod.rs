@@ -793,6 +793,15 @@ pub async fn run_coding_agent_steered(
     let mut searched: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup repeated skill searches
     let mut skill_searched = false; // once true, HARD-block further search_skills until a load_skill (force-commit)
     let mut fig_seen: std::collections::HashSet<String> = std::collections::HashSet::new(); // dedup identical figures (re-run plots)
+    // FIGURE-ENGINE GATE state. GLM under-triggers the figure skills: given a topic that explicitly
+    // asks for a structure / molecule / gene-context figure, it draws a bar chart or an inline block
+    // instead of loading the right engine (observed: mcr gene-context → bar chart; EGFR kinase → no
+    // PyMOL). Detect the demand from the GOAL, track whether the matching skill was loaded, nudge ONCE
+    // at the finish if a demanded engine was never loaded. Keyword lists are deliberately SPECIFIC so a
+    // casual mention ("含突变") doesn't trigger a heavy install.
+    let (needs_struct, needs_mol, needs_gene) = figure_needs(goal);
+    let (mut loaded_struct, mut loaded_mol, mut loaded_gene) = (false, false, false);
+    let mut figure_nudges = 0u32;
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
     let mut web_queries: Vec<String> = Vec::new(); // web_search queries so far — dedup + soft breadth nudge
@@ -926,6 +935,28 @@ pub async fn run_coding_agent_steered(
                      your change actually works — then finish.\n",
                 );
                 continue;
+            }
+            // FIGURE-ENGINE GATE: the topic explicitly asked for a structure/molecule/gene-context
+            // figure but the matching engine skill was never loaded — the agent is about to finish
+            // with a bar-chart stand-in or an inline block. Push it ONCE to load the real engine and
+            // draw the publication figure, then relent. Research mode only (deep reports, where the
+            // figure IS the differentiator) and only when a kernel exists to actually render.
+            if pause.delegate_encouraged() && kernel.is_some() && figure_nudges < 1 {
+                let mut missing: Vec<&str> = Vec::new();
+                if needs_struct && !loaded_struct { missing.push("protein-structure-figure(蛋白/酶/复合物结构 → PyMOL 无头光追)"); }
+                if needs_mol && !loaded_mol { missing.push("small-molecule-figure(药物/抑制剂/配体 2D 结构 + 实测描述符 → RDKit)"); }
+                if needs_gene && !loaded_gene { missing.push("gene-context-figure(操纵子/耐药基因盒/质粒/可移动元件 → dna_features_viewer)"); }
+                if !missing.is_empty() {
+                    figure_nudges += 1;
+                    transcript.push_str(&format!(
+                        "\n[system] 先别收尾。这个课题点名要出下面这种出版级图,但你还没加载对应的图形引擎技能,\
+                         柱状图或内联 ```smiles 块替代不了它们:\n- {}\n请现在 {{\"tool\":\"load_skill\",\"name\":\"…\"}} \
+                         加载对应技能并严格照卡出图(结构图/分子图/基因图各走各自的真引擎),出完再收尾。\
+                         Load the missing figure-engine skill(s) and render the real publication figure before finishing.\n",
+                        missing.join("\n- ")
+                    ));
+                    continue;
+                }
             }
             return CodingResult { status: "done".into(), summary: f.to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
@@ -1099,6 +1130,12 @@ pub async fn run_coding_agent_steered(
             "load_skill" => {
                 let name = arg_str(&v, "name");
                 skill_searched = false; // committed to a skill — allow a fresh search later if truly needed
+                match name { // satisfy the figure-engine gate once the right card is loaded
+                    "protein-structure-figure" => loaded_struct = true,
+                    "small-molecule-figure" => loaded_mol = true,
+                    "gene-context-figure" => loaded_gene = true,
+                    _ => {}
+                }
                 let obs = match skills::get(name) {
                     // Every card carries the same budget discipline: a first figure fast on a small
                     // slice, then scale — the flagship traces show over-scoping to full real data is
@@ -1707,6 +1744,19 @@ fn sanitize_json_strings(s: &str) -> String {
 
 /// Snapshot every regular file under `root` as path→size (bounded), skipping VCS/build/cache
 /// dirs and dotfiles. Two snapshots (before/after a run) diff to the files the agent produced.
+/// Which publication figure engine(s) a GOAL explicitly demands: (structure, molecule, gene-context).
+/// Keyword lists are deliberately SPECIFIC so a casual mention ("含突变") doesn't force a heavy engine
+/// install — the gate only fires when the topic clearly names the kind of figure it wants.
+fn figure_needs(goal: &str) -> (bool, bool, bool) {
+    let g = goal.to_lowercase();
+    let hit = |ks: &[&str]| ks.iter().any(|k| g.contains(k));
+    (
+        hit(&["结构图", "蛋白结构", "晶体结构", "激酶结构", "催化域结构", "活性位点", "结合口袋", "结构域结构", "cryo-em 结构"]),
+        hit(&["2d 结构", "2维结构", "结构式", "分子结构", "小分子图", "药效团", "弹头", "母核", "smiles", "结构对比图"]),
+        hit(&["基因背景", "遗传背景", "基因排布", "基因邻域", "基因盒", "操纵子", "质粒图", "可移动遗传", "转座子", "整合子"]),
+    )
+}
+
 fn snapshot_files(root: &Path) -> HashMap<String, u64> {
     fn walk(dir: &Path, root: &Path, out: &mut HashMap<String, u64>, depth: usize) {
         if depth > 8 || out.len() > 500 {
@@ -1822,6 +1872,22 @@ fn truncate(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use std::sync::Mutex;
+
+    #[test]
+    fn figure_needs_matches_demanding_topics_not_casual_mentions() {
+        // The two P1 test topics (verbatim shape) must each light up the right engine(s).
+        let egfr = "各代 EGFR-TKI 的 2D 结构对比图,高亮共价弹头;并给 EGFR 激酶域结构图,标出 C797S 位点";
+        let (s, m, g) = figure_needs(egfr);
+        assert!(s && m, "EGFR topic must demand structure + molecule figures, got struct={s} mol={m}");
+        assert!(!g, "EGFR topic must NOT trigger gene-context");
+        let mcr = "mcr-1 的可移动遗传背景图(操纵子/质粒),MCR-1 催化域结构图标出活性位点,黏菌素的 2D 结构图";
+        let (s, m, g) = figure_needs(mcr);
+        assert!(s && m && g, "mcr topic must demand all three engines, got struct={s} mol={m} gene={g}");
+        // A casual mention of a mutation / protein must NOT force a heavy structure-engine install.
+        let casual = "分析 BRCA1 含某突变的患者预后,做一个生存曲线和风险比森林图";
+        let (s, m, g) = figure_needs(casual);
+        assert!(!s && !m && !g, "a casual mutation/survival topic must trigger no figure engine, got {s} {m} {g}");
+    }
 
     #[test]
     fn sanitize_escapes_latex_so_a_latex_laden_final_parses() {
