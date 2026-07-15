@@ -229,6 +229,12 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              'axes.spines.right':False,'axes.grid':True,'grid.alpha':0.22,'legend.frameon':False,\
              'figure.autolayout':True})` — then label axes WITH UNITS, give a concise title, add a legend \
              for >=2 series, and use a restrained colorblind-safe palette (tab10 / a seaborn palette). \
+             ANTI-COLLISION (a crowded header/labels reads as sloppy): put the legend OUTSIDE the axes \
+             (`legend(loc='upper left', bbox_to_anchor=(1.02,1))` or below), never on top of the plot; for a \
+             RADAR / polar chart reserve top margin (`subplots_adjust(top=0.82)`) and wrap a long title so the \
+             title, legend and the top axis label don't overlap — this is the #1 radar defect; for a TIMELINE / \
+             scatter with many point labels, stagger them (alternate vertical offsets, or rotate ~30°, or use \
+             adjustText) so author/event labels don't pile on top of each other. \
              LABELS IN THE USER'S LANGUAGE: for Chinese/CJK labels set a CJK font FIRST — \
              `mpl.rcParams['font.sans-serif']=['PingFang SC','Heiti TC','Arial Unicode MS','DejaVu Sans']; \
              mpl.rcParams['axes.unicode_minus']=False` — then verify no missing-glyph boxes; only if no CJK \

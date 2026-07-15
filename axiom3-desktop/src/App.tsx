@@ -1959,8 +1959,10 @@ function App() {
                         </div>
                       )}
 
-                      {/* check-draft progress bar (workflow/code render the live thinking chain below) */}
-                      {tk.status === "running" && tk.type !== "workflow" && tk.type !== "code" && (
+                      {/* check-draft progress bar. Whitelist the ONE type that has no thinking chain —
+                          a blacklist silently leaked this bar into every new task type (research showed
+                          "校对中…" the moment it started); every other type streams its own chain below. */}
+                      {tk.status === "running" && tk.type === "check_draft" && (
                         <div className="ax-progress">
                           <span>
                             {t(lang, "checking")}
@@ -2018,12 +2020,6 @@ function App() {
                           )}
                         </div>
                       )}
-                      {showArtifactPane && (
-                        <button className="ax-artref" onClick={() => setRailOpen(true)}>
-                          {lang === "zh" ? "查看完整产物 · 见右侧「产物」面板 →" : "View the full artifact — Artifact panel on the right →"}
-                        </button>
-                      )}
-
                       {!showArtifactPane && tk.synthesis && (
                         <div className="ax-synth">
                           <p className="ax-block-label">{lang === "zh" ? "汇总结果" : "Synthesized result"}</p>

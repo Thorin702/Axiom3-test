@@ -37,7 +37,13 @@ pub const SKILLS: &[Skill] = &[
                Headless: NO GPU and NO display needed (PyMOL ray-traces in software; ~2-30 s per panel).\n\
                *** GOTCHA (bit me): under `pymol -cq`, __file__ is NOT your script — so os.path.dirname(__file__) points INSIDE the pymol package and your PNGs silently vanish there. ALWAYS write ABSOLUTE output paths into the script (os.getcwd() of the KERNEL is the workspace — bake it in). ***\n\
             \n\
-            3. PUBLICATION STYLING — this is what separates a figure from a screenshot. Set ALL of it:\n\
+            3. CLEAN THE MODEL FIRST — do this immediately after loading, BEFORE styling. Skipping it is the #1 way a structure figure ends up looking amateurish: raw PDBs carry hundreds of crystallographic waters and stray ions that ray-trace into a blizzard of little red/grey stars scattered across every panel.\n\
+               cmd.remove('solvent')                              # waters — ALWAYS. Non-negotiable.\n\
+               cmd.remove('hydrogens')\n\
+               cmd.remove('not polymer and not (%s)' % KEEP)      # KEEP = the ligand resn + the catalytic metal(s) + any bridging OH you will explicitly name; everything else (buffer ions, cryoprotectant, extra copies) goes.\n\
+               If the crystal has multiple chains/copies and you only discuss one, `cmd.remove('not chain A')` too. The site panel especially must be free of floating waters.\n\
+            \n\
+            4. PUBLICATION STYLING — this is what separates a figure from a screenshot. Set ALL of it:\n\
                cmd.bg_color('white'); cmd.set('ray_opaque_background',1); cmd.set('antialias',2); cmd.set('ray_shadows',0)\n\
                cmd.set('ambient_occlusion_mode',1)   # AO = the depth that makes it read as 3D. Do not skip.\n\
                cmd.set('ambient',0.22); cmd.set('direct',0.58); cmd.set('reflect',0.22); cmd.set('specular',0.10)\n\
@@ -45,19 +51,21 @@ pub const SKILLS: &[Skill] = &[
                cmd.set('depth_cue',0); cmd.set('ray_trace_fog',0)\n\
                COLOUR muted + SEMANTIC: grey85 base; `skyblue` for 'ss H'; `wheat` for 'ss S'; `firebrick` sticks for catalytic residues; `grey65` sticks for the 5 Å shell; `purple` sphere for a metal. NEVER full-saturation primaries.\n\
             \n\
-            4. PANELS (mirror a journal figure):\n\
-               A) Overall fold: cmd.orient(sel); cmd.zoom(sel,2); cmd.ray(1500,1300); cmd.png(ABS_PATH, dpi=300).\n\
+            5. PANELS (mirror a journal figure):\n\
+               A) Overall fold — the WHOLE domain must fit in frame. `cmd.hide('everything'); cmd.show('cartoon','polymer'); cmd.orient('polymer')` (orient on the WHOLE chain, NOT a residue selection), then `cmd.zoom('polymer', buffer=5, complete=1)` so nothing is clipped, then ray+png. *** GOTCHA: NEVER zoom the fold panel onto a residue/site selection — that over-zooms into a tangle of helices and the 'overall fold' shows no fold at all. The site is panel B's job; panel A is the whole protein. ***\n\
                B) Site zoom: cmd.set('cartoon_transparency',0.86) AND hide the cartoon outside ~15 Å, so the CHEMISTRY reads instead of being buried by ribbons; show sticks for the catalytic residues + the 5 Å shell; label ONLY the key residues:\n\
                   cmd.label(sel+' and name CA', '\\\"%s%s\\\" % (resn.capitalize(), resi)')\n\
-               *** GOTCHA: if the structure has SEVERAL metal sites, pick the CATALYTIC one by PROXIMITY to the nucleophile (e.g. the Zn within 2.5 Å of the Ser/Thr OG) — otherwise your distances are nonsense. ***\n\
+               *** GOTCHA: if the structure has SEVERAL metal sites, pick the CATALYTIC one by PROXIMITY to the nucleophile (e.g. the Zn within 2.5 Å of the Ser/Thr OG) — otherwise your distances are nonsense. For a BINUCLEAR site (e.g. NDM-1 two-Zn), colour the two metals DIFFERENTLY and report each metal's own coordination sphere separately. ***\n\
                *** GOTCHA: draw coordination bonds with cmd.distance(...), then cmd.hide('labels', name) — the numeric labels pile up and wreck the image. The numbers belong in the CAPTION. ***\n\
             \n\
-            5. MEASURE, NEVER ASSERT. Compute every number from the coordinates:\n\
+            6. MEASURE, NEVER ASSERT. Compute every number from the coordinates:\n\
                zx = cmd.get_model(ZN).atom[0].coord; for a in cmd.get_model(CAT+' and not elem C').atom: d = ((zx[0]-a.coord[0])**2+(zx[1]-a.coord[1])**2+(zx[2]-a.coord[2])**2)**0.5\n\
                Real bond lengths, distance-to-active-site, SASA (freesasa), residue counts. A number you did not compute is a fabrication.\n\
             \n\
-            6. COMPOSE + CAPTION (the last 20% of the polish) — do this in matplotlib so the kernel captures it as the report figure:\n\
-               mpimg.imread the PyMOL PNGs → gridspec → bold panel letters (A/B) → one-line sub-caption per panel → a CAPTION BAR carrying the MEASURED numbers + a legend line (\"red sticks = catalytic; grey = 5 Å shell; purple = Zn; blue = helix, wheat = strand\").\n\
+            7. COMPOSE + CAPTION (the last 20% of the polish) — do this in matplotlib so the kernel captures it as the report figure:\n\
+               *** CLOSE STRAY FIGURES FIRST: `plt.close('all')` before you build the composite. The kernel captures EVERY open matplotlib figure via plt.get_fignums(), so a half-built or failed earlier attempt you left open gets shipped in the report next to the good one. Only the final composite should be open when the cell ends. ***\n\
+               For EACH panel: `ax = fig.add_subplot(...); ax.imshow(mpimg.imread(png)); ax.axis('off')` — call ax.axis('off') on EVERY image axes (a forgotten one shows raw 0..1 ticks). Before saving, ASSERT every axes you created was actually filled: if a panel's PyMOL png is missing or failed to render, DROP that panel and rebuild the grid smaller — NEVER leave an empty white 0..1 axes in the figure (a blank panel reads as a broken deliverable).\n\
+               Then: bold panel letters (A/B) → one-line sub-caption per panel → a CAPTION BAR carrying the MEASURED numbers + a legend line (\"red sticks = catalytic; grey = 5 Å shell; purple = Zn; blue = helix, wheat = strand\").\n\
                Use a GENEROUS figsize (e.g. 18×9): the kernel captures at dpi=110, so a small figsize throws away the ray-traced detail.\n\
                ALSO savefig the full-resolution PNG into the workspace — it then appears under 产物文件 and the user can download the print-quality original.\n",
     },

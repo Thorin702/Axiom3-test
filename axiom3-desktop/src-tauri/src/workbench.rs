@@ -2599,12 +2599,12 @@ async fn reframe_goal(provider: &str, model_id: &str, raw: &str, cancel: &Cancel
 
 /// Cross-model quality check for a deep-research report. REVIEW ONLY — never rewrites (so it can't
 /// fabricate). Run on a DIFFERENT model than the author when possible for an independent perspective.
-const RESEARCH_REVIEW_SYSTEM: &str = "你是一位独立、严格的科研审稿人,正在评审下面这份研究报告(它由另一个智能体产出)。请只做【评审、不要改写报告】,简明列点指出:①有没有过度声明/未被证据支撑的断言(尤其「最新颖/完全空白/一定」这类);②有没有引用与结论不匹配或缺引用的关键论断;③论证/方法有没有明显缺口或逻辑跳跃;④如果报告本身扎实、诚实,就明确说「整体扎实」并只列少数可改进点。要具体(指到具体论断),别泛泛。绝不编造报告里没有的事实。用简体中文,控制在 6-10 条以内。";
+const RESEARCH_REVIEW_SYSTEM: &str = "你是一位独立、严格的科研审稿人,正在评审下面这份研究报告(它由另一个智能体产出)。请只做【评审、不要改写报告】,简明列点指出:①有没有过度声明/未被证据支撑的断言(尤其「最新颖/完全空白/一定/最优/根本不兼容」这类),以及结论是否与报告自列的局限自相矛盾;②有没有引用与结论不匹配、缺引用、或无出处的裸数字被当作事实的关键论断;③论证/方法有没有明显缺口或逻辑跳跃,结构标签是否自洽(如把 apo 无金属结构却读出金属间距);④如果报告本身扎实、诚实,就明确说「整体扎实」并只列少数可改进点。要具体(指到具体论断),别泛泛。绝不编造报告里没有的事实。**全程纯简体中文,不要夹英文词**,控制在 6-10 条以内。";
 
 /// Reliability net: when the author model couldn't synthesize the final report even after retries, a
 /// fast independent model writes it FROM THE RETRIEVED SOURCES. It may only use the [Sn] markers it is
 /// given (never invent one), and must not fabricate facts beyond the provided source excerpts.
-const REPORT_SYNTH_SYSTEM: &str = "你是一名深度研究科学家,正在根据下面提供的『已检索到的来源』撰写一份结构化、连贯、带引用的中文深度研究报告。硬性要求:①只依据提供的来源与其摘录写作,绝不编造来源里没有的事实、数字或结论;②在每个有来源支撑的论断句末标注对应的 [Sn] 角标,只能使用提供的角标、不得新造;③分模块论述,提出并权衡竞争性假说、指出证据强弱与不确定处,对新颖性保持诚实;④用 Markdown,只输出报告正文,不要输出 JSON、不要图表代码块。";
+const REPORT_SYNTH_SYSTEM: &str = "你是一名深度研究科学家,正在根据下面提供的『已检索到的来源』撰写一份结构化、连贯、带引用的中文深度研究报告。硬性要求:①只依据提供的来源与其摘录写作,绝不编造来源里没有的事实、数字或结论;②在每个有来源支撑的论断句末标注对应的 [Sn] 角标,只能使用提供的角标、不得新造;③分模块论述,提出并权衡竞争性假说、指出证据强弱与不确定处,对新颖性保持诚实,并写明一句显式创新点「相对现有工作的新增在于 X」;④用 Markdown,只输出报告正文,不要输出 JSON、不要图表代码块;⑤**全文简体中文**,不要把普通英文词(evade/exploited/merely 等)直接嵌进中文句;结论不要用「最优/唯一/充要/一定」等绝对措辞,降级为「循证等级最高/主要」并与自列局限自洽;⑥结尾附「参考文献」小节,把正文用到的 [Sn] 逐条列出题名/DOI/链接,确保正文 [Sn] 与清单一一对应。";
 
 const RECAP_SYSTEM: &str = "你是用户的科研助手，刚完成用户交办的一项分析/研究任务，完整报告在下面。请用**对话口吻**、面向用户写一段收尾汇报（像在聊天里向他交代结果那样），分三部分：\n\
 1) 用「**核心结论**」作小标题，列 2-4 条一针见血的关键发现（每条一句），直击这次最重要的结果——**把每条里的关键数字、名称或结论用 `**加粗**` 高亮**；只挑最有分量的，别罗列全部，别写套话式的正确废话。\n\
@@ -2661,7 +2661,13 @@ const RESEARCH_MODE_DIRECTIVE: &str = "【深度研究模式 · 无预算限制�
 2) **没有步数/时间预算压力**——要把课题做透:定位领域已知与空白 → 提出 2-3 个真正不同的竞争假设并各自权衡 → 明确指出你的**新颖点**(可借鉴邻域机制做跨域迁移),但对新颖性要诚实(先自查证是否已发表)。\n\
 3) 遇到**宽而可分**的子问题(竞争假说权衡、跨领域机制普查、正反证据梳理)时,用 **delegate** 开一支子智能体团队并行深挖各角度、再综合;只有单点问题才自己一步步做。必要时用 python 做真实计算/建模支撑论证。图:机理/通路/概念图**优先用原生图块**(通路流程 ```mermaid、带激活/抑制的关系网 ```network、化学反应 ```reaction),数据图用原生图块填真实计算值,matplotlib 只在原生图块都表达不了时用。\n\
 4) 自我批判:说清楚你的结论的弱点、如何被证伪、验证从相关到因果的阶梯(含增益实验与阴性对照)。\n\
-5) 最终产出一份结构化、可独立阅读的深度报告(立论→证据与分析→图→竞争假设权衡→新颖点→验证方案→诚实的局限与引用),用用户的语言。质量与深度是唯一目标,不要为了收尾而草率。";
+5) 最终产出一份结构化、可独立阅读的深度报告(立论→证据与分析→图→竞争假设权衡→新颖点→验证方案→诚实的局限与引用),用用户的语言。质量与深度是唯一目标,不要为了收尾而草率。\n\
+6) **精加工自检(交付前逐条过一遍,这些细节决定它像不像成品)**:\n\
+ · **全文简体中文**:面向用户的正文与结论一律简体中文,不要把 evade/exploited/merely/allosteric 这类普通英文词直接嵌进中文句(专业术语首次出现用中文、括注英文即可);常见易错词务必写对——螯合(不是鳌合/抯合)、抑制剂(不是抯制剂)、taniborbactam、INSTI。\n\
+ · **每张图都要被正文点名并配图注**:你生成的每张图,按生成先后编号 图1、图2……;在讨论它的段落里写一句「如图N所示……」,并给一行中文图注「图N. 展示什么 + 说明了什么」。绝不生成一张正文从不提及的图;也绝不引用一张你并未真正插入的图(例如写「见上文 mermaid 通路图」但上文根本没有该图块)。\n\
+ · **数字必须有出处**:图表/表格里的每个数值,要么带 [Sn] 出处、要么是你本地计算得到的;既无出处又非计算得到的裸数字不要放进图表(必要时显式标「[来源缺失]」),更不要把一个无源数字和有引用的数字并排呈现为事实。定性判断(强/中/弱、方向)不要塞进标着「数值/倍数/IC50」的列。结构测量:读金属间距/键长前先确认该结构确有金属占位(apo 结构没有金属,不得报告金属间距)。\n\
+ · **结论不过度绝对、且与自列局限自洽**:除非有直接证据,避免「最优/唯一/充要/根本不兼容/完全空白/一定」这类绝对措辞,降级为「循证等级最高/主要/核心」;不要一边称某策略「最优」一边又列它的硬伤。并写明一句显式**创新点**:「本文相对现有工作的新增在于 X」。\n\
+ · **结尾附「参考文献」小节**:把正文用到的 [Sn] 汇成清单,每条给题名 / DOI / 链接,便于回溯;确保正文出现的每个 [Sn] 都在清单里、清单里的每条也确在正文被引用过。";
 
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri command args bind 1:1 to JS invoke keys
@@ -2711,9 +2717,14 @@ pub async fn coding_run(
     let is_analyze = analyze.unwrap_or(false) || is_research;
     // Resolve provider/connection + model, mode-aware: research/analysis prefer a thinking model.
     let (provider, model_id) = resolve_model(&app, provider, model, false, if is_research { "research" } else if is_analyze { "analysis" } else { "auto" })?;
-    // Analysis with no chosen folder gets a private scratch workspace, so a user can just
-    // attach data and ask — no need to pick a code directory.
-    let workspace = if workspace.trim().is_empty() && is_analyze {
+    // Workspace isolation. RESEARCH always runs in a PRIVATE per-run scratch dir — never the
+    // user's shared default project folder. Research is literature/web-first and only needs a
+    // throwaway compute scratch; if it shared the persistent projectDir, one run's fetched PDBs
+    // and figures would pile up there and leak into the NEXT run's "产物文件 · Files produced"
+    // manifest (real cross-topic contamination observed: a KRAS report listing NDM-1's zinc PDBs).
+    // Folder-less analysis likewise gets a per-run scratch. Only analysis over a user-CHOSEN
+    // folder keeps that folder (that IS the data being analysed).
+    let workspace = if is_research || (workspace.trim().is_empty() && is_analyze) {
         let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let dir = base.join("analysis").join(safe_run_component(&runid));
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -3106,8 +3117,10 @@ pub async fn coding_run(
     }
     if !result.figures.is_empty() {
         synthesis.push_str("\n\n## 计算得到的图 · Computed figures\n");
-        for f in &result.figures {
-            synthesis.push_str("\n```pyfig\n");
+        // Number each figure 图1/图2… IN CREATION ORDER so the report body's "如图N所示" references
+        // resolve to the right panel (the agent writes captions/refs in the same order it drew them).
+        for (i, f) in result.figures.iter().enumerate() {
+            synthesis.push_str(&format!("\n**图{}**\n\n```pyfig\n", i + 1));
             synthesis.push_str(f);
             synthesis.push_str("\n```\n");
         }

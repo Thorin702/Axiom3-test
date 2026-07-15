@@ -1186,12 +1186,6 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-nb__env .ax-btn { flex: none; }
 .ax-nb__enverr { margin: -4px 0 12px; font-size: 12px; color: var(--ax-lamp-red); white-space: pre-wrap; word-break: break-word; }
 
-/* thread pointer to the artifact pane */
-.ax-artref { margin-top: 12px; width: 100%; text-align: left; padding: 11px 13px; cursor: pointer;
-  border: 0.5px dashed var(--ax-line); border-radius: 10px; background: var(--ax-surface-2);
-  color: var(--ax-ink-soft); font-family: var(--ax-sans); font-size: 12.5px; }
-.ax-artref:hover { color: var(--ax-accent); border-color: var(--ax-accent); }
-
 /* end-of-task chat-style wrap-up (summary + suggested next steps), shown in the thread like a reply */
 /* The conversational wrap-up is the thread's headline — a highlighted card (accent-tinted, thicker
    rail) with its bolded key conclusions rendered in accent ink so they pop at a glance. */
