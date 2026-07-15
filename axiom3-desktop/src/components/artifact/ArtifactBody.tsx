@@ -38,6 +38,7 @@ import { Spectrum } from "./Spectrum";
 import { Dose } from "./Dose";
 import { Slope } from "./Slope";
 import { Pyfig } from "./Pyfig";
+import { FigureFrame } from "./FigureFrame";
 
 marked.use({ gfm: true, breaks: true });
 
@@ -177,30 +178,35 @@ export function ArtifactBody({ text, sources }: { text: string; sources?: CiteSo
   return (
     <div className="ax-md" onClick={onClick}>
       {segs.map((s, i) => {
-        if (s.t === "smiles") return <Molecule key={i} smiles={s.body} />;
-        if (s.t === "mermaid") return <Diagram key={i} code={s.body} />;
-        if (s.t === "chart") return <Chart key={i} spec={s.body} />;
-        if (s.t === "dotplot") return <DotPlot key={i} spec={s.body} />;
-        if (s.t === "forest") return <Forest key={i} spec={s.body} />;
-        if (s.t === "heatmap") return <Heatmap key={i} spec={s.body} />;
-        if (s.t === "confusion") return <Confusion key={i} spec={s.body} />;
-        if (s.t === "dist") return <Distribution key={i} spec={s.body} />;
-        if (s.t === "volcano") return <Volcano key={i} spec={s.body} />;
-        if (s.t === "manhattan") return <Manhattan key={i} spec={s.body} />;
-        if (s.t === "band") return <Band key={i} spec={s.body} />;
-        if (s.t === "msa") return <Alignment key={i} spec={s.body} />;
-        if (s.t === "rxn") return <Reaction key={i} spec={s.body} />;
-        if (s.t === "field") return <Field key={i} spec={s.body} />;
-        if (s.t === "quiver") return <Quiver key={i} spec={s.body} />;
-        if (s.t === "network") return <Network key={i} spec={s.body} />;
-        if (s.t === "track") return <Track key={i} spec={s.body} />;
-        if (s.t === "tree") return <Tree key={i} spec={s.body} />;
-        if (s.t === "roc") return <Roc key={i} spec={s.body} />;
-        if (s.t === "seqlogo") return <SeqLogo key={i} spec={s.body} />;
-        if (s.t === "sankey") return <Sankey key={i} spec={s.body} />;
-        if (s.t === "spectrum") return <Spectrum key={i} spec={s.body} />;
-        if (s.t === "dose") return <Dose key={i} spec={s.body} />;
-        if (s.t === "slope") return <Slope key={i} spec={s.body} />;
+        // NATIVE SVG/canvas figures → wrapped in FigureFrame so every one is click-to-zoom +
+        // downloadable (same UX as Pyfig). Pyfig/Protein bring their own controls; math/markdown aren't figures.
+        const native: Partial<Record<Seg["t"], React.ReactNode>> = {
+          smiles: <Molecule smiles={s.body} />,
+          mermaid: <Diagram code={s.body} />,
+          chart: <Chart spec={s.body} />,
+          dotplot: <DotPlot spec={s.body} />,
+          forest: <Forest spec={s.body} />,
+          heatmap: <Heatmap spec={s.body} />,
+          confusion: <Confusion spec={s.body} />,
+          dist: <Distribution spec={s.body} />,
+          volcano: <Volcano spec={s.body} />,
+          manhattan: <Manhattan spec={s.body} />,
+          band: <Band spec={s.body} />,
+          msa: <Alignment spec={s.body} />,
+          rxn: <Reaction spec={s.body} />,
+          field: <Field spec={s.body} />,
+          quiver: <Quiver spec={s.body} />,
+          network: <Network spec={s.body} />,
+          track: <Track spec={s.body} />,
+          tree: <Tree spec={s.body} />,
+          roc: <Roc spec={s.body} />,
+          seqlogo: <SeqLogo spec={s.body} />,
+          sankey: <Sankey spec={s.body} />,
+          spectrum: <Spectrum spec={s.body} />,
+          dose: <Dose spec={s.body} />,
+          slope: <Slope spec={s.body} />,
+        };
+        if (native[s.t]) return <FigureFrame key={i} kind={s.t}>{native[s.t]}</FigureFrame>;
         if (s.t === "pyfig") return <Pyfig key={i} spec={s.body} />;
         if (s.t === "protein") return <Protein key={i} source={s.body} />;
         if (s.t === "math") return <div key={i} className="ax-md__math" dangerouslySetInnerHTML={{ __html: renderMath(s.body) }} />;

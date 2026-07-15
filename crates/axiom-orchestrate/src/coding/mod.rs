@@ -154,18 +154,25 @@ impl CodingModel for ProviderModel {
 const CHECKPOINT_CODE: &str = "import pickle as _pk, os as _os\n_ck = {}\nfor _k, _v in list(globals().items()):\n    if _k.startswith('_'): continue\n    try:\n        _pk.dumps(_v, protocol=_pk.HIGHEST_PROTOCOL)\n        _ck[_k] = _v\n    except Exception:\n        pass\n_tmp = '.axiom_ckpt.pkl.tmp'\nwith open(_tmp, 'wb') as _f:\n    _pk.dump(_ck, _f, protocol=_pk.HIGHEST_PROTOCOL)\n_os.replace(_tmp, '.axiom_ckpt.pkl')\nprint('checkpointed', len(_ck), 'objects:', sorted(_ck.keys()))\n";
 const RESTORE_CODE: &str = "import pickle as _pk, os\nif os.path.exists('.axiom_ckpt.pkl'):\n    _ck = _pk.load(open('.axiom_ckpt.pkl', 'rb'))\n    globals().update(_ck)\n    print('restored', len(_ck), 'objects:', sorted(_ck.keys()))\nelse:\n    print('no checkpoint found (.axiom_ckpt.pkl missing)')\n";
 
+// CROSS-PLATFORM: darwin/linux verified; the Windows (win-64) branch is written but must be
+// re-verified on a real Windows box (micromamba there ships as micromamba.exe under Library/bin,
+// and a conda env's executables live in the env root + Scripts + Library/bin, not bin/).
 const CONDA_INSTALL: &str = r#"import os, sys, subprocess, platform, tarfile, io, requests
-ROOT = os.path.expanduser('~/.axiom3'); MM = os.path.join(ROOT, 'bin', 'micromamba'); ENV = os.path.join(ROOT, 'bioenv')
+_win = platform.system().lower() == 'windows'
+ROOT = os.path.expanduser('~/.axiom3'); MM = os.path.join(ROOT, 'bin', 'micromamba.exe' if _win else 'micromamba'); ENV = os.path.join(ROOT, 'bioenv')
 os.makedirs(os.path.join(ROOT, 'bin'), exist_ok=True); os.makedirs('.axiom_jobs', exist_ok=True)
 if not os.path.exists(MM):
     _s = platform.system().lower(); _m = platform.machine().lower()
-    _key = ('osx-arm64' if _m in ('arm64','aarch64') else 'osx-64') if _s == 'darwin' else (('linux-aarch64' if _m in ('aarch64','arm64') else 'linux-64') if _s == 'linux' else None)
-    if not _key: raise SystemExit('unsupported platform ' + _s + ' ' + _m)
-    _d = requests.get('https://micro.mamba.pm/api/micromamba/%s/latest' % _key, timeout=120).content
+    if _s == 'darwin': _key = 'osx-arm64' if _m in ('arm64','aarch64') else 'osx-64'
+    elif _s == 'linux': _key = 'linux-aarch64' if _m in ('aarch64','arm64') else 'linux-64'
+    elif _s == 'windows': _key = 'win-64'
+    else: raise SystemExit('unsupported platform ' + _s + ' ' + _m)
+    _d = requests.get('https://micro.mamba.pm/api/micromamba/%s/latest' % _key, timeout=180).content
     with tarfile.open(fileobj=io.BytesIO(_d), mode='r:bz2') as _tf:
-        _mem = next(x for x in _tf.getmembers() if x.name.endswith('bin/micromamba'))
+        _mem = next(x for x in _tf.getmembers() if x.name.replace('\\','/').endswith('bin/micromamba') or x.name.replace('\\','/').endswith('bin/micromamba.exe'))
         _mem.name = os.path.basename(_mem.name); _tf.extract(_mem, os.path.join(ROOT, 'bin'))
-    os.chmod(MM, 0o755)
+    try: os.chmod(MM, 0o755)
+    except OSError: pass
 _sub = 'install' if os.path.isdir(ENV) else 'create'
 _pkgs = __PKGS__
 _cmd = [MM, _sub, '-y', '-p', ENV, '-c', 'conda-forge', '-c', 'bioconda'] + _pkgs
@@ -173,8 +180,10 @@ _wrap = ("import subprocess, sys\n" "r = subprocess.run(%r, capture_output=True,
 open('.axiom_jobs/__ID__.py', 'w').write(_wrap)
 try: os.remove('.axiom_jobs/__ID__.status')
 except OSError: pass
-_p = subprocess.Popen([sys.executable, '.axiom_jobs/__ID__.py'], stdout=open('.axiom_jobs/__ID__.log', 'w'), stderr=subprocess.STDOUT, start_new_session=True)
-_eb = os.path.join(ENV, 'bin'); os.environ['PATH'] = _eb + os.pathsep + os.environ.get('PATH', '')
+_flags = 0x00000008 if _win else 0
+_p = subprocess.Popen([sys.executable, '.axiom_jobs/__ID__.py'], stdout=open('.axiom_jobs/__ID__.log', 'w'), stderr=subprocess.STDOUT, start_new_session=not _win, creationflags=_flags)
+_eb = os.pathsep.join([ENV, os.path.join(ENV,'Scripts'), os.path.join(ENV,'Library','bin')]) if _win else os.path.join(ENV, 'bin')
+os.environ['PATH'] = _eb + os.pathsep + os.environ.get('PATH', '')
 print('micromamba ready; installing', _pkgs, 'as background job __ID__ (pid', _p.pid, ')')
 print('poll with job_status id=__ID__; binaries land on PATH at', _eb, 'once DONE')
 "#;

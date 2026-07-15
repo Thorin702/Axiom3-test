@@ -1802,6 +1802,193 @@ fn seed_sci_stack(base: &std::path::Path) -> Result<std::path::PathBuf, String> 
     Ok(py)
 }
 
+// ── Onboarding provisioning gate ────────────────────────────────────────────────────────
+// The pre-install checklist: detect + one-click-install each prerequisite so a partner arrives
+// with everything ready. Reuses the kernel venv (pip packages) and micromamba (~/.axiom3/bioenv,
+// conda binaries). All-green is the gate the frontend enforces before "next".
+
+fn axiom3_root() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(std::path::Path::new(&home).join(".axiom3"))
+}
+fn micromamba_bin() -> Option<std::path::PathBuf> {
+    axiom3_root().map(|r| r.join("bin").join(if cfg!(windows) { "micromamba.exe" } else { "micromamba" }))
+}
+fn bioenv_dir() -> Option<std::path::PathBuf> {
+    axiom3_root().map(|r| r.join("bioenv"))
+}
+/// Path to an executable inside the bioenv (conda layout differs on Windows).
+fn bioenv_exe(exe: &str) -> Option<std::path::PathBuf> {
+    bioenv_dir().map(|e| {
+        if cfg!(windows) {
+            e.join("Library").join("bin").join(format!("{exe}.exe"))
+        } else {
+            e.join("bin").join(exe)
+        }
+    })
+}
+/// The kernel venv's python, if the venv has been created.
+fn venv_python(base: &std::path::Path) -> Option<std::path::PathBuf> {
+    let py = base
+        .join("notebook")
+        .join(".venv")
+        .join(if cfg!(windows) { "Scripts\\python.exe" } else { "bin/python" });
+    py.exists().then_some(py)
+}
+/// Does the venv python import these modules cleanly?
+fn py_can_import(py: &std::path::Path, mods: &str) -> bool {
+    std::process::Command::new(py)
+        .args(["-c", &format!("import {mods}")])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+fn cmd_ok(prog: &str, arg: &str) -> bool {
+    std::process::Command::new(prog).arg(arg).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Bootstrap a standalone micromamba (once) if absent, returning its path. Uses the venv python
+/// (which carries `requests`) to download+extract — the same proven path as the conda_install tool.
+fn ensure_micromamba(base: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let mm = micromamba_bin().ok_or("no home dir")?;
+    if mm.exists() {
+        return Ok(mm);
+    }
+    let py = ensure_kernel_env(base)?;
+    // NOTE: on Windows the archive member is Library/bin/micromamba.exe — handled by matching a
+    // path that ENDS in bin/micromamba(.exe); validated on macOS here, re-checked in the Win port.
+    const BOOT: &str = r#"import os,platform,tarfile,io,requests,sys
+ROOT=os.path.expanduser('~/.axiom3');BIN=os.path.join(ROOT,'bin');os.makedirs(BIN,exist_ok=True)
+s=platform.system().lower();m=platform.machine().lower()
+key=('osx-arm64' if m in('arm64','aarch64') else 'osx-64') if s=='darwin' else (('linux-aarch64' if m in('aarch64','arm64') else 'linux-64') if s=='linux' else ('win-64' if s=='windows' else None))
+if not key: sys.exit('unsupported platform '+s+' '+m)
+d=requests.get('https://micro.mamba.pm/api/micromamba/%s/latest'%key,timeout=180).content
+with tarfile.open(fileobj=io.BytesIO(d),mode='r:bz2') as tf:
+    mem=next(x for x in tf.getmembers() if x.name.replace('\\','/').endswith('bin/micromamba') or x.name.replace('\\','/').endswith('bin/micromamba.exe'))
+    mem.name=os.path.basename(mem.name);tf.extract(mem,BIN)
+mmp=os.path.join(BIN,'micromamba.exe' if s=='windows' else 'micromamba')
+try: os.chmod(mmp,0o755)
+except OSError: pass
+print('ok',mmp)"#;
+    let cert = ca_bundle();
+    let mut cmd = std::process::Command::new(&py);
+    cmd.args(["-c", BOOT]);
+    if std::env::var_os("SSL_CERT_FILE").is_none() {
+        if let Some(c) = cert {
+            cmd.env("SSL_CERT_FILE", c);
+        }
+    }
+    let out = cmd.output().map_err(|e| format!("micromamba 引导失败 · bootstrap spawn: {e}"))?;
+    if !mm.exists() {
+        return Err(format!("micromamba 引导失败 · {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    Ok(mm)
+}
+
+/// Synchronous conda install into the bioenv (blocks until the solve finishes — minutes for PyMOL).
+fn conda_install_sync(base: &std::path::Path, pkgs: &[&str]) -> Result<(), String> {
+    let mm = ensure_micromamba(base)?;
+    let env = bioenv_dir().ok_or("no home dir")?;
+    let sub = if env.is_dir() { "install" } else { "create" };
+    let env_s = env.to_string_lossy().into_owned();
+    let mut args: Vec<&str> = vec![sub, "-y", "-p", &env_s, "-c", "conda-forge", "-c", "bioconda"];
+    args.extend_from_slice(pkgs);
+    let out = std::process::Command::new(&mm)
+        .args(&args)
+        .output()
+        .map_err(|e| format!("micromamba 无法启动 · {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).chars().rev().take(600).collect::<String>().chars().rev().collect())
+    }
+}
+
+/// pip install into the kernel venv (mirrors seed_sci_stack's SSL handling).
+fn venv_pip_install(py: &std::path::Path, pkgs: &[&str]) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(py);
+    cmd.args(["-m", "pip", "install", "--disable-pip-version-check"]).args(pkgs);
+    if std::env::var_os("SSL_CERT_FILE").is_none() {
+        if let Some(c) = ca_bundle() {
+            cmd.env("SSL_CERT_FILE", c);
+        }
+    }
+    let out = cmd.output().map_err(|e| format!("pip 无法启动 · {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).chars().rev().take(600).collect::<String>().chars().rev().collect())
+    }
+}
+
+#[derive(Serialize)]
+pub struct ProvItem {
+    pub key: String,
+    pub ready: bool,
+    pub detail: String,
+    pub cli: String,
+}
+
+/// Detect the status of every onboarding prerequisite (no installs — read-only).
+#[tauri::command]
+pub async fn provision_status(app: tauri::AppHandle) -> Vec<ProvItem> {
+    let base = match app.path().app_data_dir() {
+        Ok(b) => b,
+        Err(_) => return vec![],
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let vpy = venv_python(&base);
+        let node_ready = cmd_ok("node", "--version") || bioenv_exe("node").map(|p| p.exists()).unwrap_or(false);
+        let pymol_ready = bioenv_exe("pymol").map(|p| p.exists()).unwrap_or(false);
+        let sci_ready = vpy.as_ref().map(|p| py_can_import(p, "numpy,pandas,scipy,matplotlib,sklearn")).unwrap_or(false);
+        let fig_ready = vpy.as_ref().map(|p| py_can_import(p, "rdkit,dna_features_viewer")).unwrap_or(false);
+        let key_ready = std::env::var("ZHIPU_API_KEY").is_ok() || std::env::var("SCNET_API_KEY").is_ok();
+        vec![
+            ProvItem { key: "python".into(), ready: vpy.is_some(), detail: "Python 运行时".into(), cli: "".into() },
+            ProvItem { key: "node".into(), ready: node_ready, detail: "Node.js".into(), cli: "micromamba install -p ~/.axiom3/bioenv -c conda-forge nodejs".into() },
+            ProvItem { key: "scistack".into(), ready: sci_ready, detail: "科学计算栈 · numpy/pandas/scipy/matplotlib/sklearn".into(), cli: "python -m pip install numpy pandas scipy matplotlib scikit-learn".into() },
+            ProvItem { key: "pymol".into(), ready: pymol_ready, detail: "绘图引擎 · PyMOL(结构图)".into(), cli: "micromamba install -p ~/.axiom3/bioenv -c conda-forge pymol-open-source".into() },
+            ProvItem { key: "figures".into(), ready: fig_ready, detail: "绘图引擎 · RDKit + dna_features_viewer(小分子 / 基因)".into(), cli: "python -m pip install rdkit dna_features_viewer".into() },
+            ProvItem { key: "apikey".into(), ready: key_ready, detail: "模型 API Key · GLM-5.2".into(), cli: "".into() },
+        ]
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Install one prerequisite. Blocks until done (PyMOL's conda solve can take minutes).
+#[tauri::command]
+pub async fn provision_install(app: tauri::AppHandle, key: String) -> Result<String, String> {
+    let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || match key.as_str() {
+        "python" => {
+            ensure_kernel_env(&base)?;
+            Ok("Python 运行时已就绪".into())
+        }
+        "scistack" => {
+            seed_sci_stack(&base)?;
+            Ok("科学计算栈已装好".into())
+        }
+        "figures" => {
+            let py = ensure_kernel_env(&base)?;
+            venv_pip_install(&py, &["rdkit", "dna_features_viewer"])?;
+            Ok("RDKit + dna_features_viewer 已装好".into())
+        }
+        "node" => {
+            conda_install_sync(&base, &["nodejs"])?;
+            Ok("Node.js 已装好".into())
+        }
+        "pymol" => {
+            conda_install_sync(&base, &["pymol-open-source", "biopython", "pillow"])?;
+            Ok("PyMOL 已装好".into())
+        }
+        "apikey" => Err("请在下方粘贴你的 GLM-5.2 API Key(智谱或 SCNet)".into()),
+        other => Err(format!("未知预装项:{other}")),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Run one notebook cell on the live Python kernel (started lazily). State persists across
 /// cells. Returns stdout + the last expression's repr + any matplotlib figures (base64 PNG).
 #[tauri::command]

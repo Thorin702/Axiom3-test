@@ -60,9 +60,7 @@ type SlashCmd = { key: string; cat: string; zh: string; en: string; dzh: string;
 // inferred from what you type). `/技能` picks a specific domain skill to run.
 const COMMANDS: SlashCmd[] = [
   { key: "skills", cat: "命令", zh: "技能", en: "skills", dzh: "选一个领域技能来执行(单细胞 / 系统发育 / 差异表达 …)", den: "run a specific domain skill", active: true },
-  { key: "check_draft", cat: "命令", zh: "校对", en: "check", dzh: "拆成断言,确定性检查 + 证据(校验为中心)", den: "claims → deterministic checks + evidence", active: true },
-  { key: "code", cat: "命令", zh: "编程", en: "code", dzh: "读取 / 搜索 / 精确编辑 / 跑测试", den: "read / search / precise edit / run tests", active: true },
-  { key: "workflow", cat: "命令", zh: "工作流", en: "workflow", dzh: "自定义动态多智能体工作流(任意任务)", den: "custom dynamic multi-agent workflow", active: true },
+  // /校对 /编程 /工作流 retired — tasks now run via the 分析 / 研究 mode toggle + free text.
 ];
 
 // Domain skills the `/技能` command offers — mirrors the engine's skill registry. Picking one

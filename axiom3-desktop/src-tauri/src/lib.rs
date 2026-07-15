@@ -111,6 +111,8 @@ pub fn run() {
             workbench::kernel_reset,
             workbench::kernel_status,
             workbench::kernel_prepare,
+            workbench::provision_status,
+            workbench::provision_install,
             workbench::system_check,
             workbench::provider_status,
             workbench::set_provider_key,

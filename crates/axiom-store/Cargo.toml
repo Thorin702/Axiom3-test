@@ -3,13 +3,15 @@ name = "axiom-store"
 version = "0.0.0"
 edition = "2021"
 license = "MIT"
-description = "Axiom3 storage backends: encrypted SQLite (SQLCipher) durable store + hash-chained event log. LanceDB vector index lands with embeddings."
+description = "Axiom3 storage backends: durable SQLite store + hash-chained event log. LanceDB vector index lands with embeddings."
 
 [dependencies]
 axiom-core = { path = "../axiom-core" }
-# SQLCipher (AES-256) compiled from source with a vendored OpenSSL — the encrypted
-# durable.db backend (SSOT §一). Heavy first build; needs the C toolchain (Xcode CLT).
-rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }
+# Plain bundled SQLite. (Previously SQLCipher + vendored OpenSSL for at-rest AES-256, but the
+# vendored-OpenSSL build needs Perl+NASM on Windows and blocked the cross-platform build; the
+# durable.db is local provenance on the user's own machine, so encryption was dropped by product
+# decision. The `key` arg is kept in the API but ignored.)
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 
 [dev-dependencies]

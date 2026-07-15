@@ -241,14 +241,11 @@ impl SqliteStore {
         Self::init(conn, key)
     }
 
-    fn init(conn: Connection, key: &str) -> Result<Self> {
-        if !key.is_empty() {
-            // Set the SQLCipher key via a bound parameter (no string interpolation).
-            conn.pragma_update(None, "key", key).map_err(backend)?;
-        }
-        // Fail fast if the key is wrong / db is not actually decryptable.
+    fn init(conn: Connection, _key: &str) -> Result<Self> {
+        // Plain bundled SQLite — encryption removed (see Cargo.toml). `_key` is ignored; kept in
+        // the signature so callers (which still pass a keychain key) don't need to change.
         conn.pragma_update(None, "foreign_keys", true)
-            .map_err(|e| StoreError::Backend(format!("open/key failed: {e}")))?;
+            .map_err(|e| StoreError::Backend(format!("open failed: {e}")))?;
         conn.execute_batch(MIGRATION_V1).map_err(backend)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
             .map_err(backend)?;
@@ -761,20 +758,18 @@ mod tests {
     }
 
     #[test]
-    fn wrong_key_cannot_open_encrypted_db() {
+    fn durable_db_persists_across_reopen() {
+        // Encryption was removed (plain bundled SQLite): the DB persists across reopen and the
+        // `key` arg is ignored (any value opens the same data). This locks the post-SQLCipher behavior.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("durable.db");
         {
-            let s = SqliteStore::open(&path, "correct-horse").unwrap();
+            let s = SqliteStore::open(&path, "ignored-key").unwrap();
             s.append_event("system", "seed", &json!({"x": 1})).unwrap();
         }
-        // Right key reopens fine.
-        assert!(SqliteStore::open(&path, "correct-horse").is_ok());
-        // Wrong key: SQLCipher cannot decrypt the page header → migration/read fails.
-        assert!(
-            SqliteStore::open(&path, "wrong-key").is_err(),
-            "wrong SQLCipher key must fail to open (proves at-rest encryption)"
-        );
+        // Reopens fine regardless of the key value (no encryption).
+        let s = SqliteStore::open(&path, "a-totally-different-key").unwrap();
+        assert_eq!(s.replay().unwrap().len(), 1, "seeded event must survive reopen");
     }
 
     #[test]
