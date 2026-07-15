@@ -1,19 +1,38 @@
-//! A small, self-contained registry of domain "skill cards" the analysis agent can search and
-//! load on demand (mirrors Claude Science's searchable Skills). Each card is an expert procedure —
-//! what to `pip_install`, the canonical pipeline, which native figure block to emit, and the rigor
-//! pitfalls — so a weaker model does the domain-correct thing. Cards are embedded (always available,
-//! no filesystem/network dependency).
+//! A registry of domain "skill cards" the analysis agent can search and load on demand (mirrors
+//! Claude Science's searchable Skills). Each card is an expert procedure — what to `pip_install`,
+//! the canonical pipeline, which native figure block to emit, the rigor pitfalls — so a weaker model
+//! does the domain-correct thing.
+//!
+//! Two sources, merged into one registry:
+//!   1. BUILTINS — embedded in the binary (always available, always current, no fs/network need).
+//!   2. `~/.axiom3/skills/<name>/SKILL.md` — user-authored skill FILES a domain expert can add or
+//!      edit WITHOUT recompiling. A disk skill with the same `name` overrides the builtin, so a
+//!      power user can also tune a shipped card. On first use we materialize a README + a template
+//!      into that dir so the format is self-documenting.
+//! The merged registry is built once (OnceLock) and handed out as `&'static [Skill]`.
 
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// Runtime skill — OWNED, so an entry can equally come from a compiled-in Builtin or a SKILL.md file.
 pub struct Skill {
-    pub name: &'static str,
-    /// Extra search terms (synonyms/tools) beyond the name + summary.
-    pub keywords: &'static str,
-    pub summary: &'static str,
-    pub card: &'static str,
+    pub name: String,
+    pub keywords: String,
+    pub summary: String,
+    pub card: String,
 }
 
-pub const SKILLS: &[Skill] = &[
-    Skill {
+/// Compile-time literal skill — the shipped built-in library, embedded in the binary.
+struct Builtin {
+    name: &'static str,
+    /// Extra search terms (synonyms/tools) beyond the name + summary.
+    keywords: &'static str,
+    summary: &'static str,
+    card: &'static str,
+}
+
+const BUILTINS: &[Builtin] = &[
+    Builtin {
         name: "protein-structure-figure",
         keywords: "pymol protein structure figure cartoon ribbon active site catalytic residue mutation binding pocket domain fold pdb crystal cryo-em zinc metal coordination publication figure 结构图 蛋白 活性位点 突变",
         summary: "Publication-grade PROTEIN/STRUCTURE figures with headless ray-traced PyMOL (matplotlib cannot make these) + measured geometry + a composed, captioned panel.",
@@ -69,7 +88,54 @@ pub const SKILLS: &[Skill] = &[
                Use a GENEROUS figsize (e.g. 18×9): the kernel captures at dpi=110, so a small figsize throws away the ray-traced detail.\n\
                ALSO savefig the full-resolution PNG into the workspace — it then appears under 产物文件 and the user can download the print-quality original.\n",
     },
-    Skill {
+    Builtin {
+        name: "small-molecule-figure",
+        keywords: "rdkit small molecule drug ligand inhibitor compound chemical structure 2d smiles pharmacophore scaffold warhead substructure reaction descriptor logp tpsa molecular weight medicinal chemistry 分子结构 小分子 药物 配体 化合物",
+        summary: "Publication-grade SMALL-MOLECULE / drug / ligand 2D structure figures with RDKit (clean stereo bonds, substructure highlight) + REAL computed descriptors + a composed panel.",
+        card: "# Publication-grade small-molecule / drug figures (RDKit)\n\
+            USE THIS whenever the figure is a CHEMICAL: a drug / inhibitor / metabolite / ligand 2D structure, a series comparison, a reaction, or highlighting a pharmacophore / warhead / scaffold. RDKit draws proper stereochemistry (wedge bonds) and is the right tool — a hand-drawn matplotlib molecule is never acceptable.\n\
+            \n\
+            1. INSTALL (pip wheels — imports in the SAME kernel right after, NO conda needed):\n\
+               {\"tool\":\"pip_install\",\"packages\":[\"rdkit\"]}   (add \"pillow\" if not present)\n\
+            \n\
+            2. STRUCTURES come from a SOURCE, never invented. Get the SMILES from the literature / PubChem / ChEMBL (use web_fetch / the litsearch abstracts). `m = Chem.MolFromSmiles(smi)` and *** ALWAYS check `assert m is not None` — a wrong SMILES silently returns None. *** Then `AllChem.Compute2DCoords(m)` before drawing.\n\
+            \n\
+            3. DRAW crisp + publication-style with MolDraw2DCairo:\n\
+               from rdkit.Chem.Draw import rdMolDraw2D\n\
+               d = rdMolDraw2D.MolDraw2DCairo(560, 460); op = d.drawOptions(); op.bondLineWidth = 2; op.padding = 0.12\n\
+               HIGHLIGHT the meaningful substructure (warhead / pharmacophore / shared scaffold) via SMARTS so the figure MAKES A POINT: `patt = Chem.MolFromSmarts(smarts); hit = m.GetSubstructMatch(patt)` then pass highlightAtoms=list(hit) (+ the bonds within hit) to `rdMolDraw2D.PrepareAndDrawMolecule`. d.FinishDrawing(); the PNG bytes are d.GetDrawingText().\n\
+               For a REACTION use `rdChemReactions.ReactionFromSmarts(...)` + Draw.ReactionToImage. For a scaffold across a series, align to a common core (`AllChem.GenerateDepictionMatching2DStructure`) so the eye compares like-with-like.\n\
+            \n\
+            4. MEASURE, NEVER ASSERT — compute descriptors from the structure, don't state them from memory:\n\
+               from rdkit.Chem import Descriptors, Crippen, rdMolDescriptors\n\
+               MW=Descriptors.MolWt(m); logP=Crippen.MolLogP(m); TPSA=rdMolDescriptors.CalcTPSA(m); HBD=rdMolDescriptors.CalcNumHBD(m); HBA=rdMolDescriptors.CalcNumHBA(m)\n\
+               (Lipinski/Veber context: MW, logP, TPSA, HBD/HBA, rotatable bonds — all computed.) A descriptor you did not compute is a fabrication.\n\
+            \n\
+            5. COMPOSE in matplotlib (so the kernel captures it): `plt.close('all')` first; imshow each molecule PNG in a grid with `ax.axis('off')`, bold titles, and a CAPTION row carrying the computed descriptor table + a one-line legend (what the highlight means). savefig the full-res PNG into the workspace too.\n",
+    },
+    Builtin {
+        name: "gene-context-figure",
+        keywords: "dna features viewer gene context operon cassette plasmid map mobile genetic element transposon integron resistance gene neighbourhood synteny locus contig arrow genbank 基因排布 操纵子 质粒图谱 耐药基因 可移动元件 基因背景",
+        summary: "Publication-grade GENE-CONTEXT / operon / resistance-cassette / plasmid maps with dna_features_viewer (strand-aware gene arrows, ruler) — the figure resistance/genomics papers use.",
+        card: "# Publication-grade gene-context / operon / plasmid maps (dna_features_viewer)\n\
+            USE THIS whenever the figure is a LINEAR (or circular) arrangement of genes: an operon, a resistance cassette / mobile genetic element (transposon, integron, IS-flanked context), a gene neighbourhood / synteny block, or a plasmid map. Strand-aware gene arrows on a ruler — matplotlib patches look amateurish next to this.\n\
+            \n\
+            1. INSTALL (pip — imports in the SAME kernel right after):\n\
+               {\"tool\":\"pip_install\",\"packages\":[\"dna_features_viewer\"]}   (biopython too if you will parse GenBank)\n\
+            \n\
+            2. COORDINATES come from a SOURCE where possible: parse a real GenBank/RefSeq record with Biopython (`SeqIO.read(...,'genbank')`, iterate `record.features` of type CDS, read `.location.start/.end/.strand` and the `/gene` or `/product` qualifier). *** If you only have an illustrative layout from the literature (no coordinates you can cite), you MAY draw a schematic — but the title/caption MUST say \"schematic, positions illustrative\" so a reader never mistakes made-up coordinates for measured ones. ***\n\
+            \n\
+            3. DRAW:\n\
+               from dna_features_viewer import GraphicFeature, GraphicRecord\n\
+               feats = [GraphicFeature(start=s, end=e, strand=+1 or -1, label='geneName', color='#c0392b'), ...]\n\
+               rec = GraphicRecord(sequence_length=L, features=feats); ax = rec.plot(figure_width=13)[0]  # or rec.plot(ax=ax)\n\
+               COLOUR semantically + muted: the gene of interest (e.g. the resistance gene) in a strong accent, flanking IS/mobile elements in grey, housekeeping genes in soft blues/greens. For a plasmid use CircularGraphicRecord.\n\
+            \n\
+            4. Keep it readable: a generous figure_width (12-14) and, if labels collide, `GraphicRecord(..., feature_level_height=...)` or shorten labels; add a ruler (`with_ruler=True`, default) and a bold title naming the element. savefig into the workspace and let the kernel capture it.\n\
+            \n\
+            5. HONESTY: gene lengths/positions on the axis are real only if you read them from a record — otherwise mark the figure schematic (see step 2). Never present an invented coordinate as measured.\n",
+    },
+    Builtin {
         name: "single-cell-rnaseq",
         keywords: "scrna scRNA-seq scanpy anndata umap leiden cluster cell type marker harmony batch integration immune",
         summary: "scRNA-seq: QC → normalize → HVG → PCA → batch-correct → Leiden → UMAP → annotate.",
@@ -87,7 +153,7 @@ pub const SKILLS: &[Skill] = &[
             Figures: UMAP → ```chart scatter (x/y = UMAP1/2, group = cell type); markers → ```dotplot or ```heatmap.\n\
             Rigor: for composition/DE between conditions, aggregate to the SAMPLE (pseudobulk) — never test per-cell (pseudoreplication). BH-correct across genes/clusters. Report per-sample proportions with a test + CI.",
     },
-    Skill {
+    Builtin {
         name: "phylogenetics",
         keywords: "phylogeny tree evolution ancestral reconstruction MSA alignment mafft iqtree sequence homolog newick clade bootstrap",
         summary: "Phylogenetics: homologs → MSA → trim → ML tree → trace residues → ancestral reconstruction.",
@@ -103,7 +169,7 @@ pub const SKILLS: &[Skill] = &[
             Figures: ```tree (Newick); ```msa; ```seqlogo (per-column base/aa frequencies); residue states → ```heatmap.\n\
             Rigor: report branch support; flag long-branch attraction; frame ancestral function as a structure/evolution HYPOTHESIS, not an assay result.",
     },
-    Skill {
+    Builtin {
         name: "differential-expression",
         keywords: "differential expression DE deseq edger volcano fold change padj fdr multiple testing omics rnaseq bulk transcriptomics",
         summary: "Bulk/omics DE: per-feature effect size + test → BH/FDR correction → volcano/heatmap.",
@@ -116,7 +182,7 @@ pub const SKILLS: &[Skill] = &[
             Figures: ```volcano {\"genes\":[{\"gene\":..,\"lfc\":..,\"padj\":..}]}; top hits (z-scored) → ```heatmap.\n\
             Rigor: BH/FDR is MANDATORY — never report raw p across thousands of tests. With replicates, aggregate to the experimental unit. Report effect size + CI, not p alone.",
     },
-    Skill {
+    Builtin {
         name: "crispr-screen",
         keywords: "crispr cas9 knockout screen sgrna guide brunello off-target cfd mit library sequencing kinome",
         summary: "CRISPR-KO library: gene set → optimized guides → on/off-target QC → controls → construction + depth.",
@@ -131,7 +197,7 @@ pub const SKILLS: &[Skill] = &[
             Figures: coverage → ```chart bar; specificity → ```chart scatter; hit ranking → ```manhattan or ```volcano; domains/mutations → ```track.\n\
             Rigor: ≥3 usable guides/gene; document dropped/flagged guides; don't silently lose coverage.",
     },
-    Skill {
+    Builtin {
         name: "protein-engineering",
         keywords: "protein mutation variant effect esm esmfold proteinmpnn inverse folding structure pymol stability engineering enzyme",
         summary: "Protein variant effects: characterize → PLM/structure scoring → consensus rank → structural rationale.",
@@ -144,7 +210,7 @@ pub const SKILLS: &[Skill] = &[
             Figures: mutational landscape → ```heatmap; candidate positions → ```track; structure → ```protein (4-char PDB id or inline PDB).\n\
             Rigor: PLM/inverse-folding scores predict fitness/foldability, NOT turnover — frame as ranked hypotheses; cross-validate anything you fit; state that the active site was protected; recommend wet-lab validation.",
     },
-    Skill {
+    Builtin {
         name: "gwas",
         keywords: "gwas association genome-wide snp variant manhattan qq bonferroni population structure",
         summary: "GWAS: per-variant association → genome-wide correction → Manhattan + QQ.",
@@ -158,12 +224,145 @@ pub const SKILLS: &[Skill] = &[
     },
 ];
 
+/// `~/.axiom3/skills` — the user-authored skill directory (created on first use). Same root the
+/// kernel's conda/pip envs live under, so "all my science stuff is in ~/.axiom3" stays true.
+fn skills_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(Path::new(&home).join(".axiom3").join("skills"))
+}
+
+/// Parse one SKILL.md — YAML-ish frontmatter (`name`/`keywords`/`summary` between `---` fences)
+/// then the card body. Missing name falls back to the folder name. Returns None if there's no body.
+fn parse_skill_md(text: &str, folder: &str) -> Option<Skill> {
+    let (mut name, mut keywords, mut summary) = (folder.to_string(), String::new(), String::new());
+    let body;
+    let t = text.strip_prefix('\u{feff}').unwrap_or(text); // tolerate a BOM
+    if let Some(rest) = t.trim_start().strip_prefix("---") {
+        // frontmatter up to the next line that is exactly `---`
+        if let Some(end) = rest.find("\n---") {
+            for line in rest[..end].lines() {
+                let line = line.trim();
+                if let Some((k, v)) = line.split_once(':') {
+                    let v = v.trim().to_string();
+                    match k.trim().to_ascii_lowercase().as_str() {
+                        "name" if !v.is_empty() => name = v,
+                        "keywords" => keywords = v,
+                        "summary" => summary = v,
+                        _ => {}
+                    }
+                }
+            }
+            body = rest[end + 4..].trim_start_matches(['\n', '\r']).to_string();
+        } else {
+            body = t.to_string();
+        }
+    } else {
+        body = t.to_string();
+    }
+    if body.trim().is_empty() {
+        return None;
+    }
+    if summary.is_empty() {
+        summary = body.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim_start_matches('#').trim().to_string();
+    }
+    Some(Skill { name: name.trim().to_ascii_lowercase(), keywords, summary, card: body })
+}
+
+/// Load every `<dir>/<skill>/SKILL.md`. Folders starting with `.` or `_` are skipped (so the
+/// `_template` example isn't loaded as a real skill). Robust to junk: parse failures are ignored.
+fn load_dir(dir: &Path) -> Vec<Skill> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else { return out };
+    for e in rd.flatten() {
+        if out.len() >= 200 {
+            break;
+        }
+        let folder = e.file_name().to_string_lossy().to_string();
+        if folder.starts_with('.') || folder.starts_with('_') {
+            continue;
+        }
+        let md = e.path().join("SKILL.md");
+        if let Ok(meta) = std::fs::metadata(&md) {
+            if meta.len() > 256 * 1024 {
+                continue; // a skill card is prose, not a dataset
+            }
+            if let Ok(text) = std::fs::read_to_string(&md) {
+                if let Some(s) = parse_skill_md(&text, &folder) {
+                    out.push(s);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// On first use, drop a README + a `_template/SKILL.md` into the skills dir so a domain expert can
+/// see the format and copy it — WITHOUT recompiling. Never clobbers files a user already wrote.
+fn materialize_docs(dir: &Path) {
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let readme = dir.join("README.md");
+    if !readme.exists() {
+        let _ = std::fs::write(&readme, "# Axiom3 技能库 · Skill registry\n\n\
+            这里的每个子文件夹放一个 `SKILL.md`,就是一张“技能卡”——研究/分析智能体会检索并按卡执行。\n\
+            **改这里的文件即时生效,无需重新编译 App**(下次运行任务时加载)。同名会覆盖内置技能。\n\n\
+            格式(YAML 头 + Markdown 正文):\n\n\
+            ```\n---\nname: my-skill\nkeywords: 关键词 synonyms tools 供检索命中\nsummary: 一句话说明这张卡做什么\n---\n\
+            # 正文就是给智能体看的操作手册\n1. 装什么包(pip_install / conda_install)\n2. 规范流程(逐步)\n\
+            3. 用哪种图块 / 引擎\n4. 严谨性red-line:数字要计算不能编造\n```\n\n\
+            复制 `_template/` 改成你自己的技能即可。内置技能(蛋白结构图/小分子图/基因背景图/scRNA-seq 等)随 App 出厂,始终最新。\n")
+        ;
+    }
+    let tmpl_dir = dir.join("_template");
+    let tmpl = tmpl_dir.join("SKILL.md");
+    if !tmpl.exists() && std::fs::create_dir_all(&tmpl_dir).is_ok() {
+        let _ = std::fs::write(&tmpl, "---\nname: my-skill\n\
+            keywords: 领域 方法 工具 别名 — 这些词会被检索命中\n\
+            summary: 一句话:这张卡在什么情况下用、产出什么\n---\n\
+            # 我的技能(把这段换成真正的操作手册)\n\
+            USE THIS WHEN: 描述何时该用这张卡。\n\n\
+            1. 安装:{\"tool\":\"pip_install\",\"packages\":[\"...\"]}\n\
+            2. 规范流程:逐步写清楚,让弱一点的模型也能照做对。\n\
+            3. 图:说明用哪个原生图块或引擎。\n\
+            4. 严谨性:每个数字都要由代码计算得到,不能凭记忆断言;不确定就说不确定。\n")
+        ;
+    }
+}
+
+/// The merged, immutable skill registry (builtins + disk), built ONCE. Disk overrides builtin by name.
+fn registry() -> &'static [Skill] {
+    static REG: OnceLock<Vec<Skill>> = OnceLock::new();
+    REG.get_or_init(|| {
+        let mut v: Vec<Skill> = BUILTINS
+            .iter()
+            .map(|b| Skill {
+                name: b.name.to_string(),
+                keywords: b.keywords.to_string(),
+                summary: b.summary.to_string(),
+                card: b.card.to_string(),
+            })
+            .collect();
+        if let Some(dir) = skills_dir() {
+            materialize_docs(&dir);
+            for s in load_dir(&dir) {
+                match v.iter_mut().find(|e| e.name == s.name) {
+                    Some(existing) => *existing = s, // a disk skill tunes/overrides a builtin
+                    None => v.push(s),
+                }
+            }
+        }
+        v
+    })
+    .as_slice()
+}
+
 /// Rank skills by how many query terms appear in name/keywords/summary. Empty result → caller
 /// should surface the full list so the agent can pick.
 pub fn search(query: &str) -> Vec<&'static Skill> {
     let q = query.to_lowercase();
     let terms: Vec<&str> = q.split(|c: char| !c.is_alphanumeric()).filter(|t| t.len() >= 2).collect();
-    let mut scored: Vec<(usize, &'static Skill)> = SKILLS
+    let mut scored: Vec<(usize, &'static Skill)> = registry()
         .iter()
         .map(|s| {
             let hay = format!("{} {} {}", s.name, s.keywords, s.summary).to_lowercase();
@@ -178,12 +377,12 @@ pub fn search(query: &str) -> Vec<&'static Skill> {
 
 pub fn get(name: &str) -> Option<&'static Skill> {
     let n = name.trim().to_lowercase();
-    SKILLS.iter().find(|s| s.name == n)
+    registry().iter().find(|s| s.name == n)
 }
 
 /// One-line catalogue of every skill (for when a search misses).
 pub fn catalogue() -> String {
-    SKILLS.iter().map(|s| format!("- {} — {}", s.name, s.summary)).collect::<Vec<_>>().join("\n")
+    registry().iter().map(|s| format!("- {} — {}", s.name, s.summary)).collect::<Vec<_>>().join("\n")
 }
 
 #[cfg(test)]
@@ -194,24 +393,93 @@ mod tests {
     fn search_ranks_relevant_skills_and_get_roundtrips() {
         let hits = search("single cell umap clustering");
         assert!(!hits.is_empty());
-        assert_eq!(hits[0].name, "single-cell-rnaseq", "expected scRNA skill first, got {:?}", hits.iter().map(|s| s.name).collect::<Vec<_>>());
+        assert_eq!(hits[0].name.as_str(), "single-cell-rnaseq", "expected scRNA skill first, got {:?}", hits.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());
         assert!(search("volcano fdr differential").iter().any(|s| s.name == "differential-expression"));
-        // The structure-figure skill must WIN the queries an agent actually types when it needs a
-        // protein figure — a skill nobody retrieves is a skill that doesn't exist. It is also loadable
-        // straight by name, which is how the system prompt routes to it.
-        for q in ["pymol protein structure figure", "active site zinc coordination figure", "enzyme fold cartoon ribbon"] {
-            let hits = search(q);
-            assert_eq!(hits.first().map(|s| s.name), Some("protein-structure-figure"), "query {q:?} → {:?}", hits.iter().map(|s| s.name).collect::<Vec<_>>());
+        // Each FIGURE-ENGINE skill must WIN the queries an agent actually types — a skill nobody
+        // retrieves is a skill that doesn't exist. Each is also loadable straight by name (how the
+        // system prompt routes to it).
+        let want = [
+            ("protein-structure-figure", ["pymol protein structure figure", "active site zinc coordination figure", "enzyme fold cartoon ribbon"]),
+            ("small-molecule-figure",    ["rdkit drug molecule structure figure", "inhibitor smiles pharmacophore highlight", "ligand descriptor logp figure"]),
+            ("gene-context-figure",      ["gene context operon cassette figure", "plasmid map mobile genetic element", "resistance gene neighbourhood arrows"]),
+        ];
+        for (name, queries) in want {
+            for q in queries {
+                let hits = search(q);
+                assert_eq!(hits.first().map(|s| s.name.as_str()), Some(name), "query {q:?} → {:?}", hits.iter().map(|s| s.name.as_str()).collect::<Vec<_>>());
+            }
         }
-        let card = get("protein-structure-figure").expect("loadable by name").card;
-        // The card must carry the two things that make it WORK rather than merely sound right: the
-        // absolute-path kernel invocation (the `run` allowlist has no pymol) and measured-not-asserted geometry.
+        // The PyMOL card must carry the two things that make it WORK: the absolute-path kernel
+        // invocation (the `run` allowlist has no pymol) and measured-not-asserted geometry.
+        let card = &get("protein-structure-figure").expect("loadable by name").card;
         assert!(card.contains("~/.axiom3/bioenv/bin/pymol"), "card must give the absolute binary path");
         assert!(card.contains("MEASURE, NEVER ASSERT"), "card must forbid asserted numbers");
+        // The new import-based engines must install via pip_install (into the KERNEL venv), NOT
+        // conda_install (which lands in a different env the kernel can't import from).
+        assert!(get("small-molecule-figure").unwrap().card.contains("pip_install"), "rdkit skill must pip_install into the kernel");
+        assert!(get("gene-context-figure").unwrap().card.contains("pip_install"), "dna_features_viewer skill must pip_install into the kernel");
         assert!(get("phylogenetics").is_some());
         assert!(get("nonexistent").is_none());
         // A miss returns nothing; the catalogue still lists everything.
         assert!(search("zzz nonsense qqq").is_empty());
         assert!(catalogue().contains("crispr-screen"));
+    }
+
+    #[test]
+    fn skill_md_frontmatter_parses_and_falls_back() {
+        let s = parse_skill_md("---\nname: My-Skill\nkeywords: a b c\nsummary: does a thing\n---\n# Body\nstep 1\n", "folder").unwrap();
+        assert_eq!(s.name, "my-skill"); // lowercased for name-matching
+        assert_eq!(s.keywords, "a b c");
+        assert_eq!(s.summary, "does a thing");
+        assert!(s.card.starts_with("# Body"));
+        // No frontmatter → folder name + first heading as summary; whole text is the card.
+        let s2 = parse_skill_md("# Just a card\nno frontmatter", "fallback-name").unwrap();
+        assert_eq!(s2.name, "fallback-name");
+        assert_eq!(s2.summary, "Just a card");
+        assert!(s2.card.contains("no frontmatter"));
+        // Empty body is not a skill.
+        assert!(parse_skill_md("---\nname: x\n---\n   \n", "f").is_none());
+    }
+
+    #[test]
+    fn materialize_then_load_dir_round_trips_on_disk() {
+        // Exercise the REAL file I/O path: materialize the docs, drop a user SKILL.md, load it back.
+        let dir = std::env::temp_dir().join("axiom3_skills_rt_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        materialize_docs(&dir);
+        // README + a _template/SKILL.md were written…
+        assert!(dir.join("README.md").exists(), "README materialized");
+        assert!(dir.join("_template").join("SKILL.md").exists(), "template materialized");
+        // …but the _template is NOT loaded as a real skill (underscore-prefixed dirs are skipped).
+        let author = dir.join("my-figure-skill");
+        std::fs::create_dir_all(&author).unwrap();
+        std::fs::write(author.join("SKILL.md"), "---\nname: my-figure-skill\nkeywords: foo bar\nsummary: a user skill\n---\n# card\ndo the thing\n").unwrap();
+        let loaded = load_dir(&dir);
+        assert!(loaded.iter().any(|s| s.name == "my-figure-skill"), "user skill loaded from disk");
+        assert!(!loaded.iter().any(|s| s.name.contains("template")), "_template dir must be skipped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn disk_skill_overrides_builtin_by_name() {
+        // A disk SKILL.md with a builtin's name REPLACES it (power-user tuning); a new name ADDS.
+        let mut v: Vec<Skill> = BUILTINS
+            .iter()
+            .map(|b| Skill { name: b.name.into(), keywords: b.keywords.into(), summary: b.summary.into(), card: b.card.into() })
+            .collect();
+        let n0 = v.len();
+        let disk = vec![
+            parse_skill_md("---\nname: gwas\nsummary: my tuned gwas\n---\ntuned body\n", "gwas").unwrap(),
+            parse_skill_md("---\nname: brand-new\nsummary: novel\n---\nnew body\n", "brand-new").unwrap(),
+        ];
+        for s in disk {
+            match v.iter_mut().find(|e| e.name == s.name) {
+                Some(existing) => *existing = s,
+                None => v.push(s),
+            }
+        }
+        assert_eq!(v.len(), n0 + 1, "override must not grow the count; only the new skill adds one");
+        assert_eq!(v.iter().find(|e| e.name == "gwas").unwrap().summary, "my tuned gwas");
+        assert!(v.iter().any(|e| e.name == "brand-new"));
     }
 }

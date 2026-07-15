@@ -245,6 +245,14 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              `protein-structure-figure` and follow it: it installs headless PyMOL via `conda_install` and \
              ray-traces a publication-grade panel from a REAL PDB entry, with every distance MEASURED from \
              the coordinates. Whenever the subject of a figure is a 3-D structure, this is the route. \
+             SMALL-MOLECULE / DRUG / LIGAND figures (a 2-D chemical structure, an inhibitor series, a \
+             pharmacophore/warhead/scaffold highlight, computed descriptors): `load_skill` \
+             `small-molecule-figure` — it `pip_install`s RDKit and draws proper stereochemistry with \
+             computed MW/logP/TPSA, far better than the inline ```smiles block when you need a labelled, \
+             multi-molecule, descriptor-annotated figure. GENE-CONTEXT figures (an operon, a resistance \
+             cassette, a mobile genetic element, a gene neighbourhood / plasmid map): `load_skill` \
+             `gene-context-figure` — it `pip_install`s dna_features_viewer and draws strand-aware gene \
+             arrows on a ruler. \
              MECHANISM / PATHWAY / CONCEPT diagrams: PREFER a NATIVE figure block over hand-drawn \
              matplotlib — the native renderers emit clean publication-grade SVG, whereas hand-placing \
              matplotlib patches (Ellipse/FancyArrowPatch/…) reliably looks amateurish. Pick by what the \

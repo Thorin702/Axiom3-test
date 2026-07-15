@@ -68,6 +68,9 @@ const COMMANDS: SlashCmd[] = [
 // Domain skills the `/技能` command offers — mirrors the engine's skill registry. Picking one
 // prefills a directive + switches to 分析 mode; the analysis agent then loads that skill.
 const SKILLS = [
+  { key: "protein-structure-figure", zh: "蛋白结构图 (PyMOL)", en: "Protein structure figure", zhh: "无头光追·实测几何·出版级", enh: "headless ray-trace · measured" },
+  { key: "small-molecule-figure", zh: "小分子/药物图 (RDKit)", en: "Small-molecule figure", zhh: "2D结构·子结构高亮·描述符", enh: "2D · highlight · descriptors" },
+  { key: "gene-context-figure", zh: "基因背景/操纵子图", en: "Gene-context figure", zhh: "基因箭头·操纵子·耐药基因盒", enh: "gene arrows · operon · cassette" },
   { key: "single-cell-rnaseq", zh: "单细胞 RNA-seq", en: "Single-cell RNA-seq", zhh: "QC→归一化→聚类→UMAP→注释", enh: "QC → cluster → UMAP → annotate" },
   { key: "phylogenetics", zh: "系统发育 / 祖先重建", en: "Phylogenetics", zhh: "比对→建树→追踪残基→祖先重建", enh: "align → tree → ancestral states" },
   { key: "differential-expression", zh: "差异表达", en: "Differential expression", zhh: "效应量 + BH/FDR → 火山图", enh: "effect size + BH/FDR → volcano" },
