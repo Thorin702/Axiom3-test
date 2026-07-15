@@ -1671,7 +1671,10 @@ pub fn clear_cache(state: tauri::State<'_, AppState>) {
 /// The first interpreter that answers `--version`, or None.
 fn detect_python() -> Option<String> {
     for p in ["python3", "python"] {
-        if std::process::Command::new(p).arg("--version").output().map(|o| o.status.success()).unwrap_or(false) {
+        let mut c = std::process::Command::new(p);
+        c.arg("--version");
+        no_window(&mut c);
+        if c.output().map(|o| o.status.success()).unwrap_or(false) {
             return Some(p.to_string());
         }
     }
@@ -1709,9 +1712,10 @@ fn ensure_kernel_env(base: &std::path::Path) -> Result<std::path::PathBuf, Strin
     }
     let sys = detect_python().ok_or("Python 3 未安装 — 请先安装 Python 3。 · Python 3 not found.")?;
     std::fs::create_dir_all(&venv).ok();
-    let out = std::process::Command::new(&sys)
-        .args(["-m", "venv"])
-        .arg(&venv)
+    let mut vcmd = std::process::Command::new(&sys);
+    vcmd.args(["-m", "venv"]).arg(&venv);
+    no_window(&mut vcmd);
+    let out = vcmd
         .output()
         .map_err(|e| format!("无法创建虚拟环境 · venv failed: {e}"))?;
     if !out.status.success() {
@@ -1782,6 +1786,7 @@ fn seed_sci_stack(base: &std::path::Path) -> Result<std::path::PathBuf, String> 
                 cmd.env("SSL_CERT_FILE", c);
             }
         }
+        no_window(&mut cmd);
         let out = cmd
             .output()
             .map_err(|e| format!("pip 无法启动 · pip failed to spawn: {e}"))?;
@@ -1806,6 +1811,17 @@ fn seed_sci_stack(base: &std::path::Path) -> Result<std::path::PathBuf, String> 
 // The pre-install checklist: detect + one-click-install each prerequisite so a partner arrives
 // with everything ready. Reuses the kernel venv (pip packages) and micromamba (~/.axiom3/bioenv,
 // conda binaries). All-green is the gate the frontend enforces before "next".
+
+/// Keep a spawned subprocess from flashing a black console window on Windows (CREATE_NO_WINDOW).
+/// No-op on other OSes. EVERY subprocess we spawn (provisioning installs, python detection, venv
+/// creation) otherwise pops a cmd window on Windows — to a user it looks like something is breaking.
+#[cfg(windows)]
+fn no_window(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+}
+#[cfg(not(windows))]
+fn no_window(_cmd: &mut std::process::Command) {}
 
 fn axiom3_root() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
@@ -1842,14 +1858,16 @@ fn venv_python(base: &std::path::Path) -> Option<std::path::PathBuf> {
 }
 /// Does the venv python import these modules cleanly?
 fn py_can_import(py: &std::path::Path, mods: &str) -> bool {
-    std::process::Command::new(py)
-        .args(["-c", &format!("import {mods}")])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let mut c = std::process::Command::new(py);
+    c.args(["-c", &format!("import {mods}")]);
+    no_window(&mut c);
+    c.output().map(|o| o.status.success()).unwrap_or(false)
 }
 fn cmd_ok(prog: &str, arg: &str) -> bool {
-    std::process::Command::new(prog).arg(arg).output().map(|o| o.status.success()).unwrap_or(false)
+    let mut c = std::process::Command::new(prog);
+    c.arg(arg);
+    no_window(&mut c);
+    c.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Bootstrap a standalone micromamba (once) if absent, returning its path. Uses the venv python
@@ -1883,6 +1901,7 @@ print('ok',mmp)"#;
             cmd.env("SSL_CERT_FILE", c);
         }
     }
+    no_window(&mut cmd);
     let out = cmd.output().map_err(|e| format!("micromamba 引导失败 · bootstrap spawn: {e}"))?;
     if !mm.exists() {
         return Err(format!("micromamba 引导失败 · {}", String::from_utf8_lossy(&out.stderr)));
@@ -1898,8 +1917,10 @@ fn conda_install_sync(base: &std::path::Path, pkgs: &[&str]) -> Result<(), Strin
     let env_s = env.to_string_lossy().into_owned();
     let mut args: Vec<&str> = vec![sub, "-y", "-p", &env_s, "-c", "conda-forge", "-c", "bioconda"];
     args.extend_from_slice(pkgs);
-    let out = std::process::Command::new(&mm)
-        .args(&args)
+    let mut mcmd = std::process::Command::new(&mm);
+    mcmd.args(&args);
+    no_window(&mut mcmd);
+    let out = mcmd
         .output()
         .map_err(|e| format!("micromamba 无法启动 · {e}"))?;
     if out.status.success() {
@@ -1918,6 +1939,7 @@ fn venv_pip_install(py: &std::path::Path, pkgs: &[&str]) -> Result<(), String> {
             cmd.env("SSL_CERT_FILE", c);
         }
     }
+    no_window(&mut cmd);
     let out = cmd.output().map_err(|e| format!("pip 无法启动 · {e}"))?;
     if out.status.success() {
         Ok(())

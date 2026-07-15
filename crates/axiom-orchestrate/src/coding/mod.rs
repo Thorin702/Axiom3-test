@@ -180,7 +180,7 @@ _wrap = ("import subprocess, sys\n" "r = subprocess.run(%r, capture_output=True,
 open('.axiom_jobs/__ID__.py', 'w').write(_wrap)
 try: os.remove('.axiom_jobs/__ID__.status')
 except OSError: pass
-_flags = 0x00000008 if _win else 0
+_flags = 0x08000008 if _win else 0   # DETACHED_PROCESS | CREATE_NO_WINDOW (no black console flash on Windows)
 _p = subprocess.Popen([sys.executable, '.axiom_jobs/__ID__.py'], stdout=open('.axiom_jobs/__ID__.log', 'w'), stderr=subprocess.STDOUT, start_new_session=not _win, creationflags=_flags)
 _eb = os.pathsep.join([ENV, os.path.join(ENV,'Scripts'), os.path.join(ENV,'Library','bin')]) if _win else os.path.join(ENV, 'bin')
 os.environ['PATH'] = _eb + os.pathsep + os.environ.get('PATH', '')

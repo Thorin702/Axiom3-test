@@ -51,7 +51,8 @@ const BUILTINS: &[Builtin] = &[
                BIO = os.path.expanduser('~/.axiom3/bioenv')\n\
                PY = os.path.join(BIO, 'python.exe') if os.name=='nt' else os.path.join(BIO, 'bin', 'python')   # bioenv python, absolute → survives kernel restart, no PATH dependency\n\
                open('render.py','w').write(SCRIPT)\n\
-               r = subprocess.run([PY, '-m', 'pymol', '-cq', 'render.py'], capture_output=True, text=True)\n\
+               CF = 0x08000000 if os.name=='nt' else 0   # CREATE_NO_WINDOW: don't flash a black console on Windows\n\
+               r = subprocess.run([PY, '-m', 'pymol', '-cq', 'render.py'], capture_output=True, text=True, creationflags=CF)\n\
                print(r.returncode, r.stdout[-2000:], r.stderr[-2000:])    # ALWAYS print rc+stderr, or a silent failure looks like success\n\
                ```\n\
                Headless: NO GPU and NO display needed (PyMOL ray-traces in software; ~2-30 s per panel).\n\

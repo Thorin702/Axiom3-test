@@ -134,6 +134,11 @@ fn spawn_io(python: &str, cwd: &Path) -> anyhow::Result<Io> {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0); // new process group; pgid == the child's pid
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — the kernel must not flash a console
+    }
     let mut child = cmd
         .spawn()
         .map_err(|e| anyhow::anyhow!("could not start {python}: {e}"))?;

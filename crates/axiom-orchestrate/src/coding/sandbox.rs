@@ -322,6 +322,8 @@ impl Sandbox {
             .kill_on_drop(true)
             .stdin(std::process::Stdio::null());
         scrub_env(&mut cmd);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — no black console flash per shell command
         let out = match tokio::time::timeout(timeout, cmd.output()).await {
             Ok(Ok(o)) => o,
             Ok(Err(e)) => return Err(format!("spawn failed: {e}")),
