@@ -1827,6 +1827,11 @@ fn bioenv_exe(exe: &str) -> Option<std::path::PathBuf> {
         }
     })
 }
+/// The bioenv's python (conda puts it at the env root on Windows, in bin/ on unix). PyMOL ships as
+/// a python module here, so we detect + run it via `python -m pymol` — no per-OS pymol.exe hunting.
+fn bioenv_python() -> Option<std::path::PathBuf> {
+    bioenv_dir().map(|e| if cfg!(windows) { e.join("python.exe") } else { e.join("bin").join("python") })
+}
 /// The kernel venv's python, if the venv has been created.
 fn venv_python(base: &std::path::Path) -> Option<std::path::PathBuf> {
     let py = base
@@ -1939,7 +1944,9 @@ pub async fn provision_status(app: tauri::AppHandle) -> Vec<ProvItem> {
     tauri::async_runtime::spawn_blocking(move || {
         let vpy = venv_python(&base);
         let node_ready = cmd_ok("node", "--version") || bioenv_exe("node").map(|p| p.exists()).unwrap_or(false);
-        let pymol_ready = bioenv_exe("pymol").map(|p| p.exists()).unwrap_or(false);
+        // PyMOL is a python module in the bioenv (no pymol.exe on Windows — the old bin/pymol check
+        // made the gate stay red on Windows even after a successful install). Detect by import.
+        let pymol_ready = bioenv_python().map(|p| p.exists() && py_can_import(&p, "pymol")).unwrap_or(false);
         let sci_ready = vpy.as_ref().map(|p| py_can_import(p, "numpy,pandas,scipy,matplotlib,sklearn")).unwrap_or(false);
         let fig_ready = vpy.as_ref().map(|p| py_can_import(p, "rdkit,dna_features_viewer")).unwrap_or(false);
         let key_ready = std::env::var("ZHIPU_API_KEY").is_ok() || std::env::var("SCNET_API_KEY").is_ok();

@@ -45,12 +45,13 @@ const BUILTINS: &[Builtin] = &[
             \n\
             1. STRUCTURE. Prefer a REAL experimental structure — RCSB has 200k+. Fetch by id inside the script: `cmd.fetch('5grr', type='pdb', async_=0)` (writes 5grr.pdb into the cwd). Use the `pdb` tool first to confirm the id/method/resolution.\n\
             \n\
-            2. RUN IT — from the PYTHON KERNEL by subprocess, using the ABSOLUTE binary path. Do NOT use the `run` tool (its allowlist has no `pymol`, and its 45 s shell timeout can cut a ray-trace off). The kernel cell timeout is generous (600 s):\n\
+            2. RUN IT — from the PYTHON KERNEL by subprocess. Invoke PyMOL AS A MODULE (`python -m pymol -cq`) via the bioenv's OWN python — cross-platform (PyMOL ships as a python module; there is NO pymol.exe on Windows). Do NOT use the `run` tool (its allowlist has no pymol, and its 45 s shell timeout can cut a ray-trace off). The kernel cell timeout is generous (600 s):\n\
                ```\n\
                import os, subprocess\n\
-               PYMOL = os.path.expanduser('~/.axiom3/bioenv/bin/pymol')   # absolute → survives a kernel restart, no PATH dependency\n\
+               BIO = os.path.expanduser('~/.axiom3/bioenv')\n\
+               PY = os.path.join(BIO, 'python.exe') if os.name=='nt' else os.path.join(BIO, 'bin', 'python')   # bioenv python, absolute → survives kernel restart, no PATH dependency\n\
                open('render.py','w').write(SCRIPT)\n\
-               r = subprocess.run([PYMOL,'-cq','render.py'], capture_output=True, text=True)\n\
+               r = subprocess.run([PY, '-m', 'pymol', '-cq', 'render.py'], capture_output=True, text=True)\n\
                print(r.returncode, r.stdout[-2000:], r.stderr[-2000:])    # ALWAYS print rc+stderr, or a silent failure looks like success\n\
                ```\n\
                Headless: NO GPU and NO display needed (PyMOL ray-traces in software; ~2-30 s per panel).\n\
@@ -412,7 +413,7 @@ mod tests {
         // The PyMOL card must carry the two things that make it WORK: the absolute-path kernel
         // invocation (the `run` allowlist has no pymol) and measured-not-asserted geometry.
         let card = &get("protein-structure-figure").expect("loadable by name").card;
-        assert!(card.contains("~/.axiom3/bioenv/bin/pymol"), "card must give the absolute binary path");
+        assert!(card.contains("-m', 'pymol'") || card.contains("'-m', 'pymol'"), "card must invoke pymol as a module (cross-platform), not a per-OS binary");
         assert!(card.contains("MEASURE, NEVER ASSERT"), "card must forbid asserted numbers");
         // The new import-based engines must install via pip_install (into the KERNEL venv), NOT
         // conda_install (which lands in a different env the kernel can't import from).
