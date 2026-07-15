@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { ChevronLeft, ChevronRight, Check, Download, Square, SquareCheck, ListChecks, Network, Code, Languages as LangIcon } from "lucide-react";
+import { ChevronLeft, ChevronRight, Check, Download, Square, SquareCheck, Network, Code } from "lucide-react";
 import type { Lang } from "../i18n";
 
 type SystemCheck = { os: string; keychain: boolean; python: string | null; node: string | null; ollama: boolean };
@@ -12,21 +12,27 @@ const TXT: Record<Lang, Record<string, string>> = {
   zh: {
     welcome: "欢迎", syscheck: "本机检查", providers: "连接模型", deploy: "部署档",
     lit: "文献来源", howto: "使用说明", consent: "声明与同意",
-    brand_sub: "面向科研工作者 · 以严谨为目标",
-    lead: "以严谨为目标的科研工作台:真跑代码、多智能体协同、逐步留证据 —— 结论是否成立由你判断,它不替你下对错。",
-    b1: "校验优先:逐步留可审计证据 + 审查员标记无据主张,只摆证据、不判真伪",
-    b2: "多智能体工作流:分解目标 → 并行数十 agent → 审查 → 汇总",
-    b3: "代码优先分析:真起 Python 内核跑你的数据,统计与图表由真实数据算出,绝不编造",
-    b4: "领域原生渲染(火山图 / 系统树 / 分子 / 公式)+ 中英多语言",
+    brand_sub: "会做真科研的 AI · 校验为中心",
+    lead: "把一个科研课题交给它 —— 它像研究员一样查文献、跑真实计算、画出版级图,产出一份带引用、可回溯的深度报告。",
+    modes_h: "两种工作模式",
+    mode_a_t: "分析 · Loc-SAgent",
+    mode_a_d: "给它你的数据,单个智能体在本地 Python 内核跑统计、作图,快速得结论。",
+    mode_r_t: "研究 · Glob-DAgent",
+    mode_r_d: "给它一个课题,联网查文献 + 多智能体协同深挖 + 出版级绘图,产出深度研究报告。",
+    soul: "校验为中心:每步留可审计证据、审查员标记无据主张 —— 结论是否成立由你判断,它从不替你下对错。",
     sys_lead: "检查运行环境。", sys_os: "操作系统", sys_keychain: "钥匙串访问",
     sys_python: "Python 3", sys_node: "Node.js", sys_ollama: "本地模型(Ollama)",
     optional: "可选", install: "安装", checking: "检测中…",
-    prov_lead: "选提供方并填入 API key。连 ≥2 家,跨模型检查更扎实。", prov_key: "粘贴 API key…",
-    prov_save: "连接", prov_done: "已连接", prov_n1: "已连接 ", prov_n2a: " 家 · 跨模型检查可用", prov_n2b: " 家 · 再连 1 家更扎实",
-    deploy_lead: "决定数据与算力去向。",
-    dep_cloud: "家庭 · 云", dep_cloud_d: "数据走云端模型,最省心",
-    dep_hybrid: "家庭 · 混合", dep_hybrid_d: "本地优先,敏感内容不出机",
-    dep_onprem: "机构 · 本地", dep_onprem_d: "vLLM 舰队,数据完全本地",
+    prov_lead: "填入你的 GLM-5.2 API Key(自备)。智谱或超算互联网 SCNet 任一即可。",
+    prov_zhipu: "智谱 GLM-5.2", prov_scnet: "SCNet 超算互联网",
+    prov_key: "粘贴 API Key…",
+    prov_save: "连接", prov_done: "已连接",
+    prov_ok: "GLM-5.2 已就绪", prov_need: "填入任一 GLM-5.2 Key 即可继续",
+    deploy_lead: "算力与数据去向。前期仅开放云端,本地/混合将在后续版本开放。",
+    dep_cloud: "云端算力", dep_cloud_d: "调用云端 GLM-5.2,开箱即用",
+    dep_hybrid: "本地 · 混合", dep_hybrid_d: "本地优先,敏感内容不出机(即将开放)",
+    dep_onprem: "机构 · 本地", dep_onprem_d: "vLLM 舰队,数据完全本地(即将开放)",
+    dep_soon: "即将开放",
     lit_lead: "开启后,Axiom3 从已发表文献检索相关证据(候选,非裁决)。",
     lit_on: "开启文献检索", lit_off: "暂不开启",
     how1: "新建项目,粘贴或导入草稿。", how2: "查看每条断言的检查与证据。", how3: "需要时导出可审计的溯源记录。",
@@ -38,21 +44,27 @@ const TXT: Record<Lang, Record<string, string>> = {
   en: {
     welcome: "Welcome", syscheck: "System check", providers: "Connect models", deploy: "Deployment",
     lit: "Literature", howto: "How it works", consent: "Disclaimer & consent",
-    brand_sub: "for researchers · built for rigor",
-    lead: "A research workbench built for rigor: it runs real code, coordinates many agents, and leaves evidence step by step — whether a conclusion holds is your call; it never decides right or wrong for you.",
-    b1: "Verification-first: an auditable trail per step + a reviewer that flags unsupported claims — evidence, not verdicts",
-    b2: "Multi-agent workflow: decompose a goal → tens of agents in parallel → review → synthesize",
-    b3: "Code-first analysis: a real Python kernel runs your data — stats and figures are computed, never asserted",
-    b4: "Native domain figures (volcano / tree / molecules / math) + multilingual",
+    brand_sub: "AI that does real science · verification-first",
+    lead: "Hand it a research question — it reads the literature, runs real computation, draws publication-grade figures, and produces a cited, auditable deep report, like a researcher would.",
+    modes_h: "Two modes",
+    mode_a_t: "Analysis · Loc-SAgent",
+    mode_a_d: "Give it your data; a single agent runs stats and figures in a local Python kernel for a fast answer.",
+    mode_r_t: "Research · Glob-DAgent",
+    mode_r_d: "Give it a topic; it searches the literature online, coordinates many agents, and draws publication-grade figures into a deep report.",
+    soul: "Verification-first: an auditable trail per step + a reviewer that flags unsupported claims — whether a conclusion holds is your call; it never decides right or wrong for you.",
     sys_lead: "Checking your environment.", sys_os: "Operating system", sys_keychain: "Keychain access",
     sys_python: "Python 3", sys_node: "Node.js", sys_ollama: "Local model (Ollama)",
     optional: "optional", install: "install", checking: "checking…",
-    prov_lead: "Pick a provider and paste its API key. Connect ≥2 for stronger cross-model checking.", prov_key: "Paste API key…",
-    prov_save: "Connect", prov_done: "connected", prov_n1: "Connected ", prov_n2a: " · cross-model checking available", prov_n2b: " · one more makes it stronger",
-    deploy_lead: "Where data and compute go.",
-    dep_cloud: "Home · cloud", dep_cloud_d: "Data goes to cloud models — simplest",
-    dep_hybrid: "Home · hybrid", dep_hybrid_d: "Local-first; sensitive content stays on device",
-    dep_onprem: "Institution · on-prem", dep_onprem_d: "vLLM fleet; data fully local",
+    prov_lead: "Paste your own GLM-5.2 API key. Either Zhipu or SCNet works.",
+    prov_zhipu: "Zhipu GLM-5.2", prov_scnet: "SCNet",
+    prov_key: "Paste API key…",
+    prov_save: "Connect", prov_done: "connected",
+    prov_ok: "GLM-5.2 ready", prov_need: "Paste either GLM-5.2 key to continue",
+    deploy_lead: "Where compute and data go. Cloud only for now; local/hybrid coming later.",
+    dep_cloud: "Cloud", dep_cloud_d: "Calls cloud GLM-5.2 — works out of the box",
+    dep_hybrid: "Local · hybrid", dep_hybrid_d: "Local-first; sensitive content stays on device (coming soon)",
+    dep_onprem: "Institution · on-prem", dep_onprem_d: "vLLM fleet; data fully local (coming soon)",
+    dep_soon: "coming soon",
     lit_lead: "When on, Axiom3 retrieves related evidence from the literature (candidate, not a verdict).",
     lit_on: "Enable literature search", lit_off: "Not now",
     how1: "Create a project, paste or import a draft.", how2: "Read the checks and evidence per claim.", how3: "Export an auditable provenance record when needed.",
@@ -64,7 +76,10 @@ const TXT: Record<Lang, Record<string, string>> = {
 };
 
 const STEPS = ["welcome", "syscheck", "providers", "deploy", "lit", "howto", "consent"] as const;
-const PROVIDERS = ["anthropic", "openai", "deepseek", "gemini", "qwen"];
+// BYO GLM-5.2: either endpoint that serves it satisfies onboarding. resolve_model routes both to
+// glm-5.2 (SCNet gateway → GLM-5.2; Zhipu thinking tier → glm-5.2).
+const PROVIDERS = ["zhipu", "scnet"];
+const PROV_LABEL: Record<string, string> = { zhipu: "prov_zhipu", scnet: "prov_scnet" };
 
 function Lamp({ ok }: { ok: boolean }) {
   return <span className={`ax-lamp ${ok ? "is-green" : "is-amber"}`} />;
@@ -75,16 +90,16 @@ export function OnboardingWizard({ lang, onDone }: { lang: Lang; onDone: () => v
   const [step, setStep] = useState(0);
   const [sys, setSys] = useState<SystemCheck | null>(null);
   const [provs, setProvs] = useState<ProviderState[]>([]);
-  const [provSel, setProvSel] = useState("deepseek");
+  const [provSel, setProvSel] = useState("zhipu");
   const [keyInput, setKeyInput] = useState("");
-  const [deploy, setDeploy] = useState(localStorage.getItem("axiom3.deploy") || "");
+  const [deploy, setDeploy] = useState(localStorage.getItem("axiom3.deploy") || "cloud");
   const [lit, setLit] = useState(localStorage.getItem("axiom3.lit") !== "off");
   const [consent, setConsent] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const cur = STEPS[step];
   const last = step === STEPS.length - 1;
-  const connected = provs.filter((p) => p.connected).length;
+  const connected = provs.filter((p) => p.connected && PROVIDERS.includes(p.family)).length;
 
   const refreshProvs = useCallback(() => {
     invoke<ProviderState[]>("provider_status").then(setProvs).catch(() => {});
@@ -146,13 +161,22 @@ export function OnboardingWizard({ lang, onDone }: { lang: Lang; onDone: () => v
             <p className="ax-wiz-brand">
               Axiom3<small>{tx("brand_sub")}</small>
             </p>
-            <p style={{ margin: "8px 0 14px" }}>{tx("lead")}</p>
-            {[["b1", ListChecks], ["b2", Network], ["b3", Code], ["b4", LangIcon]].map(([k, Icon]: any) => (
-              <div className="ax-wiz-bullet" key={k}>
-                <Icon size={18} color="var(--ax-accent)" style={{ marginTop: 1, flex: "none" }} aria-hidden />
-                <span>{tx(k)}</span>
+            <p style={{ margin: "8px 0 16px", lineHeight: 1.6 }}>{tx("lead")}</p>
+            <div className="ax-wiz-mode">
+              <Code size={18} color="var(--ax-accent)" style={{ marginTop: 2, flex: "none" }} aria-hidden />
+              <div>
+                <b>{tx("mode_a_t")}</b>
+                <span>{tx("mode_a_d")}</span>
               </div>
-            ))}
+            </div>
+            <div className="ax-wiz-mode">
+              <Network size={18} color="var(--ax-accent)" style={{ marginTop: 2, flex: "none" }} aria-hidden />
+              <div>
+                <b>{tx("mode_r_t")}</b>
+                <span>{tx("mode_r_d")}</span>
+              </div>
+            </div>
+            <p className="ax-wiz-soul">{tx("soul")}</p>
           </>
         );
       case "syscheck": {
@@ -195,7 +219,7 @@ export function OnboardingWizard({ lang, onDone }: { lang: Lang; onDone: () => v
               return (
                 <button key={fam} className={`ax-wiz-opt ${provSel === fam ? "sel" : ""}`} onClick={() => setProvSel(fam)}>
                   <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span>{fam}</span>
+                    <span>{tx(PROV_LABEL[fam] ?? fam)}</span>
                     {on && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--ax-accent)", fontSize: 12 }}>
                         <Lamp ok /> {tx("prov_done")}
@@ -211,31 +235,40 @@ export function OnboardingWizard({ lang, onDone }: { lang: Lang; onDone: () => v
                 type="password"
                 value={keyInput}
                 onChange={(e) => setKeyInput(e.currentTarget.value)}
-                placeholder={`${provSel} · ${tx("prov_key")}`}
+                placeholder={`${tx(PROV_LABEL[provSel] ?? provSel)} · ${tx("prov_key")}`}
                 style={{ flex: 1, minWidth: 180 }}
               />
               <button className="ax-btn" onClick={saveKey} disabled={saving || !keyInput.trim()}>
                 {tx("prov_save")}
               </button>
             </div>
-            <p className="ax-hint" style={{ marginTop: 8 }}>
-              {tx("prov_n1")}{connected}{connected >= 2 ? tx("prov_n2a") : tx("prov_n2b")}
+            <p className="ax-hint" style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <Lamp ok={connected >= 1} /> {connected >= 1 ? tx("prov_ok") : tx("prov_need")}
             </p>
           </>
         );
       case "deploy": {
-        const opts: [string, string, string][] = [
-          ["cloud", tx("dep_cloud"), tx("dep_cloud_d")],
-          ["hybrid", tx("dep_hybrid"), tx("dep_hybrid_d")],
-          ["onprem", tx("dep_onprem"), tx("dep_onprem_d")],
+        // Cloud only for now; local/hybrid are shown but DISABLED (coming soon) so the roadmap is
+        // visible without being selectable.
+        const opts: [string, string, string, boolean][] = [
+          ["cloud", tx("dep_cloud"), tx("dep_cloud_d"), true],
+          ["hybrid", tx("dep_hybrid"), tx("dep_hybrid_d"), false],
+          ["onprem", tx("dep_onprem"), tx("dep_onprem_d"), false],
         ];
         return (
           <>
             <p style={{ margin: "0 0 10px" }}>{tx("deploy_lead")}</p>
-            {opts.map(([k, n, d]) => (
-              <button key={k} className={`ax-wiz-opt ${deploy === k ? "sel" : ""}`} onClick={() => setDeploy(k)}>
-                <span style={{ fontWeight: 500, color: "var(--ax-ink)" }}>{n}</span>
-                <br />
+            {opts.map(([k, n, d, enabled]) => (
+              <button
+                key={k}
+                className={`ax-wiz-opt ${deploy === k ? "sel" : ""} ${enabled ? "" : "is-disabled"}`}
+                onClick={() => enabled && setDeploy(k)}
+                disabled={!enabled}
+              >
+                <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 500, color: "var(--ax-ink)" }}>{n}</span>
+                  {!enabled && <span className="ax-hint" style={{ fontSize: 11 }}>{tx("dep_soon")}</span>}
+                </span>
                 <span className="ax-hint">{d}</span>
               </button>
             ))}
