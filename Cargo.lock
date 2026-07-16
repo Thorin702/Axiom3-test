@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "axiom3-desktop"
-version = "1.0.34"
+version = "1.0.35"
 dependencies = [
  "anyhow",
  "axiom-core",

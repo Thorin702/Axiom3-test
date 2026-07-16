@@ -383,10 +383,10 @@ function App() {
   useEffect(() => {
     // Align with Claude Science, which is a light workbench (warm cream field, white cards,
     // a dark code cell that pops against it). Default to light; the user can still switch in
-    // Settings. The v5 migration flips the earlier dark default to light once, then respects
-    // the user's choice.
-    if (localStorage.getItem("axiom3.themeMigrated") !== "5") {
-      localStorage.setItem("axiom3.themeMigrated", "5");
+    // Settings. The v6 migration re-pins to light once (v5 missed installs whose stored theme was
+    // "system" → they followed a dark OS and looked nothing like the Mac), then respects the choice.
+    if (localStorage.getItem("axiom3.themeMigrated") !== "6") {
+      localStorage.setItem("axiom3.themeMigrated", "6");
       localStorage.setItem("axiom3.theme", "light");
       applyTheme("light");
       return;
