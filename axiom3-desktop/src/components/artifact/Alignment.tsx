@@ -7,7 +7,7 @@
 // Spec: {"title"?, "type":"dna"|"protein", "color":"clustal"|"identity", "start"?,
 //        "seqs":[{"id":string,"seq":string}]}  — seqs are pre-aligned equal-length strings, '-' = gap.
 
-import { sequential, autoContrastText } from "./theme";
+import { sequential, autoContrastText, isDark, NT_PALETTE, aaColor, AA_PROPERTY_PALETTE } from "./theme";
 
 type Seq = { id: string; seq: string };
 type Spec = { title?: string; type?: string; color?: string; start?: number; seqs?: Seq[] };
@@ -16,22 +16,16 @@ type Spec = { title?: string; type?: string; color?: string; start?: number; seq
 // fraction 0→1, so it maps to the shared viridis `sequential(t)`). Fixed swatch stops for the legend.
 const IDENTITY_STOPS = [0, 1, 2, 3, 4, 5, 6].map((i) => sequential(i / 6));
 
-// Clustal-style amino-acid chemistry groups (fixed, domain-standard pastels).
-const AA_GROUP: Record<string, string> = {
-  A: "hydro", I: "hydro", L: "hydro", M: "hydro", F: "hydro", W: "hydro", V: "hydro",
-  K: "pos", R: "pos",
-  E: "neg", D: "neg",
-  N: "polar", Q: "polar", S: "polar", T: "polar",
-  C: "cys", G: "gly", P: "pro", H: "arom", Y: "arom",
-};
-const GROUP_COLOR: Record<string, string> = {
-  hydro: "#80a0f0", pos: "#f05555", neg: "#c561c5", polar: "#3ec93e",
-  cys: "#f0a0a0", gly: "#f0a848", pro: "#d8d020", arom: "#3bb6b6",
-};
-// Nucleotide chemistry map (DNA/RNA).
-const NT_COLOR: Record<string, string> = {
-  A: "#5cb85c", C: "#4a7fe0", G: "#f0a53a", T: "#e05a4a", U: "#e05a4a",
-};
+// Base/residue colours come from the SHARED theme palette (NT_PALETTE + aaColor), so a given
+// nucleotide / amino-acid reads exactly the same here as in SeqLogo. A representative residue per
+// amino-acid property group drives the legend swatch, guaranteeing legend == cell colour.
+const AA_LEGEND: [rep: string, label: string][] = [
+  ["D", "Acidic · 酸性"],
+  ["K", "Basic · 碱性"],
+  ["S", "Polar · 极性"],
+  ["C", "Special · 特殊"],
+  ["A", "Hydrophobic · 疏水"],
+];
 
 // CJK / full-width codepoints render ~1em wide; Latin/digits ~0.55em. Used to fit right-anchored
 // sequence ids inside the left gutter by estimated rendered width (a char-count cap over-clips CJK).
@@ -79,6 +73,7 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
   const colorMode = spec.color === "identity" ? "identity" : "clustal";
   const start = typeof spec.start === "number" && Number.isFinite(spec.start) ? Math.trunc(spec.start) : 1;
 
+  const dark = isDark();
   const L = Math.min(maxLen, MAX_COLS);
   const truncCols = maxLen > MAX_COLS;
   const truncRows = clean.length > MAX_ROWS;
@@ -108,9 +103,8 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
       const col = cols[c];
       return col.res !== "-" && ch === col.res ? sequential(col.frac) : null;
     }
-    if (type === "dna") return NT_COLOR[ch] ?? null;
-    const g = AA_GROUP[ch];
-    return g ? GROUP_COLOR[g] : null;
+    if (type === "dna") return NT_PALETTE[ch as keyof typeof NT_PALETTE] ?? null;
+    return aaColor(ch, dark); // null for unknown/gap → no fill (keeps 'X' distinct from real residues)
   }
 
   // geometry
@@ -140,11 +134,8 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
     colorMode === "identity"
       ? []
       : type === "dna"
-        ? ([["#5cb85c", "A"], ["#4a7fe0", "C"], ["#f0a53a", "G"], ["#e05a4a", "T / U"]] as [string, string][]).map(([color, label]) => ({ color, label }))
-        : ([
-            ["#80a0f0", "Hydrophobic"], ["#f05555", "Positive"], ["#c561c5", "Negative"], ["#3ec93e", "Polar"],
-            ["#f0a0a0", "Cysteine"], ["#f0a848", "Glycine"], ["#d8d020", "Proline"], ["#3bb6b6", "Aromatic"],
-          ] as [string, string][]).map(([color, label]) => ({ color, label }));
+        ? ([["A", "A"], ["C", "C"], ["G", "G"], ["T", "T / U"]] as [string, string][]).map(([base, label]) => ({ color: NT_PALETTE[base as keyof typeof NT_PALETTE], label }))
+        : AA_LEGEND.map(([rep, label]) => ({ color: aaColor(rep, dark) ?? AA_PROPERTY_PALETTE.hydrophobic, label }));
   let lx = 0, ly = 0, lineMax = 0;
   const placed = swatchItems.map((it) => {
     const iw = 36 + it.label.length * 5.7;

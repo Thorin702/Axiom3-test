@@ -140,6 +140,24 @@ pub struct PyKernel {
 /// process group so a runaway cell — and any grandchildren it spawned that inherited the
 /// stdout pipe — can be killed as a GROUP on timeout; otherwise a lingering grandchild
 /// keeps the pipe's write end open, the reader never sees EOF, and the kernel wedges.
+/// Axiom3's pre-configured scientific-database toolkit, embedded at compile time and dropped onto
+/// the kernel's PYTHONPATH so every analysis can `import scidb` (UniProt / PDB / PubChem / ChEMBL /
+/// NCBI Entrez / Ensembl / KEGG / Reactome / STRING + literature) — real records, cited, never faked.
+const SCIDB_PY: &str = include_str!("scidb.py");
+
+/// Materialise `scidb.py` at a stable, env-independent location and return the dir to put on
+/// PYTHONPATH. Rewritten only when missing or changed, so kernel starts don't thrash the file.
+fn ensure_pylib() -> Option<std::path::PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    let dir = std::path::Path::new(&home).join(".axiom3").join("pylib");
+    std::fs::create_dir_all(&dir).ok()?;
+    let f = dir.join("scidb.py");
+    if std::fs::read_to_string(&f).ok().as_deref() != Some(SCIDB_PY) {
+        std::fs::write(&f, SCIDB_PY).ok()?;
+    }
+    Some(dir)
+}
+
 fn spawn_io(python: &str, cwd: &Path) -> anyhow::Result<Io> {
     let mut cmd = Command::new(python);
     cmd.arg("-u") // unbuffered
@@ -160,6 +178,15 @@ fn spawn_io(python: &str, cwd: &Path) -> anyhow::Result<Io> {
                 break;
             }
         }
+    }
+    // Put the bundled `scidb` toolkit on PYTHONPATH (after scrub_env, which only strips creds).
+    if let Some(pylib) = ensure_pylib() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let joined = match std::env::var("PYTHONPATH") {
+            Ok(p) if !p.is_empty() => format!("{}{}{}", pylib.display(), sep, p),
+            _ => pylib.display().to_string(),
+        };
+        cmd.env("PYTHONPATH", joined);
     }
     #[cfg(unix)]
     {

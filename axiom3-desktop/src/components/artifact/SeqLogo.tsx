@@ -16,7 +16,7 @@
 //   • yMode:"probability" — column fills to 1.0, letter height ∝ frequency; the y-axis relabels to
 //       "概率 · probability". No information-content scaling in this mode.
 
-import { catColor, isDark } from "./theme";
+import { isDark, NT_PALETTE, aaColor, AA_PROPERTY_PALETTE } from "./theme";
 
 type Spec = { title?: unknown; type?: unknown; start?: unknown; columns?: unknown; yMode?: unknown; n?: unknown; samples?: unknown };
 type StackItem = { res: string; p: number; bits: number };
@@ -27,26 +27,16 @@ const DNA = ["A", "C", "G", "T"];
 const RNA = ["A", "C", "G", "U"];
 const PROTEIN = ["A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"];
 
-// nucleotide colors keyed to CVD-safe categorical slots, preserving the classic hue convention
-// (A green · C blue · G gold · T/U vermilion). Hex now comes from the shared palette via catColor.
-const NT_SLOT: Record<string, number> = { A: 2, C: 0, G: 1, T: 3, U: 3 };
-
-// protein "chemistry" scheme: polar green · neutral purple · basic blue · acidic red · hydrophobic ink.
-const AA_GROUP: Record<string, "polar" | "neutral" | "basic" | "acidic" | "hydro"> = {
-  G: "polar", S: "polar", T: "polar", Y: "polar", C: "polar",
-  Q: "neutral", N: "neutral",
-  K: "basic", R: "basic", H: "basic",
-  D: "acidic", E: "acidic",
-  A: "hydro", V: "hydro", L: "hydro", I: "hydro", P: "hydro", W: "hydro", F: "hydro", M: "hydro",
-};
-// protein-chemistry groups keyed to CVD-safe slots, preserving hues (polar green · basic blue ·
-// acidic vermilion · neutral purple); hydro stays neutral ink. slot < 0 → neutral ink.
-const GROUP_SLOT: Record<string, number> = { polar: 2, neutral: 5, basic: 0, acidic: 3, hydro: -1 };
-const GROUP_LABEL: Record<string, string> = { polar: "极性 polar", neutral: "中性 neutral", basic: "碱性 basic", acidic: "酸性 acidic", hydro: "疏水 hydrophobic" };
-function groupColor(g: string, dark: boolean): string {
-  const slot = GROUP_SLOT[g] ?? -1;
-  return slot < 0 ? "var(--ax-ink)" : catColor(slot, dark);
-}
+// Base/residue colours come from the SHARED theme palette (NT_PALETTE + aaColor) so a nucleotide /
+// amino-acid reads exactly the same here as in Alignment. A representative residue per amino-acid
+// property group drives the legend swatch, guaranteeing legend colour == letter colour.
+const AA_LEGEND: { rep: string; label: string }[] = [
+  { rep: "D", label: "酸性 acidic" },
+  { rep: "K", label: "碱性 basic" },
+  { rep: "S", label: "极性 polar" },
+  { rep: "C", label: "特殊 special" },
+  { rep: "A", label: "疏水 hydrophobic" },
+];
 
 // glyph metrics: text drawn at font-size FS (in the pinned bold font below) has its cap-height ≈ CAP
 // above the baseline; a vertical scale of height/CAP makes a capital letter exactly `height` px tall.
@@ -151,9 +141,8 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
 
   const dark = isDark();
   const colorOf = (res: string): string => {
-    if (isProtein) return groupColor(AA_GROUP[res] ?? "hydro", dark);
-    const slot = NT_SLOT[res];
-    return slot == null ? "var(--ax-ink)" : catColor(slot, dark);
+    if (isProtein) return aaColor(res, dark) ?? "var(--ax-ink)";
+    return NT_PALETTE[res as keyof typeof NT_PALETTE] ?? "var(--ax-ink)";
   };
 
   // geometry
@@ -173,8 +162,8 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
   const colLeft = (i: number) => padL + i * colPitch + inset;
   const colMid = (i: number) => padL + i * colPitch + colPitch / 2;
 
-  // Legend groups for protein (identity legend row).
-  const legendGroups = isProtein ? (["polar", "neutral", "basic", "acidic", "hydro"] as const) : null;
+  // Legend groups for protein (identity legend row) — shared property palette, one row.
+  const legendGroups = isProtein ? AA_LEGEND : null;
 
   // Total canvas width must fit whichever of {plot, legend row, title} is widest, so the outer
   // SVG viewport never clips the protein legend row or a long title (plot stays left-aligned).
@@ -285,9 +274,9 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
                 const ly = y0 + rulerH + 8;
                 return (
                   <g key={`lg${i}`}>
-                    <rect x={lx} y={ly - 7} width="9" height="9" fill={groupColor(g, dark)} />
+                    <rect x={lx} y={ly - 7} width="9" height="9" fill={aaColor(g.rep, dark) ?? AA_PROPERTY_PALETTE.hydrophobic} />
                     <text x={lx + 13} y={ly + 1} fontSize="8.5" fill="var(--ax-ink-soft)">
-                      {GROUP_LABEL[g]}
+                      {g.label}
                     </text>
                   </g>
                 );

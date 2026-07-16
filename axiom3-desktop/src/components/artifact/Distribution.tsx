@@ -2,8 +2,19 @@
 // box (quartiles + 1.5·IQR whiskers + outliers), optional seeded-jitter raw points, and an
 // optional Gaussian-KDE violin (gated behind show:["violin"]). Quartiles/whiskers are computed
 // client-side from the raw `values` (auditable); groups may also arrive pre-summarised.
-// Spec: {"title"?, "ylabel"?, "show"?:["box","violin","points"], "groups":[{"label","values":[..]}
-//   | {"label","q1","median","q3","whiskerLo"?,"whiskerHi"?,"outliers"?}]}
+//
+// SuperPlot (Lord et al., JCB 2020) — replicate honesty:
+//   • optional spec.replicateType ∈ {"biological","technical"} → noted in the caption.
+//   • optional per-group `replicateId` (array parallel to `values`) → SuperPlot style: raw points
+//     coloured by replicate, per-replicate mean markers overlaid, and the group summary (mean ± SEM)
+//     is computed over the *replicate means* — never over all raw points — so technical replicates
+//     cannot inflate n. Displayed n switches to the number of replicates.
+//   • no replicate fields → identical to the prior behaviour (graceful degradation).
+//
+// Spec: {"title"?, "ylabel"?, "show"?:["box","violin","points"], "whiskers"?:"tukey"|"5-95",
+//   "replicateType"?:"biological"|"technical",
+//   "groups":[{"label","values":[..],"replicateId"?:[..]}
+//   | {"label","q1","median","q3","whiskerLo"?,"whiskerHi"?,"outliers"?,"n"?}]}
 import type { ReactNode } from "react";
 import { catColor, isDark } from "./theme";
 
@@ -17,6 +28,13 @@ type Stats = {
   outliers: number[];
   values: number[] | null; // present only when the group emitted raw values
   n: number;
+  // SuperPlot replicate structure — all null / 0 unless a valid `replicateId` was supplied.
+  replicateIds: (string | number)[] | null; // parallel to `values`: replicate label per raw point
+  repLabels: (string | number)[] | null; // distinct replicate labels, first-seen order
+  replicateMeans: number[] | null; // mean of each replicate, aligned to repLabels
+  repMean: number | null; // mean of the replicate means (SuperPlot group centre)
+  repSem: number | null; // SEM of the replicate means (SD / √k)
+  nReplicates: number; // number of distinct replicates
 };
 
 // linear-interpolation quantile (numpy "type 7" default) over a sorted array.
@@ -45,7 +63,24 @@ function toStats(g: unknown, whiskerMode: "tukey" | "5-95" = "tukey"): Stats | n
   const label = typeof o.label === "string" ? o.label : "";
 
   if (Array.isArray(o.values)) {
-    const vals = (o.values as unknown[]).filter(isFiniteNum);
+    const rawVals = o.values as unknown[];
+    // replicateId is honoured only when it is an array of matching length (else ignored → graceful).
+    const rawReps =
+      Array.isArray(o.replicateId) && (o.replicateId as unknown[]).length === rawVals.length
+        ? (o.replicateId as unknown[])
+        : null;
+    const vals: number[] = [];
+    const reps: (string | number)[] = [];
+    for (let i = 0; i < rawVals.length; i++) {
+      const v = rawVals[i];
+      if (isFiniteNum(v)) {
+        vals.push(v);
+        if (rawReps) {
+          const r = rawReps[i];
+          reps.push(typeof r === "number" ? r : String(r));
+        }
+      }
+    }
     if (vals.length) {
       const s = [...vals].sort((a, b) => a - b);
       const q1 = quantile(s, 0.25);
@@ -70,7 +105,62 @@ function toStats(g: unknown, whiskerMode: "tukey" | "5-95" = "tukey"): Stats | n
         whiskerHi = inl.length ? inl[inl.length - 1] : s[s.length - 1];
         outliers = s.filter((v) => v < loFence || v > hiFence);
       }
-      return { label, q1, median, q3, whiskerLo, whiskerHi, outliers, values: vals, n: vals.length };
+
+      // SuperPlot replicate aggregation — mean of each replicate, then mean/SEM over those means.
+      let replicateIds: (string | number)[] | null = null;
+      let repLabels: (string | number)[] | null = null;
+      let replicateMeans: number[] | null = null;
+      let repMean: number | null = null;
+      let repSem: number | null = null;
+      let nReplicates = 0;
+      if (rawReps && reps.length === vals.length) {
+        const order: (string | number)[] = [];
+        const buckets = new Map<string, number[]>();
+        for (let i = 0; i < vals.length; i++) {
+          const key = String(reps[i]);
+          let b = buckets.get(key);
+          if (!b) {
+            b = [];
+            buckets.set(key, b);
+            order.push(reps[i]);
+          }
+          b.push(vals[i]);
+        }
+        replicateIds = reps;
+        repLabels = order;
+        replicateMeans = order.map((r) => {
+          const b = buckets.get(String(r)) as number[];
+          return b.reduce((a, v) => a + v, 0) / b.length;
+        });
+        nReplicates = replicateMeans.length;
+        repMean = replicateMeans.reduce((a, v) => a + v, 0) / nReplicates;
+        if (nReplicates >= 2) {
+          let ss = 0;
+          for (const m of replicateMeans) ss += (m - repMean) * (m - repMean);
+          const sd = Math.sqrt(ss / (nReplicates - 1));
+          repSem = sd / Math.sqrt(nReplicates);
+        } else {
+          repSem = 0;
+        }
+      }
+
+      return {
+        label,
+        q1,
+        median,
+        q3,
+        whiskerLo,
+        whiskerHi,
+        outliers,
+        values: vals,
+        n: vals.length,
+        replicateIds,
+        repLabels,
+        replicateMeans,
+        repMean,
+        repSem,
+        nReplicates,
+      };
     }
   }
 
@@ -84,7 +174,23 @@ function toStats(g: unknown, whiskerMode: "tukey" | "5-95" = "tukey"): Stats | n
   const outliers = Array.isArray(o.outliers) ? (o.outliers as unknown[]).filter(isFiniteNum) : [];
   // optional declared sample size for pre-summarised groups (no raw values to count)
   const nDecl = isFiniteNum(o.n) && o.n >= 0 ? Math.round(o.n) : 0;
-  return { label, q1, median, q3, whiskerLo, whiskerHi, outliers, values: null, n: nDecl };
+  return {
+    label,
+    q1,
+    median,
+    q3,
+    whiskerLo,
+    whiskerHi,
+    outliers,
+    values: null,
+    n: nDecl,
+    replicateIds: null,
+    repLabels: null,
+    replicateMeans: null,
+    repMean: null,
+    repSem: null,
+    nReplicates: 0,
+  };
 }
 
 // nice-number axis ticks (Heckbert).
@@ -178,10 +284,46 @@ function violinPath(
   return `M${right.join(" L")} L${left.join(" L")} Z`;
 }
 
+// CVD-safe marker: colour AND shape both encode the replicate (index 0..3 → ●▲■◆, then cycle),
+// so replicates stay distinguishable in grayscale / for colour-blind readers.
+function shapeMark(cx: number, cy: number, r: number, shapeIdx: number, fill: string, key: string, title: string): ReactNode {
+  const s = ((shapeIdx % 4) + 4) % 4;
+  const stroke = "var(--ax-surface)";
+  const sw = 1.1;
+  if (s === 1) {
+    return (
+      <polygon key={key} points={`${cx},${cy - r} ${cx + r},${cy + r * 0.85} ${cx - r},${cy + r * 0.85}`} fill={fill} stroke={stroke} strokeWidth={sw}>
+        <title>{title}</title>
+      </polygon>
+    );
+  }
+  if (s === 2) {
+    return (
+      <rect key={key} x={cx - r * 0.9} y={cy - r * 0.9} width={r * 1.8} height={r * 1.8} fill={fill} stroke={stroke} strokeWidth={sw}>
+        <title>{title}</title>
+      </rect>
+    );
+  }
+  if (s === 3) {
+    return (
+      <polygon key={key} points={`${cx},${cy - r} ${cx + r},${cy} ${cx},${cy + r} ${cx - r},${cy}`} fill={fill} stroke={stroke} strokeWidth={sw}>
+        <title>{title}</title>
+      </polygon>
+    );
+  }
+  return (
+    <circle key={key} cx={cx} cy={cy} r={r} fill={fill} stroke={stroke} strokeWidth={sw}>
+      <title>{title}</title>
+    </circle>
+  );
+}
+
 type Spec = {
   title?: string;
   ylabel?: string;
   show?: string[];
+  whiskers?: "tukey" | "5-95";
+  replicateType?: "biological" | "technical";
   groups: unknown[];
 };
 
@@ -198,22 +340,57 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
     return <div className="ax-fig__err">分布图需要非空的 groups 数组</div>;
   }
 
+  const whiskerMode: "tukey" | "5-95" = parsed.whiskers === "5-95" ? "5-95" : "tukey";
+  const replicateType =
+    parsed.replicateType === "biological" || parsed.replicateType === "technical" ? parsed.replicateType : undefined;
+
   const groups: Stats[] = [];
   for (const g of parsed.groups) {
-    const s = toStats(g);
+    const s = toStats(g, whiskerMode);
     if (s) groups.push(s);
   }
   if (groups.length === 0) {
     return <div className="ax-fig__err">分布图的每个 group 需要 values 或 q1/median/q3</div>;
   }
 
+  // SuperPlot active when at least one group carries a valid replicate structure.
+  const superPlot = groups.some((s) => s.replicateMeans && s.nReplicates > 0);
+
+  // Global replicate → (colour, shape) index, in first-seen order across every group, so the same
+  // replicate reads with the same colour/shape in every condition (SuperPlot convention).
+  const repIndex = new Map<string, number>();
+  const repOrder: (string | number)[] = [];
+  if (superPlot) {
+    for (const s of groups) {
+      if (s.replicateIds) {
+        for (const r of s.replicateIds) {
+          const k = String(r);
+          if (!repIndex.has(k)) {
+            repIndex.set(k, repOrder.length);
+            repOrder.push(r);
+          }
+        }
+      }
+    }
+  }
+  const repOf = (r: string | number) => repIndex.get(String(r)) ?? 0;
+
   let show = Array.isArray(parsed.show)
     ? parsed.show.filter((s): s is (typeof VALID_SHOW)[number] => (VALID_SHOW as readonly string[]).includes(s))
-    : ["box", "points"];
+    : superPlot
+      ? ["points"] // SuperPlot default: swarm + replicate means + summary (raw-value box would imply cell-level n)
+      : ["box", "points"];
   if (show.length === 0) show = ["box"];
   const wantBox = show.includes("box");
-  const wantPoints = show.includes("points");
+  const explicitPoints = show.includes("points");
   const wantViolin = show.includes("violin");
+
+  const anyRaw = groups.some((s) => s.values && s.values.length);
+  // Honesty: with ≤10 raw points a box hides the real spread — always reveal the points (additive).
+  const maxRawN = groups.reduce((m, s) => Math.max(m, s.values ? s.values.length : 0), 0);
+  const smallN = anyRaw && maxRawN <= 10;
+  const forcedPoints = smallN && !explicitPoints;
+  const wantPoints = explicitPoints || forcedPoints;
 
   // shared numeric domain across every emitted value.
   let gMin = Infinity;
@@ -232,6 +409,10 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
       acc(s.median);
     }
     for (const o of s.outliers) acc(o);
+    if (s.repMean != null) {
+      acc(s.repMean + (s.repSem || 0));
+      acc(s.repMean - (s.repSem || 0));
+    }
   }
   if (!(gMax > gMin)) {
     const c = Number.isFinite(gMin) ? gMin : 0;
@@ -241,18 +422,19 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
   const { niceMin: dMin, niceMax: dMax, out: ticks } = niceTicks(gMin, gMax, 5);
 
   const dark = isDark();
-  const anyRaw = groups.some((s) => s.values && s.values.length);
 
   // geometry
   const band = 92;
   const boxHalf = 17;
   const jitterHalf = 13;
   const violinHalf = 26;
+  const meanSpread = 11; // horizontal spread of replicate-mean markers within a group
   const ptR = 2.3;
   const plotH = 250;
   const padL = 58;
   const padT = parsed.title ? 30 : 16;
-  const padB = anyRaw ? 44 : 34;
+  const legendH = repOrder.length > 0 ? 22 : 0;
+  const padB = (anyRaw ? 44 : 34) + legendH;
   const padR = 18;
   const w = padL + groups.length * band + padR;
   const h = padT + plotH + padB;
@@ -261,6 +443,19 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
   const span = dMax - dMin || 1;
   const yScale = (v: number) => yBot - ((v - dMin) / span) * plotH;
   const gx = (i: number) => padL + i * band + band / 2;
+
+  // caption method notes — surface exactly what the marks mean (auditable, no fabrication).
+  const notes: string[] = [];
+  if ((wantBox || (!superPlot && anyRaw)) && anyRaw) {
+    notes.push(whiskerMode === "5-95" ? "须状线:5–95 百分位" : "须状线:Tukey 1.5×IQR");
+  }
+  if (replicateType) notes.push(`重复类型:${replicateType === "biological" ? "生物学重复" : "技术重复"}`);
+  if (superPlot) {
+    notes.push("SuperPlot:原始点按重复上色,组均值±SEM 基于各重复的均值(n=重复数,非单点数)");
+  } else if (replicateType === "technical") {
+    notes.push("技术重复不代表独立样本,未据此膨胀 n");
+  }
+  if (forcedPoints) notes.push("n≤10,已显示全部原始点");
 
   return (
     <figure className="ax-fig">
@@ -317,6 +512,7 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
             const yMed = yScale(s.median);
             const yWl = yScale(s.whiskerLo);
             const yWh = yScale(s.whiskerHi);
+            const hasSummary = s.repMean != null; // SuperPlot replicate summary for this group
             const parts: ReactNode[] = [];
 
             // violin (behind everything) — only for raw groups, gated by show:["violin"]
@@ -360,10 +556,8 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
                   <line x1={x - boxHalf} y1={yMed} x2={x + boxHalf} y2={yMed} stroke={color} strokeWidth="1.8" />
                 </g>,
               );
-            } else if (!violinRendered) {
-              // no box requested and no violin actually rendered for this group
-              // (not eligible, or degenerate zero-variance → bandwidth 0 → no path):
-              // draw a minimal IQR + median mark so the slot isn't empty.
+            } else if (!violinRendered && !hasSummary) {
+              // no box, no violin, no SuperPlot summary → draw a minimal IQR + median mark so the slot isn't empty.
               parts.push(
                 <g key="minbox">
                   <line x1={x} y1={yQ3} x2={x} y2={yQ1} stroke={color} strokeWidth="1.4" />
@@ -374,19 +568,60 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
               );
             }
 
-            // raw jittered points (reveal n + shape, including any outliers)
+            // raw jittered points (reveal n + shape). In SuperPlot mode each point is coloured by replicate.
             if (wantPoints && s.values && s.values.length) {
               const rand = rng(i * 100003 + s.values.length * 31 + 7);
               parts.push(
                 <g key="pts">
                   {s.values.map((v, j) => {
                     const jx = x + (rand() * 2 - 1) * jitterHalf;
+                    const pc = s.replicateIds ? catColor(repOf(s.replicateIds[j]), dark) : color;
                     return (
-                      <circle key={j} cx={jx} cy={yScale(v)} r={ptR} fill={color} fillOpacity={0.72} stroke="var(--ax-surface)" strokeWidth="0.4">
-                        <title>{`${s.label}: ${fmt(v)}`}</title>
+                      <circle key={j} cx={jx} cy={yScale(v)} r={ptR} fill={pc} fillOpacity={0.72} stroke="var(--ax-surface)" strokeWidth="0.4">
+                        <title>{s.replicateIds ? `${s.label} · ${String(s.replicateIds[j])}: ${fmt(v)}` : `${s.label}: ${fmt(v)}`}</title>
                       </circle>
                     );
                   })}
+                </g>,
+              );
+            }
+
+            // SuperPlot: per-replicate mean markers (colour + shape encode the replicate).
+            if (s.replicateMeans && s.repLabels) {
+              const K = s.replicateMeans.length;
+              parts.push(
+                <g key="repmeans">
+                  {s.replicateMeans.map((m, k) => {
+                    const gi = repOf((s.repLabels as (string | number)[])[k]);
+                    const off = K > 1 ? (k / (K - 1) - 0.5) * 2 * meanSpread : 0;
+                    return shapeMark(
+                      x + off,
+                      yScale(m),
+                      5,
+                      gi,
+                      catColor(gi, dark),
+                      `rm${k}`,
+                      `${s.label} · ${String((s.repLabels as (string | number)[])[k])} mean ${fmt(m)}`,
+                    );
+                  })}
+                </g>,
+              );
+            }
+
+            // SuperPlot summary: mean ± SEM over the replicate means (drawn on top, neutral ink).
+            if (hasSummary && s.repMean != null) {
+              const yM = yScale(s.repMean);
+              const sem = s.repSem || 0;
+              const yHi = yScale(s.repMean + sem);
+              const yLo = yScale(s.repMean - sem);
+              parts.push(
+                <g key="spsum">
+                  <line x1={x} y1={yHi} x2={x} y2={yLo} stroke="var(--ax-ink)" strokeWidth="1.4" />
+                  <line x1={x - 6} y1={yHi} x2={x + 6} y2={yHi} stroke="var(--ax-ink)" strokeWidth="1.4" />
+                  <line x1={x - 6} y1={yLo} x2={x + 6} y2={yLo} stroke="var(--ax-ink)" strokeWidth="1.4" />
+                  <line x1={x - boxHalf} y1={yM} x2={x + boxHalf} y2={yM} stroke="var(--ax-ink)" strokeWidth="2.4">
+                    <title>{`${s.label} — mean ${fmt(s.repMean)} ± SEM ${fmt(sem)} · n=${s.nReplicates} 重复`}</title>
+                  </line>
                 </g>,
               );
             }
@@ -414,17 +649,56 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
               <text x={gx(i)} y={yBot + 15} fontSize="10.5" textAnchor="middle" fill="var(--ax-ink-soft)">
                 {s.label}
               </text>
-              {s.n > 0 && (
+              {s.nReplicates > 0 ? (
                 <text x={gx(i)} y={yBot + 27} fontSize="8.5" textAnchor="middle" fill="var(--ax-ink-faint)">
-                  n={s.n}
+                  {`n=${s.nReplicates} 重复${s.n ? ` · ${s.n} 点` : ""}`}
                 </text>
+              ) : (
+                s.n > 0 && (
+                  <text x={gx(i)} y={yBot + 27} fontSize="8.5" textAnchor="middle" fill="var(--ax-ink-faint)">
+                    n={s.n}
+                  </text>
+                )
               )}
             </g>
           ))}
+
+          {/* replicate legend (SuperPlot) — colour + shape per replicate */}
+          {repOrder.length > 0 &&
+            (() => {
+              const ly = h - 8;
+              const items = repOrder.map((r) => String(r));
+              // approximate widths → centre the row
+              const widths = items.map((t) => 16 + t.length * 6.2 + 14);
+              const total = widths.reduce((a, b) => a + b, 0);
+              let cx = Math.max(padL, (w - total) / 2);
+              return (
+                <g key="replegend">
+                  {repOrder.map((r, k) => {
+                    const gi = repOf(r);
+                    const mx = cx + 6;
+                    const tx = cx + 16;
+                    const node = (
+                      <g key={`rl${k}`}>
+                        {shapeMark(mx, ly - 3, 4.2, gi, catColor(gi, dark), `rls${k}`, String(r))}
+                        <text x={tx} y={ly} fontSize="9" fill="var(--ax-ink-soft)">
+                          {String(r)}
+                        </text>
+                      </g>
+                    );
+                    cx += widths[k];
+                    return node;
+                  })}
+                </g>
+              );
+            })()}
         </svg>
       </div>
       <figcaption className="ax-fig__cap">
         <span className="ax-fig__kind">分布 · distribution</span> {caption || parsed.title || ""}
+        {notes.length > 0 && (
+          <span style={{ display: "block", marginTop: 2, color: "var(--ax-ink-faint)", fontSize: "0.86em" }}>{notes.join(" · ")}</span>
+        )}
       </figcaption>
     </figure>
   );

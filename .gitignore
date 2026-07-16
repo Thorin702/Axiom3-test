@@ -21,3 +21,4 @@ Thumbs.db
 # Local test corpus — research papers used for manual verification runs, never committed.
 文献材料/
 /test/
+__pycache__/

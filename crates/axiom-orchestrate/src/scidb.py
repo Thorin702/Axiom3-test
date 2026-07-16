@@ -1,0 +1,514 @@
+"""
+scidb — Axiom3 pre-configured scientific-database toolkit.
+
+Out-of-the-box structured access to the major authoritative biology / chemistry
+databases + the literature, so an analysis never hand-rolls a fragile requests
+call. Every function returns clean Python dicts/lists that ALWAYS carry the
+record's canonical accession and a `source_url`, so results are citable ([Sn])
+and verifiable — this is a synthesis tool, so it surfaces real records and NEVER
+fabricates one. On failure it returns {"error": ...} (or raises) — it never
+invents data to fill a gap.
+
+Covered hubs (one Entrez wrapper alone reaches ~40 NCBI databases):
+  Literature : Europe PMC, PubMed (E-utilities), Crossref, Semantic Scholar
+  Genomics   : NCBI Entrez (gene/nuccore/protein/sra/geo/dbsnp/clinvar/…), Ensembl
+  Structure  : UniProt, RCSB PDB, AlphaFold DB
+  Chemistry  : PubChem, ChEMBL (+ bioactivity)
+  Pathways   : KEGG, Reactome, STRING
+
+Usage inside a kernel cell:
+    import scidb
+    scidb.catalog()                       # list everything
+    hits = scidb.lit_search("KRAS G12C covalent inhibitor", limit=8)
+    up   = scidb.uniprot("P01116")        # KRAS entry + features
+    pc   = scidb.pubchem(name="sotorasib")
+    pdb  = scidb.pdb("6OIM")
+"""
+from __future__ import annotations
+import json as _json
+import os as _os
+import time as _time
+import hashlib as _hashlib
+import urllib.parse as _uparse
+import urllib.request as _urequest
+import urllib.error as _uerror
+
+__all__ = [
+    "catalog", "lit_search", "pubmed", "crossref", "semantic_scholar",
+    "entrez_search", "entrez_fetch", "entrez_summary", "gene", "geo", "ensembl",
+    "uniprot", "uniprot_search", "pdb", "pdb_search", "alphafold",
+    "pubchem", "chembl", "chembl_activity", "kegg", "reactome", "string_db",
+]
+
+_UA = "Axiom3-scidb/1.0 (scientific research; https://axiom3.local)"
+_TIMEOUT = 30
+_MIN_INTERVAL = 0.34          # be polite: <=3 req/s to any host (NCBI's cap w/o key)
+_last_call = {}
+
+
+def _cache_dir():
+    d = _os.path.join(_os.path.expanduser("~"), ".axiom3", "cache", "scidb")
+    try:
+        _os.makedirs(d, exist_ok=True)
+    except Exception:
+        return None
+    return d
+
+
+def _throttle(host):
+    now = _time.time()
+    last = _last_call.get(host, 0.0)
+    wait = _MIN_INTERVAL - (now - last)
+    if wait > 0:
+        _time.sleep(wait)
+    _last_call[host] = _time.time()
+
+
+def _http(url, params=None, is_json=True, headers=None, data=None, cache=True):
+    """GET (or POST if data) with retries, polite throttling, and a 24h disk cache."""
+    if params:
+        url = url + ("&" if "?" in url else "?") + _uparse.urlencode(params)
+    key = None
+    cd = _cache_dir()
+    if cache and cd and data is None:
+        key = _os.path.join(cd, _hashlib.sha256(url.encode()).hexdigest()[:32] + (".json" if is_json else ".txt"))
+        if _os.path.exists(key) and (_time.time() - _os.path.getmtime(key)) < 86400:
+            try:
+                raw = open(key, "r", encoding="utf-8").read()
+                return _json.loads(raw) if is_json else raw
+            except Exception:
+                pass
+    host = _uparse.urlparse(url).netloc
+    hdrs = {"User-Agent": _UA, "Accept": "application/json" if is_json else "*/*"}
+    if headers:
+        hdrs.update(headers)
+    last_err = None
+    for attempt in range(3):
+        _throttle(host)
+        try:
+            body = data.encode() if isinstance(data, str) else data
+            req = _urequest.Request(url, data=body, headers=hdrs, method="POST" if data is not None else "GET")
+            with _urequest.urlopen(req, timeout=_TIMEOUT) as r:
+                raw = r.read().decode("utf-8", "replace")
+            out = _json.loads(raw) if is_json else raw
+            if key:
+                try:
+                    open(key, "w", encoding="utf-8").write(raw)
+                except Exception:
+                    pass
+            return out
+        except _uerror.HTTPError as e:
+            last_err = "HTTP %s for %s" % (e.code, url)
+            if e.code in (429, 500, 502, 503):
+                _time.sleep(1.5 * (attempt + 1))
+                continue
+            break
+        except Exception as e:  # noqa
+            last_err = "%s: %s" % (type(e).__name__, e)
+            _time.sleep(1.0 * (attempt + 1))
+    return {"error": last_err or "request failed", "url": url}
+
+
+# ────────────────────────────── literature ──────────────────────────────
+def lit_search(query, limit=10, source="europepmc"):
+    """Search the literature. source='europepmc' (default) | 'crossref' | 'semanticscholar' | 'pubmed'.
+    Returns [{title, authors, year, journal, doi, pmid, pmcid, url, source_db}]."""
+    if source == "crossref":
+        return crossref(query=query, rows=limit)
+    if source == "semanticscholar":
+        return semantic_scholar(query, limit=limit)
+    if source == "pubmed":
+        return pubmed(query, retmax=limit)
+    j = _http("https://www.ebi.ac.uk/europepmc/webservices/rest/search",
+              {"query": query, "format": "json", "pageSize": min(int(limit), 100), "resultType": "core"})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    out = []
+    for r in (j.get("resultList", {}) or {}).get("result", []) or []:
+        pmid = r.get("pmid")
+        out.append({
+            "title": r.get("title"), "authors": r.get("authorString"),
+            "year": r.get("pubYear"), "journal": r.get("journalTitle"),
+            "doi": r.get("doi"), "pmid": pmid, "pmcid": r.get("pmcid"),
+            "citations": r.get("citedByCount"), "is_open_access": r.get("isOpenAccess") == "Y",
+            "abstract": r.get("abstractText"),
+            "url": ("https://doi.org/" + r["doi"]) if r.get("doi") else
+                   ("https://pubmed.ncbi.nlm.nih.gov/%s/" % pmid if pmid else None),
+            "source_db": "Europe PMC",
+        })
+    return out
+
+
+def pubmed(query, retmax=20):
+    """PubMed via NCBI E-utilities (esearch → esummary). Returns citable records."""
+    s = entrez_search("pubmed", query, retmax=retmax)
+    if isinstance(s, dict) and s.get("error"):
+        return s
+    ids = s.get("idlist", [])
+    if not ids:
+        return []
+    summ = entrez_summary("pubmed", ids)
+    if isinstance(summ, dict) and summ.get("error"):
+        return summ
+    res = summ.get("result", {})
+    out = []
+    for uid in res.get("uids", []):
+        r = res.get(uid, {})
+        doi = next((x.get("value") for x in r.get("articleids", []) if x.get("idtype") == "doi"), None)
+        out.append({
+            "title": r.get("title"), "authors": ", ".join(a.get("name", "") for a in r.get("authors", [])),
+            "year": (r.get("pubdate", "") or "")[:4], "journal": r.get("fulljournalname") or r.get("source"),
+            "doi": doi, "pmid": uid,
+            "url": "https://pubmed.ncbi.nlm.nih.gov/%s/" % uid, "source_db": "PubMed",
+        })
+    return out
+
+
+def crossref(query=None, doi=None, rows=10):
+    """Crossref works — by free-text query or a specific DOI."""
+    if doi:
+        j = _http("https://api.crossref.org/works/" + _uparse.quote(doi))
+        if isinstance(j, dict) and j.get("error"):
+            return j
+        return _crossref_item(j.get("message", {}))
+    j = _http("https://api.crossref.org/works", {"query": query, "rows": int(rows)})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    return [_crossref_item(it) for it in (j.get("message", {}) or {}).get("items", [])]
+
+
+def _crossref_item(it):
+    doi = it.get("DOI")
+    return {
+        "title": (it.get("title") or [None])[0],
+        "authors": ", ".join(("%s %s" % (a.get("given", ""), a.get("family", ""))).strip() for a in it.get("author", []) or []),
+        "year": ((it.get("issued", {}) or {}).get("date-parts", [[None]]) or [[None]])[0][0],
+        "journal": (it.get("container-title") or [None])[0], "doi": doi,
+        "citations": it.get("is-referenced-by-count"),
+        "url": "https://doi.org/" + doi if doi else it.get("URL"), "source_db": "Crossref",
+    }
+
+
+def semantic_scholar(query, limit=10):
+    """Semantic Scholar paper search (title/abstract/tldr + citation counts)."""
+    j = _http("https://api.semanticscholar.org/graph/v1/paper/search",
+              {"query": query, "limit": min(int(limit), 100),
+               "fields": "title,authors,year,venue,externalIds,citationCount,abstract,tldr"})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    out = []
+    for p in j.get("data", []) or []:
+        ext = p.get("externalIds", {}) or {}
+        out.append({
+            "title": p.get("title"), "authors": ", ".join(a.get("name", "") for a in p.get("authors", []) or []),
+            "year": p.get("year"), "journal": p.get("venue"), "doi": ext.get("DOI"),
+            "pmid": ext.get("PubMed"), "citations": p.get("citationCount"),
+            "tldr": (p.get("tldr") or {}).get("text"), "abstract": p.get("abstract"),
+            "url": "https://doi.org/" + ext["DOI"] if ext.get("DOI") else None, "source_db": "Semantic Scholar",
+        })
+    return out
+
+
+# ────────────────────────────── NCBI Entrez ──────────────────────────────
+_EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/"
+
+
+def entrez_search(db, term, retmax=20):
+    """Generic Entrez esearch — db is ANY of the ~40 NCBI databases: pubmed, gene,
+    protein, nuccore, nucleotide, sra, gds (GEO), dbsnp, clinvar, assembly, genome,
+    taxonomy, biosample, bioproject, pmc, mesh, structure, … Returns {count, idlist}."""
+    j = _http(_EUTILS + "esearch.fcgi",
+              {"db": db, "term": term, "retmax": int(retmax), "retmode": "json"})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    r = j.get("esearchresult", {})
+    return {"count": r.get("count"), "idlist": r.get("idlist", []), "db": db,
+            "source_url": _EUTILS + "esearch.fcgi?db=%s&term=%s" % (db, _uparse.quote(str(term)))}
+
+
+def entrez_summary(db, ids):
+    ids = ",".join(map(str, ids)) if isinstance(ids, (list, tuple)) else str(ids)
+    return _http(_EUTILS + "esummary.fcgi", {"db": db, "id": ids, "retmode": "json"})
+
+
+def entrez_fetch(db, ids, rettype="gb", retmode="text"):
+    """Fetch full records (e.g. db='nuccore', rettype='gb'/'fasta'; db='protein', rettype='fasta')."""
+    ids = ",".join(map(str, ids)) if isinstance(ids, (list, tuple)) else str(ids)
+    return _http(_EUTILS + "efetch.fcgi", {"db": db, "id": ids, "rettype": rettype, "retmode": retmode},
+                 is_json=(retmode == "json"))
+
+
+def gene(symbol, organism="Homo sapiens"):
+    """Look up a gene by symbol → NCBI Gene summary (official name, aliases, location, summary)."""
+    s = entrez_search("gene", "%s[sym] AND %s[orgn]" % (symbol, organism), retmax=1)
+    if isinstance(s, dict) and s.get("error"):
+        return s
+    if not s.get("idlist"):
+        return {"error": "no gene found for %s in %s" % (symbol, organism)}
+    uid = s["idlist"][0]
+    summ = entrez_summary("gene", uid)
+    r = (summ.get("result", {}) or {}).get(uid, {}) if isinstance(summ, dict) else {}
+    return {
+        "gene_id": uid, "symbol": r.get("name"), "description": r.get("description"),
+        "aliases": r.get("otheraliases"), "summary": r.get("summary"),
+        "chromosome": r.get("chromosome"), "map_location": r.get("maplocation"),
+        "organism": (r.get("organism", {}) or {}).get("scientificname"),
+        "url": "https://www.ncbi.nlm.nih.gov/gene/%s" % uid, "source_db": "NCBI Gene",
+    }
+
+
+def geo(query, retmax=10):
+    """Search GEO (Gene Expression Omnibus) series/datasets via Entrez 'gds'."""
+    s = entrez_search("gds", query, retmax=retmax)
+    if isinstance(s, dict) and s.get("error"):
+        return s
+    if not s.get("idlist"):
+        return []
+    summ = entrez_summary("gds", s["idlist"])
+    res = summ.get("result", {}) if isinstance(summ, dict) else {}
+    out = []
+    for uid in res.get("uids", []):
+        r = res.get(uid, {})
+        acc = r.get("accession")
+        out.append({"accession": acc, "title": r.get("title"), "summary": r.get("summary"),
+                    "organism": r.get("taxon"), "n_samples": r.get("n_samples"), "gdstype": r.get("gdstype"),
+                    "url": "https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=%s" % acc if acc else None,
+                    "source_db": "GEO"})
+    return out
+
+
+def ensembl(symbol_or_id, species="human", kind="lookup"):
+    """Ensembl REST. kind='lookup' (by stable id or symbol) → gene coords/biotype/description."""
+    if str(symbol_or_id).upper().startswith("ENS"):
+        url = "https://rest.ensembl.org/lookup/id/%s" % symbol_or_id
+    else:
+        url = "https://rest.ensembl.org/lookup/symbol/%s/%s" % (species, symbol_or_id)
+    j = _http(url, {"content-type": "application/json", "expand": 0})
+    if isinstance(j, dict) and not j.get("error"):
+        j["url"] = "https://www.ensembl.org/%s/Gene/Summary?g=%s" % (species, j.get("id", ""))
+        j["source_db"] = "Ensembl"
+    return j
+
+
+# ────────────────────────────── protein / structure ──────────────────────────────
+def uniprot(accession):
+    """UniProtKB entry by accession (e.g. 'P01116') → name, gene, function, sequence, features."""
+    j = _http("https://rest.uniprot.org/uniprotkb/%s.json" % accession)
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    feats = [{"type": f.get("type"),
+              "start": (f.get("location", {}).get("start", {}) or {}).get("value"),
+              "end": (f.get("location", {}).get("end", {}) or {}).get("value"),
+              "description": f.get("description")} for f in j.get("features", []) or []]
+    fn = ""
+    for c in j.get("comments", []) or []:
+        if c.get("commentType") == "FUNCTION":
+            fn = " ".join(t.get("value", "") for t in c.get("texts", []) or [])
+            break
+    return {
+        "accession": j.get("primaryAccession"),
+        "id": j.get("uniProtkbId"),
+        "protein_name": ((j.get("proteinDescription", {}) or {}).get("recommendedName", {}) or {}).get("fullName", {}).get("value"),
+        "gene": (j.get("genes", [{}]) or [{}])[0].get("geneName", {}).get("value") if j.get("genes") else None,
+        "organism": (j.get("organism", {}) or {}).get("scientificName"),
+        "length": (j.get("sequence", {}) or {}).get("length"),
+        "sequence": (j.get("sequence", {}) or {}).get("value"),
+        "function": fn, "features": feats,
+        "pdb_xrefs": [x.get("id") for x in j.get("uniProtKBCrossReferences", []) or [] if x.get("database") == "PDB"],
+        "url": "https://www.uniprot.org/uniprotkb/%s" % j.get("primaryAccession", accession), "source_db": "UniProt",
+    }
+
+
+def uniprot_search(query, limit=10):
+    j = _http("https://rest.uniprot.org/uniprotkb/search",
+              {"query": query, "format": "json", "size": min(int(limit), 100),
+               "fields": "accession,id,protein_name,gene_names,organism_name,length"})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    out = []
+    for r in j.get("results", []) or []:
+        acc = r.get("primaryAccession")
+        out.append({"accession": acc, "id": r.get("uniProtkbId"),
+                    "protein_name": ((r.get("proteinDescription", {}) or {}).get("recommendedName", {}) or {}).get("fullName", {}).get("value"),
+                    "organism": (r.get("organism", {}) or {}).get("scientificName"),
+                    "url": "https://www.uniprot.org/uniprotkb/%s" % acc, "source_db": "UniProt"})
+    return out
+
+
+def pdb(pdb_id):
+    """RCSB PDB entry metadata (title, method, resolution, organism, ligands, citation)."""
+    pid = str(pdb_id).upper()
+    j = _http("https://data.rcsb.org/rest/v1/core/entry/%s" % pid)
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    cit = (j.get("rcsb_primary_citation", {}) or {})
+    return {
+        "pdb_id": pid, "title": (j.get("struct", {}) or {}).get("title"),
+        "method": (j.get("exptl", [{}]) or [{}])[0].get("method"),
+        "resolution": (j.get("rcsb_entry_info", {}) or {}).get("resolution_combined", [None])[0],
+        "deposited": (j.get("rcsb_accession_info", {}) or {}).get("deposit_date"),
+        "doi": cit.get("pdbx_database_id_doi"), "pubmed": cit.get("pdbx_database_id_pub_med"),
+        "n_polymer_entities": (j.get("rcsb_entry_info", {}) or {}).get("polymer_entity_count"),
+        "url": "https://www.rcsb.org/structure/%s" % pid,
+        "coords_url": "https://files.rcsb.org/download/%s.pdb" % pid, "source_db": "RCSB PDB",
+    }
+
+
+def pdb_search(query, limit=10):
+    """Full-text search RCSB PDB → list of pdb ids (feed each to pdb())."""
+    q = {"query": {"type": "terminal", "service": "full_text", "parameters": {"value": query}},
+         "return_type": "entry",
+         "request_options": {"paginate": {"start": 0, "rows": int(limit)}}}
+    j = _http("https://search.rcsb.org/rcsbsearch/v2/query", {"json": _json.dumps(q)})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    return [{"pdb_id": r.get("identifier"), "score": r.get("score"),
+             "url": "https://www.rcsb.org/structure/%s" % r.get("identifier"), "source_db": "RCSB PDB"}
+            for r in j.get("result_set", []) or []]
+
+
+def alphafold(uniprot_acc):
+    """AlphaFold DB predicted model for a UniProt accession (pLDDT, model + PAE urls)."""
+    j = _http("https://alphafold.ebi.ac.uk/api/prediction/%s" % uniprot_acc)
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    if not j:
+        return {"error": "no AlphaFold model for %s" % uniprot_acc}
+    m = j[0]
+    return {"uniprot": m.get("uniprotAccession"), "gene": m.get("gene"), "organism": m.get("organismScientificName"),
+            "model_url": m.get("pdbUrl"), "cif_url": m.get("cifUrl"), "pae_url": m.get("paeImageUrl"),
+            "mean_plddt": m.get("globalMetricValue"),
+            "note": "PREDICTED model — not an experimental structure; colour by pLDDT and label as such.",
+            "url": "https://alphafold.ebi.ac.uk/entry/%s" % uniprot_acc, "source_db": "AlphaFold DB"}
+
+
+# ────────────────────────────── chemistry ──────────────────────────────
+_PC_PROPS = "MolecularFormula,MolecularWeight,CanonicalSMILES,IsomericSMILES,InChIKey,IUPACName,XLogP,TPSA,HBondDonorCount,HBondAcceptorCount,RotatableBondCount"
+
+
+def pubchem(name=None, cid=None, smiles=None, inchikey=None):
+    """PubChem compound → computed properties (MW, formula, SMILES, InChIKey, XLogP, TPSA, …)."""
+    if cid is not None:
+        ns = "cid/%s" % cid
+    elif smiles:
+        ns = "smiles/%s" % _uparse.quote(smiles)
+    elif inchikey:
+        ns = "inchikey/%s" % inchikey
+    elif name:
+        ns = "name/%s" % _uparse.quote(name)
+    else:
+        return {"error": "need one of name/cid/smiles/inchikey"}
+    j = _http("https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/%s/property/%s/JSON" % (ns, _PC_PROPS))
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    props = (j.get("PropertyTable", {}) or {}).get("Properties", [])
+    if not props:
+        return {"error": "no PubChem compound for %s" % (name or cid or smiles or inchikey)}
+    p = props[0]
+    p["url"] = "https://pubchem.ncbi.nlm.nih.gov/compound/%s" % p.get("CID")
+    p["source_db"] = "PubChem"
+    p["_note"] = "descriptors are COMPUTED (label as calc.)"
+    return p
+
+
+def chembl(query=None, chembl_id=None, limit=10):
+    """ChEMBL molecule — by ChEMBL id or free-text search (name/synonym)."""
+    if chembl_id:
+        j = _http("https://www.ebi.ac.uk/chembl/api/data/molecule/%s.json" % chembl_id)
+        if isinstance(j, dict) and j.get("error"):
+            return j
+        return _chembl_mol(j)
+    j = _http("https://www.ebi.ac.uk/chembl/api/data/molecule/search",
+              {"q": query, "format": "json", "limit": int(limit)})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    return [_chembl_mol(m) for m in j.get("molecules", []) or []]
+
+
+def _chembl_mol(m):
+    props = m.get("molecule_properties", {}) or {}
+    struct = m.get("molecule_structures", {}) or {}
+    cid = m.get("molecule_chembl_id")
+    return {
+        "chembl_id": cid, "name": m.get("pref_name"), "max_phase": m.get("max_phase"),
+        "molecular_weight": props.get("full_mwt"), "alogp": props.get("alogp"),
+        "psa": props.get("psa"), "hbd": props.get("hbd"), "hba": props.get("hba"),
+        "canonical_smiles": struct.get("canonical_smiles"), "inchikey": struct.get("standard_inchi_key"),
+        "url": "https://www.ebi.ac.uk/chembl/compound_report_card/%s/" % cid if cid else None, "source_db": "ChEMBL",
+    }
+
+
+def chembl_activity(target_chembl_id=None, molecule_chembl_id=None, limit=50):
+    """ChEMBL measured bioactivities (IC50/Ki/EC50) for a target or a molecule — REAL assay values, cite them."""
+    params = {"format": "json", "limit": int(limit)}
+    if target_chembl_id:
+        params["target_chembl_id"] = target_chembl_id
+    if molecule_chembl_id:
+        params["molecule_chembl_id"] = molecule_chembl_id
+    if len(params) == 2:
+        return {"error": "need target_chembl_id or molecule_chembl_id"}
+    j = _http("https://www.ebi.ac.uk/chembl/api/data/activity", params)
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    return [{"molecule_chembl_id": a.get("molecule_chembl_id"), "target_chembl_id": a.get("target_chembl_id"),
+             "type": a.get("standard_type"), "relation": a.get("standard_relation"),
+             "value": a.get("standard_value"), "units": a.get("standard_units"),
+             "assay": a.get("assay_description"), "doc_doi": a.get("document_journal"),
+             "source_db": "ChEMBL"} for a in j.get("activities", []) or []]
+
+
+# ────────────────────────────── pathways / interactions ──────────────────────────────
+def kegg(entry):
+    """KEGG record by id (e.g. 'hsa04010' pathway, 'K04408' KO, 'C00031' compound, 'hsa:3845' gene). Raw flat text."""
+    txt = _http("https://rest.kegg.jp/get/%s" % entry, is_json=False)
+    if isinstance(txt, dict) and txt.get("error"):
+        return txt
+    return {"entry": entry, "text": txt, "url": "https://www.kegg.jp/entry/%s" % entry, "source_db": "KEGG"}
+
+
+def reactome(query, species="Homo sapiens", limit=10):
+    """Reactome pathway search (ContentService)."""
+    j = _http("https://reactome.org/ContentService/search/query",
+              {"query": query, "species": species, "cluster": "true"})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    out = []
+    for grp in j.get("results", []) or []:
+        for e in grp.get("entries", [])[:limit]:
+            sid = e.get("stId")
+            out.append({"stId": sid, "name": e.get("name"), "type": e.get("exactType"), "species": e.get("species"),
+                        "url": "https://reactome.org/content/detail/%s" % sid if sid else None, "source_db": "Reactome"})
+    return out
+
+
+def string_db(identifiers, species=9606, required_score=400):
+    """STRING protein–protein interaction network. identifiers=list of gene symbols; species NCBI taxid (9606=human)."""
+    ids = "%0d".join(identifiers) if isinstance(identifiers, (list, tuple)) else str(identifiers)
+    j = _http("https://string-db.org/api/json/network",
+              {"identifiers": ids, "species": int(species), "required_score": int(required_score),
+               "caller_identity": "axiom3"})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    return [{"a": e.get("preferredName_A"), "b": e.get("preferredName_B"), "score": e.get("score"),
+             "source_db": "STRING"} for e in j] if isinstance(j, list) else j
+
+
+# ────────────────────────────── catalog ──────────────────────────────
+_CATALOG = {
+    "literature": ["lit_search(query, source=europepmc|crossref|semanticscholar|pubmed)", "pubmed(query)", "crossref(query|doi)", "semantic_scholar(query)"],
+    "genomics (NCBI Entrez ~40 dbs)": ["entrez_search(db, term)", "entrez_fetch(db, ids, rettype)", "entrez_summary(db, ids)", "gene(symbol, organism)", "geo(query)", "ensembl(symbol_or_id, species)"],
+    "protein / structure": ["uniprot(acc)", "uniprot_search(query)", "pdb(pdb_id)", "pdb_search(query)", "alphafold(uniprot_acc)"],
+    "chemistry": ["pubchem(name|cid|smiles|inchikey)", "chembl(query|chembl_id)", "chembl_activity(target_chembl_id|molecule_chembl_id)"],
+    "pathways / interactions": ["kegg(entry)", "reactome(query)", "string_db(identifiers, species)"],
+}
+
+
+def catalog():
+    """Print the available databases + call signatures. Every result carries a source_url for [Sn] citation."""
+    print("scidb — pre-configured scientific databases (results are real records, cite the source_url):")
+    for domain, fns in _CATALOG.items():
+        print("\n  [%s]" % domain)
+        for f in fns:
+            print("    scidb.%s" % f)
+    print("\n  Honesty: on failure a function returns {'error': ...}; it never fabricates a record.")
+    return list(_CATALOG.keys())

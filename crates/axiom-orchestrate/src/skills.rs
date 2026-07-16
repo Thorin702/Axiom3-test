@@ -237,6 +237,19 @@ const BUILTINS: &[Builtin] = &[
             4. GRADE the certainty (high/moderate/low) per outcome; carry it into the report's risk section.\n\
             Rigor: whiskers are 95%CI (not SEM); ratio CIs are symmetric on the LOG axis only; an unsourced pooled number is fabrication — every estimate ties to its studies [Sn]. State this is a synthesis of published evidence, not a new experiment.",
     },
+    Builtin {
+        name: "scientific-databases",
+        keywords: "database uniprot pdb rcsb alphafold pubchem chembl ncbi entrez pubmed geo ensembl kegg reactome string europepmc crossref semantic scholar literature search accession structured query gene protein structure compound bioactivity pathway 数据库 文献检索 溯源",
+        summary: "Pre-configured direct access to the major bio/chem databases + literature via `import scidb` — real, citable records (never hand-roll requests, never fabricate).",
+        card: "# Scientific databases + literature (`import scidb`)\n\
+            A toolkit is PRE-INSTALLED in the kernel — do NOT pip-install or hand-write requests/urllib for these. `import scidb` then call the function; every result is a real record carrying its accession + a `source_url` you cite as [Sn]. On failure a function returns a dict with an `error` key — surface that, NEVER invent a value to fill the gap. Run `scidb.catalog()` to list everything.\n\
+            LITERATURE (use these to ground claims + build the reference list): `scidb.lit_search(query, limit=8)` (Europe PMC; or source='crossref'/'semanticscholar'/'pubmed'), returns title/authors/year/doi/pmid/url.\n\
+            GENOMICS: `scidb.gene('KRAS')`, `scidb.geo('breast cancer scRNA-seq')`, `scidb.ensembl('BRCA1')`, and the generic `scidb.entrez_search(db, term)` / `scidb.entrez_fetch(db, ids, rettype='fasta')` which reach ANY of ~40 NCBI Entrez databases (protein, nuccore, sra, dbsnp, clinvar, assembly, taxonomy, …).\n\
+            PROTEIN / STRUCTURE: `scidb.uniprot('P01116')` (function + features + PDB xrefs), `scidb.pdb('6OIM')` (method + resolution + citation), `scidb.pdb_search(query)`, `scidb.alphafold('P01116')` (PREDICTED model — label it as such, colour by pLDDT).\n\
+            CHEMISTRY: `scidb.pubchem(name='sotorasib')` (MW/formula/SMILES/InChIKey/XLogP/TPSA — computed, label calc.), `scidb.chembl(query='osimertinib')`, `scidb.chembl_activity(target_chembl_id=...)` (REAL measured IC50/Ki — cite the assay, do not invent potencies).\n\
+            PATHWAYS: `scidb.kegg('hsa04010')`, `scidb.reactome(query)`, `scidb.string_db(['KRAS','BRAF','MAP2K1'])` (PPI edges → feed a ```network figure).\n\
+            RIGOR: prefer a real database record over a remembered fact; when you state a number or claim from one of these, cite its source_url/accession as [Sn]. A structure you fetched (PDB) is experimental; an AlphaFold model is predicted — never blur the two.",
+    },
 ];
 
 /// `~/.axiom3/skills` — the user-authored skill directory (created on first use). Same root the

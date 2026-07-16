@@ -37,6 +37,63 @@ export function catColor(i: number, dark: boolean = isDark()): string {
   return p[((i % n) + n) % n];
 }
 
+// ── Biological sequence palettes (shared across Alignment / SeqLogo) ─────────
+// ONE canonical residue palette so a given base/amino-acid reads the SAME colour in every
+// sequence figure (MSA, seqlogo). Hues are Okabe–Ito, the CVD-safe top-journal standard the rest
+// of this module already trusts — but colour is NEVER the sole channel: every renderer that uses
+// these also prints the residue letter (+ a labelled legend), so form/text carries the meaning too.
+
+/** Nucleotide 4-colour convention: A green · C blue · G orange · T=U vermilion (CVD-safe, fixed). */
+export const NT_PALETTE: Record<"A" | "C" | "G" | "T" | "U", string> = {
+  A: "#009E73", // green
+  C: "#0072B2", // blue
+  G: "#E69F00", // orange
+  T: "#D55E00", // vermilion (red)
+  U: "#D55E00", // U shares T's slot (RNA)
+};
+
+/** Amino-acid physico-chemical property groups. */
+export type AAProperty = "acidic" | "basic" | "polar" | "special" | "hydrophobic";
+
+// Canonical group → colour. `hydrophobic` is the neutral "ink" group; the value here is its
+// light-theme ink, and `aaColor` swaps to a lighter grey on dark so a bare letter stays legible.
+export const AA_PROPERTY_PALETTE: Record<AAProperty, string> = {
+  acidic: "#D55E00",      // negative — D E — red
+  basic: "#0072B2",       // positive — K R H — blue
+  polar: "#009E73",       // uncharged polar — S T N Q — green
+  special: "#CC79A7",     // structure/reactive — C G P — reddish-purple
+  hydrophobic: "#5b6169", // non-polar neutral — A V L I M F W Y — dark grey (light theme)
+};
+
+// Standard 20-AA → property assignment. Anything not listed (X/B/Z/gap …) is "unknown" → aaColor
+// returns null so callers keep their own faint/plain rendering (gap and unknown stay distinct).
+const AA_PROPERTY: Record<string, AAProperty> = {
+  D: "acidic", E: "acidic",
+  K: "basic", R: "basic", H: "basic",
+  S: "polar", T: "polar", N: "polar", Q: "polar",
+  C: "special", G: "special", P: "special",
+  A: "hydrophobic", V: "hydrophobic", L: "hydrophobic", I: "hydrophobic",
+  M: "hydrophobic", F: "hydrophobic", W: "hydrophobic", Y: "hydrophobic",
+};
+const AA_HYDRO_DARK = "#aeb4bd"; // lighter neutral so a hydrophobic letter reads on dark surfaces
+
+/** Property group for a residue letter, or null for gap/unknown (X, B, Z, '-', …). */
+export function aaProperty(residue: string): AAProperty | null {
+  return AA_PROPERTY[(residue ?? "").trim().toUpperCase()] ?? null;
+}
+
+/**
+ * Shared amino-acid colour by physico-chemical property. Returns a hex string for the 20 standard
+ * residues (identical across every figure), or `null` for gap/unknown so the caller can render
+ * those with its own neutral styling — keeping '-' and 'X/N' visually distinct from real residues.
+ */
+export function aaColor(residue: string, dark: boolean = isDark()): string | null {
+  const g = aaProperty(residue);
+  if (!g) return null;
+  if (g === "hydrophobic") return dark ? AA_HYDRO_DARK : AA_PROPERTY_PALETTE.hydrophobic;
+  return AA_PROPERTY_PALETTE[g];
+}
+
 // ── Continuous colour scales ─────────────────────────────────────────────────
 function hexToRgb(h: string): [number, number, number] {
   const s = h.replace("#", "");

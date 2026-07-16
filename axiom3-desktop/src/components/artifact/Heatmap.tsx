@@ -6,7 +6,8 @@
 //
 // Spec (```heatmap JSON): {"title"?, "rows":[...], "cols":[...], "values":[[..row-major values[r][c]..]],
 //   "scale"?:"sequential"|"diverging", "domain"?:[min,max], "colorLabel"?, "showValues"?,
-//   "rowTree"?/"colTree"?: [[i,j,height],...] agglomerative merges}
+//   "rowTree"?/"colTree"?: [[i,j,height],...] agglomerative merges,
+//   "transform"?/"linkage"?/"metric"?/"cluster"?: caption self-documentation only (see below)}
 import { sequential, autoContrastText } from "./theme";
 
 type Spec = {
@@ -20,7 +21,26 @@ type Spec = {
   showValues?: boolean;
   rowTree?: number[][];
   colTree?: number[][];
+  // ── caption self-documentation (Gehlenborg & Wong, Nat Methods 2012) — all optional, caption-only ──
+  transform?: string; // standardization/transform: "row"|"column"|"none" or free text (e.g. "log2 比值")
+  linkage?: string; // clustering linkage, e.g. "ward.D2"
+  metric?: string; // distance metric, e.g. "1−Pearson"
+  cluster?: boolean; // pre-clustered upstream when no dendrogram (rowTree/colTree) is supplied
 };
+
+// Standardization wording for the caption. Explicit `transform` maps row/column/none (or passes free
+// text through); when absent we infer softly from the color scale — a diverging scale implies data
+// centered on 0 — and otherwise omit rather than fabricate a claim (never assert "raw" we can't verify).
+function transformText(t: string | undefined, diverging: boolean): string | null {
+  if (typeof t === "string" && t.trim()) {
+    const k = t.trim().toLowerCase();
+    if (k === "row" || k === "rows" || k === "row-zscore" || k === "row_zscore") return "行 z-score";
+    if (k === "col" || k === "cols" || k === "column" || k === "columns" || k === "col-zscore") return "列 z-score";
+    if (k === "none" || k === "raw") return "未标准化(原始值)";
+    return t.trim(); // pass through, e.g. "log2 比值" / "log2 fold-change"
+  }
+  return diverging ? "数据以 0 为中心(发散色标推断)" : null;
+}
 
 // Continuous colour follows the rubric: viridis for unsigned magnitude (perceptually uniform,
 // CVD-safe) via the shared `sequential()`. Diverging keeps two RdBu poles with the theme surface
@@ -224,6 +244,32 @@ export function Heatmap({ spec: raw, caption }: { spec: string; caption?: string
   const colLabelBaseY = gridTop + gridH + 12;
   const kindLabel = "热图 · heatmap";
 
+  // ── caption self-documentation (Gehlenborg & Wong, Nat Methods 2012) ──
+  // Records exactly what a reader needs to trust the panel — standardization/transform, whether
+  // clustering is on and its linkage/distance metric, and that the colorbar endpoints are labeled.
+  // Every input is optional: absent fields infer from the color scale or are simply omitted; this
+  // block only annotates the caption and never touches the color-scale or clustering logic above.
+  const selfDoc: string[] = [];
+  const stdText = transformText(spec.transform, diverging);
+  if (stdText) selfDoc.push(`标准化:${stdText}`);
+  // clustering: report the honestly-drawn state (dendrograms present) first, then any linkage/metric.
+  const clusteredAxes: string[] = [];
+  if (rowLayout) clusteredAxes.push("行");
+  if (colLayout) clusteredAxes.push("列");
+  const linkg = typeof spec.linkage === "string" && spec.linkage.trim() ? spec.linkage.trim() : "";
+  const metr = typeof spec.metric === "string" && spec.metric.trim() ? spec.metric.trim() : "";
+  const linkMetric = [linkg, metr].filter(Boolean).join(" / ");
+  if (clusteredAxes.length) {
+    selfDoc.push(`层次聚类(${clusteredAxes.join("+")})${linkMetric ? `:${linkMetric}` : ""}`);
+  } else if (spec.cluster === true) {
+    selfDoc.push(`已聚类(按输入顺序)${linkMetric ? `:${linkMetric}` : ""}`);
+  } else if (spec.cluster === false) {
+    selfDoc.push("未聚类(按输入顺序)");
+  } // cluster/trees all absent → don't claim either way
+  // colorbar endpoints — confirm vmin/vmax are marked on the legend (always derivable from the domain)
+  selfDoc.push(diverging ? `色标端点 ±${fmt(maxAbs)}` : `色标端点 [${fmt(dmin)}, ${fmt(dmax)}]`);
+  const selfDocText = selfDoc.join(" · ");
+
   return (
     <figure className="ax-fig">
       <div className="ax-fig__frame" style={{ overflowX: "auto", justifyContent: "flex-start" }}>
@@ -385,6 +431,7 @@ export function Heatmap({ spec: raw, caption }: { spec: string; caption?: string
       </div>
       <figcaption className="ax-fig__cap">
         <span className="ax-fig__kind">{kindLabel}</span> {caption || spec.title || ""}
+        {selfDocText && <span className="ax-fig__hint">{selfDocText}</span>}
       </figcaption>
     </figure>
   );
