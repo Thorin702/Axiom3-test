@@ -2,15 +2,37 @@
 // reagents (`above`) and conditions (`below`), then products. Each species is drawn
 // client-side by smiles-drawer (same dep as Molecule.tsx) into its own nested <svg>;
 // the arrow, '+', labels and tooltips are hand-drawn so the whole scheme themes via CSS vars.
-// Spec (```rxn JSON): {"title"?, "reactants":[smiles…], "products":[smiles…], "above"?, "below"?}
+// ACS convention: the arrow runs horizontally left→right; `arrowType` selects the glyph —
+//   forward → (single head) · equilibrium ⇌ (offset harpoons) · resonance ↔ (double head) ·
+//   retro ⇒ (double-shaft, retrosynthetic). Reagents ride above the arrow, conditions below.
+// Spec (```rxn JSON): {"title"?, "reactants":[smiles…], "products":[smiles…],
+//   "arrowType"?: "forward"|"equilibrium"|"resonance"|"retro",
+//   "above"? | "reagentsAbove"?, "below"? | "conditionsBelow"?,
+//   "conditions"?: {"reagents"?, "solvent"?, "temp"?, "time"?}}
 // Also accepts a reaction-SMILES body: "A.B>>C.D" or "A.B>agents>C.D".
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import SmilesDrawer from "smiles-drawer";
 import { isDark } from "./theme";
 
+type ArrowType = "forward" | "equilibrium" | "resonance" | "retro";
+const ARROW_TYPES = new Set<ArrowType>(["forward", "equilibrium", "resonance", "retro"]);
+
 type Model =
-  | { ok: true; title?: string; reactants: string[]; products: string[]; above?: string; below?: string }
+  | {
+      ok: true;
+      title?: string;
+      reactants: string[];
+      products: string[];
+      above?: string;
+      below?: string;
+      arrowType: ArrowType;
+    }
   | { ok: false; reason: string };
+
+// Normalise any unknown into a trimmed non-empty string, else undefined.
+function asStr(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim() ? v.trim() : undefined;
+}
 
 function parseSpec(raw: string): Model {
   const t = raw.trim();
@@ -34,13 +56,30 @@ function parseSpec(raw: string): Model {
       const products = clean(P);
       if (reactants.length === 0 || products.length === 0)
         return { ok: false, reason: "reactants / products 至少各需一个 SMILES" };
+
+      // structured conditions{reagents, solvent, temp, time} → reagents ride above, the
+      // solvent/temp/time bits compose the below-arrow line. Fully optional.
+      let cReagents: string | undefined;
+      let cBelow: string | undefined;
+      if (o.conditions && typeof o.conditions === "object" && !Array.isArray(o.conditions)) {
+        const c = o.conditions as Record<string, unknown>;
+        cReagents = asStr(c.reagents);
+        const bits = [asStr(c.solvent), asStr(c.temp), asStr(c.time)].filter((x): x is string => !!x);
+        if (bits.length) cBelow = bits.join(" · ");
+      }
+
+      const arrowRaw = asStr(o.arrowType) as ArrowType | undefined;
+      const arrowType: ArrowType = arrowRaw && ARROW_TYPES.has(arrowRaw) ? arrowRaw : "forward";
+
       return {
         ok: true,
-        title: typeof o.title === "string" && o.title.trim() ? o.title.trim() : undefined,
+        title: asStr(o.title),
         reactants,
         products,
-        above: typeof o.above === "string" && o.above.trim() ? o.above.trim() : undefined,
-        below: typeof o.below === "string" && o.below.trim() ? o.below.trim() : undefined,
+        // explicit above/below win; then the aliased reagentsAbove/conditionsBelow; then structured
+        above: asStr(o.above) ?? asStr(o.reagentsAbove) ?? cReagents,
+        below: asStr(o.below) ?? asStr(o.conditionsBelow) ?? cBelow,
+        arrowType,
       };
     }
     return { ok: false, reason: "需要 reactants 与 products 数组" };
@@ -61,7 +100,7 @@ function parseSpec(raw: string): Model {
     if (reactants.length === 0 || products.length === 0)
       return { ok: false, reason: "反应 SMILES 缺少反应物或产物" };
     const ag = split(agents).join(" + ");
-    return { ok: true, reactants, products, above: ag || undefined };
+    return { ok: true, reactants, products, above: ag || undefined, arrowType: "forward" };
   }
 
   return { ok: false, reason: "既不是反应 JSON,也不是反应 SMILES" };
@@ -193,6 +232,50 @@ export function Reaction({ spec, caption }: { spec: string; caption?: string }) 
   const label = caption || model.title || "反应式";
   const condTip = [model.above, model.below].filter(Boolean).join(" / ");
 
+  // ── the reaction arrow, one dedicated marker per ACS glyph ─────────────────
+  const AC = "var(--ax-ink-soft)";
+  const arrowEls = (() => {
+    switch (model.arrowType) {
+      case "equilibrium":
+        // ⇌ two offset harpoons: top points right, bottom points left
+        return (
+          <g stroke={AC} strokeWidth="1.3" fill="none">
+            <line x1={lineX0} y1={yMid - 3} x2={lineX1} y2={yMid - 3} />
+            <line x1={lineX1} y1={yMid - 3} x2={lineX1 - 8} y2={yMid - 6.5} />
+            <line x1={lineX0} y1={yMid + 3} x2={lineX1} y2={yMid + 3} />
+            <line x1={lineX0} y1={yMid + 3} x2={lineX0 + 8} y2={yMid + 6.5} />
+          </g>
+        );
+      case "resonance":
+        // ↔ single shaft, a filled head at each end
+        return (
+          <>
+            <line x1={lineX0 + 6} y1={yMid} x2={lineX1 - 6} y2={yMid} stroke={AC} strokeWidth="1.4" />
+            <path d={`M ${lineX1 - 8} ${yMid - 4} L ${lineX1} ${yMid} L ${lineX1 - 8} ${yMid + 4} Z`} fill={AC} />
+            <path d={`M ${lineX0 + 8} ${yMid - 4} L ${lineX0} ${yMid} L ${lineX0 + 8} ${yMid + 4} Z`} fill={AC} />
+          </>
+        );
+      case "retro":
+        // ⇒ retrosynthetic: double shaft converging into a single head
+        return (
+          <>
+            <line x1={lineX0} y1={yMid - 2.5} x2={lineX1 - 9} y2={yMid - 2.5} stroke={AC} strokeWidth="1.3" />
+            <line x1={lineX0} y1={yMid + 2.5} x2={lineX1 - 9} y2={yMid + 2.5} stroke={AC} strokeWidth="1.3" />
+            <path d={`M ${lineX1 - 11} ${yMid - 6} L ${lineX1} ${yMid} L ${lineX1 - 11} ${yMid + 6} Z`} fill={AC} />
+          </>
+        );
+      case "forward":
+      default:
+        // → single shaft + filled head (the historical default)
+        return (
+          <>
+            <line x1={lineX0} y1={yMid} x2={lineX1 - 6} y2={yMid} stroke={AC} strokeWidth="1.4" />
+            <path d={`M ${lineX1 - 8} ${yMid - 4} L ${lineX1} ${yMid} L ${lineX1 - 8} ${yMid + 4} Z`} fill={AC} />
+          </>
+        );
+    }
+  })();
+
   return (
     <figure className="ax-fig">
       <div className="ax-fig__frame" style={{ overflowX: "auto", justifyContent: "flex-start" }}>
@@ -242,12 +325,9 @@ export function Reaction({ spec, caption }: { spec: string; caption?: string }) 
             </text>
           ))}
 
-          {/* reaction arrow */}
-          <line x1={lineX0} y1={yMid} x2={lineX1 - 6} y2={yMid} stroke="var(--ax-ink-soft)" strokeWidth="1.4" />
-          <path
-            d={`M ${lineX1 - 8} ${yMid - 4} L ${lineX1} ${yMid} L ${lineX1 - 8} ${yMid + 4} Z`}
-            fill="var(--ax-ink-soft)"
-          />
+          {/* reaction arrow — glyph chosen by arrowType (forward → · equilibrium ⇌ ·
+              resonance ↔ · retro ⇒). Colour+form redundant, so it reads under CVD. */}
+          {arrowEls}
           {model.above && (
             <text x={arrowCx} y={yMid - 8} textAnchor="middle" fontSize="10" fill="var(--ax-ink-soft)">
               {model.above}

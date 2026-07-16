@@ -4,13 +4,24 @@
 // protein-chemistry color maps; y-axis in bits; a coordinate ruler numbered from `start`.
 //
 // Spec (```seqlogo JSON): {"title"?, "type":"dna"|"rna"|"protein", "start"?:int(default 1),
-//   "columns":[{"A":0.9,"C":0.03,"G":0.04,"T":0.03}, ...]}  // each column need not sum to 1.
+//   "yMode"?:"bits"|"probability"(default "bits"), "n"?:int (sequence count → small-sample bits
+//   correction), "columns":[{"A":0.9,"C":0.03,"G":0.04,"T":0.03}, ...]}  // each column need not sum to 1.
+//
+// Two mutually-exclusive y-scales, both derived from the input frequencies (heights are NEVER
+// hand-authored):
+//   • yMode:"bits" (default) — stack height = column information content Rseq = maxBits − H (bits),
+//       letter height ∝ frequency. maxBits = log2|alphabet|: 2 for DNA/RNA, log2(20)≈4.32 for protein.
+//       Optional Schneider–Stephens small-sample correction e(n)=(s−1)/(2·ln2·n) subtracted from Rseq
+//       when a sequence count `n` is given (debiases over-tall columns from few sequences).
+//   • yMode:"probability" — column fills to 1.0, letter height ∝ frequency; the y-axis relabels to
+//       "概率 · probability". No information-content scaling in this mode.
 
 import { catColor, isDark } from "./theme";
 
-type Spec = { title?: unknown; type?: unknown; start?: unknown; columns?: unknown };
+type Spec = { title?: unknown; type?: unknown; start?: unknown; columns?: unknown; yMode?: unknown; n?: unknown; samples?: unknown };
 type StackItem = { res: string; p: number; bits: number };
 type Column = { bits: number; stack: StackItem[] };
+type YMode = "bits" | "probability";
 
 const DNA = ["A", "C", "G", "T"];
 const RNA = ["A", "C", "G", "U"];
@@ -72,7 +83,10 @@ function glyphWidth(ch: string): number {
   return w;
 }
 
-function computeColumn(col: unknown, alphabet: string[], maxBits: number): Column {
+// `en` = small-sample correction e(n) in bits (0 when unknown); `mode` picks the y-scale.
+// In probability mode the stack fills to 1.0 (height ∝ frequency); in bits mode the stack fills to
+// Rseq = maxBits − H − e(n). Either way per-residue height ∝ frequency — computed, never authored.
+function computeColumn(col: unknown, alphabet: string[], maxBits: number, mode: YMode, en: number): Column {
   const acc: Record<string, number> = {};
   if (col && typeof col === "object") {
     for (const [k, v] of Object.entries(col as Record<string, unknown>)) {
@@ -85,14 +99,19 @@ function computeColumn(col: unknown, alphabet: string[], maxBits: number): Colum
   const sum = freqs.reduce((s, f) => s + f, 0);
   if (sum <= 0) return { bits: 0, stack: [] };
   const ps = freqs.map((f) => f / sum);
-  let H = 0;
-  for (const p of ps) if (p > 0) H -= p * Math.log2(p);
-  const R = Math.max(0, maxBits - H); // information content (bits) for the column
+  let colTotal: number; // total stack height in y-axis units (bits, or 1.0 for probability)
+  if (mode === "probability") {
+    colTotal = 1;
+  } else {
+    let H = 0;
+    for (const p of ps) if (p > 0) H -= p * Math.log2(p);
+    colTotal = Math.max(0, maxBits - H - en); // information content (bits), minus optional e(n)
+  }
   const stack = alphabet
-    .map((res, i) => ({ res, p: ps[i], bits: ps[i] * R }))
+    .map((res, i) => ({ res, p: ps[i], bits: ps[i] * colTotal }))
     .filter((s) => s.bits > 1e-6)
     .sort((a, b) => a.bits - b.bits); // ascending → largest residue ends on top of the stack
-  return { bits: R, stack };
+  return { bits: colTotal, stack };
 }
 
 export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string }) {
@@ -115,7 +134,17 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
   const start = typeof spec.start === "number" && isFinite(spec.start) ? Math.round(spec.start) : 1;
   const title = typeof spec.title === "string" ? spec.title : undefined;
 
-  const cols = spec.columns.map((c) => computeColumn(c, alphabet, maxBits));
+  // yMode: default "bits"; "probability" (aliases prob/frequency) is mutually exclusive and relabels
+  // the axis. Unknown values gracefully fall back to bits.
+  const yModeRaw = String(spec.yMode ?? "bits").trim().toLowerCase();
+  const yMode: YMode = yModeRaw === "probability" || yModeRaw === "prob" || yModeRaw === "frequency" ? "probability" : "bits";
+  // Optional sequence count n (or `samples`) → Schneider small-sample bits correction, bits mode only.
+  const nRaw = Number(typeof spec.n === "number" ? spec.n : spec.samples);
+  const nSeq = Number.isFinite(nRaw) && nRaw > 0 ? nRaw : 0;
+  const en = yMode === "bits" && nSeq > 0 ? (alphabet.length - 1) / (2 * Math.LN2 * nSeq) : 0;
+  const yMax = yMode === "probability" ? 1 : maxBits;
+
+  const cols = spec.columns.map((c) => computeColumn(c, alphabet, maxBits, yMode, en));
   if (!cols.some((c) => c.stack.length > 0)) {
     return <div className="ax-fig__err">序列标识需要至少一列有效的残基频率</div>;
   }
@@ -139,8 +168,8 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
   const inset = (colPitch - letterW) / 2;
   const n = cols.length;
   const plotW = n * colPitch;
-  const y0 = padT + plotH; // baseline (0 bits)
-  const scaleY = plotH / maxBits; // px per bit
+  const y0 = padT + plotH; // baseline (0 bits / 0 probability)
+  const scaleY = plotH / yMax; // px per y-unit (per bit, or per probability unit)
   const colLeft = (i: number) => padL + i * colPitch + inset;
   const colMid = (i: number) => padL + i * colPitch + colPitch / 2;
 
@@ -156,9 +185,14 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
   const w = Math.max(baseW, legendW, titleW);
   const h = padT + plotH + rulerH + legendH;
 
-  // y-axis tick values in bits (integers up to the theoretical max)
+  // y-axis tick values: integers 0..maxBits in bits mode; 0 / 0.5 / 1 in probability mode.
   const ticks: number[] = [];
-  for (let t = 0; t <= maxBits + 1e-9; t += 1) ticks.push(t);
+  if (yMode === "probability") {
+    ticks.push(0, 0.5, 1);
+  } else {
+    for (let t = 0; t <= maxBits + 1e-9; t += 1) ticks.push(t);
+  }
+  const yAxisLabel = yMode === "probability" ? "概率 · probability" : "信息量 · bits";
 
   // position ruler: label all columns when few, else thin out
   const labelStep = n <= 40 ? 1 : n <= 80 ? 2 : 5;
@@ -189,10 +223,11 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
           <line x1={padL} y1={padT} x2={padL} y2={y0} stroke="var(--ax-line)" strokeWidth="1" />
           <line x1={padL} y1={y0} x2={padL + plotW} y2={y0} stroke="var(--ax-line)" strokeWidth="1" />
           <text x={13} y={padT + plotH / 2} fontSize="10" textAnchor="middle" fill="var(--ax-ink-soft)" transform={`rotate(-90 13 ${padT + plotH / 2})`}>
-            信息量 · bits
+            {yAxisLabel}
           </text>
 
-          {/* stacked letters — largest residue on top; height = frequency × column info content */}
+          {/* stacked letters — largest residue on top; height = frequency × column total
+              (info content in bits mode, or 1.0 in probability mode) */}
           {cols.map((c, i) => {
             let cum = 0; // bits accumulated from the baseline upward
             return (
@@ -222,7 +257,9 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
                         textAnchor="start"
                         fill={colorOf(s.res)}
                       >
-                        <title>{`位置 ${start + i} · ${s.res} — 频率 ${(s.p * 100).toFixed(1)}% · ${s.bits.toFixed(2)} bits`}</title>
+                        <title>{yMode === "probability"
+                          ? `位置 ${start + i} · ${s.res} — 频率 ${(s.p * 100).toFixed(1)}%`
+                          : `位置 ${start + i} · ${s.res} — 频率 ${(s.p * 100).toFixed(1)}% · ${s.bits.toFixed(2)} bits`}</title>
                         {s.res}
                       </text>
                     </g>

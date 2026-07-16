@@ -2695,8 +2695,27 @@ async fn compute_figures_for_report(
         "You are the analysis step of a research workflow. Using the python tool, COMPUTE the key \
          quantitative figures the report below discusses (from the data files and/or the numbers in \
          the report) and present them as native figure blocks (```chart / forest / heatmap / dist / \
-         band) filled with computed values, or as matplotlib figures. Do NOT restate the report — \
-         output only the figures, each with a one-line caption.{data_note}\n\nREPORT:\n{report}"
+         band / volcano / manhattan / roc / confusion / dose / km / funnel / prisma) filled with \
+         computed values, or as matplotlib figures. \
+         PUBLICATION-GRADE RULES — top-journal conventions, all mandatory: \
+         (1) PROVENANCE/HONESTY — every data figure must say where its numbers came from: add a \
+         \"dataProvenance\" field = \"computed_on:[Sn]\" (you computed it from a cited source or an \
+         attached dataset) or \"digitized_from:[Sn]\"; a purely illustrative figure must set \
+         \"dataProvenance\":\"schematic\" so it renders labelled 示意. NEVER invent data points or a \
+         fit to make a figure look quantitative — an unsourced quantitative figure is fabrication. \
+         (2) ERROR BARS — whenever an error bar is drawn, state what it is: set \"errorType\" \
+         (SD/SEM/CI95/IQR/range) and \"n\"; with n<3 do not draw SD/SEM, show the raw points. \
+         (3) SCALES — volcano y is -log10(padj) (note the BH/FDR method); forest ratio effects \
+         (set \"effectType\":\"OR\"/\"HR\"/\"RR\") use a log x-axis; dose reports EC50/IC50 only when \
+         the raw points are sourced (else set provenance schematic). Continuous colour is viridis \
+         (magnitude) or a signed-zero diverging scale — never a rainbow. \
+         (4) NEW BLOCKS — a systematic-review selection flow → ```prisma (fill the count slots you \
+         have, leave missing ones blank, never fabricate); survival → ```km (step curve + \
+         number-at-risk + log-rank p); publication bias → ```funnel. \
+         (5) CAPTION — each caption is self-contained: one message sentence, then how to read it \
+         (axes / n / units), then the source [Sn]; write it as a SYNTHESIS ('based on [Sn] …'), \
+         never 'we measured/found/observed'. \
+         Do NOT restate the report — output only the figures, each with its caption.{data_note}\n\nREPORT:\n{report}"
     );
     em.emit(RunEventBody::AgentSpawned {
         agent_id: "analyst".into(),
@@ -2888,7 +2907,7 @@ const RESEARCH_REVIEW_SYSTEM: &str = "你是一位独立、严格的科研审稿
 /// Reliability net: when the author model couldn't synthesize the final report even after retries, a
 /// fast independent model writes it FROM THE RETRIEVED SOURCES. It may only use the [Sn] markers it is
 /// given (never invent one), and must not fabricate facts beyond the provided source excerpts.
-const REPORT_SYNTH_SYSTEM: &str = "你是一名深度研究科学家,正在根据下面提供的『已检索到的来源』撰写一份结构化、连贯、带引用的中文深度研究报告。硬性要求:①只依据提供的来源与其摘录写作,绝不编造来源里没有的事实、数字或结论;②在每个有来源支撑的论断句末标注对应的 [Sn] 角标,只能使用提供的角标、不得新造;③**按固定五段组织**:㈠直接回答——开篇正面、简明回答用户最初问的那个问题(先给答案/判断/推荐,不跑偏成「另一个新颖角度」);㈡机制与证据分析——权衡 2-3 个竞争假说、证据分级(相关→因果)、对新颖性诚实并写明一句「相对现有工作的新增在于 X」;㈢**可执行方案(必给)**——把分析落到用户能照着做的具体方案:机制/假说题给决定性实验方案(体系材料、方法与关键参数、读出指标、判定判据、对照、预期),选型/决策题给明确推荐+分步落地路径,可行性题给可行性判定+关键卡点+下一步动作,how-to 题给操作规程;必须具体到能照做、给参数与判据,严禁写「建议进一步实验验证」这类正确的废话;㈣关键风险与可证伪缺口;㈤参考文献。你给的是「照着能做的方案+预期与判据」,不是「一定成功」的断言,是否采纳由用户判断;④用 Markdown,只输出报告正文,不要输出 JSON、不要图表代码块;⑤**全文简体中文**,不要把普通英文词(evade/exploited/merely 等)直接嵌进中文句;结论不要用「最优/唯一/充要/一定」等绝对措辞,降级为「循证等级最高/主要」并与自列局限自洽;⑥结尾附「参考文献」小节,把正文用到的 [Sn] 逐条列出题名/DOI/链接,确保正文 [Sn] 与清单一一对应。";
+const REPORT_SYNTH_SYSTEM: &str = "你是一名深度研究科学家,正在根据下面提供的『已检索到的来源』撰写一份结构化、连贯、带引用的中文深度研究报告。硬性要求:①只依据提供的来源与其摘录写作,绝不编造来源里没有的事实、数字或结论;②在每个有来源支撑的论断句末标注对应的 [Sn] 角标,只能使用提供的角标、不得新造;③**按固定五段组织**:㈠直接回答——开篇正面、简明回答用户最初问的那个问题(先给答案/判断/推荐,不跑偏成「另一个新颖角度」);㈡机制与证据分析——权衡 2-3 个竞争假说、证据分级(相关→因果)、对新颖性诚实并写明一句「相对现有工作的新增在于 X」;㈢**可执行方案(必给)**——把分析落到用户能照着做的具体方案:机制/假说题给决定性实验方案(体系材料、方法与关键参数、读出指标、判定判据、对照、预期),选型/决策题给明确推荐+分步落地路径,可行性题给可行性判定+关键卡点+下一步动作,how-to 题给操作规程;必须具体到能照做、给参数与判据,严禁写「建议进一步实验验证」这类正确的废话;㈣关键风险与可证伪缺口;㈤参考文献。你给的是「照着能做的方案+预期与判据」,不是「一定成功」的断言,是否采纳由用户判断;④用 Markdown,只输出报告正文,不要输出 JSON、不要图表代码块;⑤**全文简体中文**,不要把普通英文词(evade/exploited/merely 等)直接嵌进中文句;结论不要用「最优/唯一/充要/一定」等绝对措辞,降级为「循证等级最高/主要」并与自列局限自洽;⑥结尾附「参考文献」小节,把正文用到的 [Sn] 逐条列出题名/DOI/链接,确保正文 [Sn] 与清单一一对应;⑦效应量与因果诚实(顶刊惯例):凡出现 p 值或「显著」,同一处必须同时给出效应量(差值/OR/HR/Cohen's d 等)与置信区间,单给 p 值不合格;仅有相关/观察证据时用「与…相关/共变」,不得用「导致/驱动/引发」,除非有干预、时序或机制证据并标 [Sn];标题与「直接回答」段禁用「新颖/首次/唯一/最优/颠覆/空白」这类夸张词,综述立场用「综合/框架/循证等级最高」替代;⑧数据可得性尾块:报告末尾加一小节「数据与可得性」,列出正文用到的外部数据集登录号(PDB/GEO/UniProt/PubChem 等,若有)与工具/版本,并明示一句「本产出物为文献综述 + 可执行方案,未开展新实验,结论均综合自所引文献」,划清综述与原创实验的边界。";
 
 const RECAP_SYSTEM: &str = "你是用户的科研助手，刚完成用户交办的一项分析/研究任务，完整报告在下面。请用**对话口吻**、面向用户写一段收尾汇报（像在聊天里向他交代结果那样），分三部分：\n\
 1) 用「**核心结论**」作小标题，列 2-4 条一针见血的关键发现（每条一句），直击这次最重要的结果——**把每条里的关键数字、名称或结论用 `**加粗**` 高亮**；只挑最有分量的，别罗列全部，别写套话式的正确废话。\n\

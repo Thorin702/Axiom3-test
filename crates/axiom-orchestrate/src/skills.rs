@@ -224,6 +224,19 @@ const BUILTINS: &[Builtin] = &[
             Figures: ```manhattan {\"points\":[{\"chr\":..,\"pos\":..,\"p\":..,\"snp\":..}],\"threshold\":..}; a QQ plot via ```chart scatter (expected vs observed −log10 p).\n\
             Rigor: report the genome-wide threshold and lambda (genomic inflation); a single-cohort hit is a hypothesis until replicated.",
     },
+    Builtin {
+        name: "evidence-synthesis",
+        keywords: "systematic review meta-analysis meta analysis prisma forest plot funnel egger heterogeneity i2 odds ratio hazard ratio pooled effect kaplan meier survival number at risk grade evidence quality clinical 综述 荟萃 系统评价 森林图 生存 循证",
+        summary: "Systematic review / meta-analysis / clinical evidence synthesis: screen → pool → forest/funnel/KM, with PRISMA accounting and honest heterogeneity.",
+        card: "# Evidence synthesis (systematic review / meta-analysis / clinical)\n\
+            USE THIS whenever the deliverable pools MULTIPLE published studies (a review, a meta-analysis, a clinical-evidence summary) — the product's core mode. You are synthesising the literature, NOT running a new trial: every number is cited or computed from cited data, never invented.\n\
+            Pipeline:\n\
+            1. SELECTION accounting → ```prisma: record identified / removed (duplicates) / screened / excluded / assessed / included with reasons. Fill only the counts you actually have; leave the rest blank — NEVER fabricate a screening number.\n\
+            2. POOL a common effect (log-scale for ratio measures OR/HR/RR, then back-transform); report the 95%CI (computed on the log scale), and heterogeneity I²/tau².\n\
+            3. Figures: forest → ```forest {\"effectType\":\"OR\",\"pooled\":{..},\"heterogeneity\":{\"i2\":..},\"rows\":[..]}; publication bias → ```funnel (Egger p, and the caption MUST say '研究数<10 不解读不对称性'); time-to-event → ```km (step curve + number-at-risk + log-rank p + HR[95%CI]).\n\
+            4. GRADE the certainty (high/moderate/low) per outcome; carry it into the report's risk section.\n\
+            Rigor: whiskers are 95%CI (not SEM); ratio CIs are symmetric on the LOG axis only; an unsourced pooled number is fabrication — every estimate ties to its studies [Sn]. State this is a synthesis of published evidence, not a new experiment.",
+    },
 ];
 
 /// `~/.axiom3/skills` — the user-authored skill directory (created on first use). Same root the

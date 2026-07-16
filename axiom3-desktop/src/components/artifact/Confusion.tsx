@@ -1,11 +1,18 @@
 // Native classifier confusion matrix: rows = ACTUAL class, cols = PREDICTED class. The agent
-// emits RAW integer counts only; everything neutral (per-cell %, overall accuracy) is derived
-// client-side. Color = sequential blue ramp mapped by `normalize` ("row"/"col" fraction, or raw
-// magnitude for "none"); the correct-prediction diagonal gets a structural accent outline.
+// emits RAW integer counts only; everything neutral (per-cell %, row-normalized proportion,
+// overall accuracy) is derived client-side — nothing is fabricated. Color = sequential viridis
+// ramp mapped by `normalize` ("row"/"col" fraction, or raw magnitude for "none"); each cell is
+// DUAL-LABELLED with count (primary) + row-normalized proportion (secondary small line) so the
+// diagonal reads as per-class recall. The correct-prediction diagonal gets an accent outline.
 //
 // Spec (```confusion JSON): {"title"?, "labels":[...], "matrix":[[...],...],
-//   "normalize"?: "row"|"col"|"none"}  // matrix is a labels.length² square of counts.
-import { sequential, autoContrastText } from "./theme";
+//   "normalize"?: "row"|"col"|"none",       // color mapping only; cell % is always row-normalized
+//   "n"?: number,                           // (optional) authoritative sample size for the caption
+//   "prevalence"?: number | number[],       // (optional) class prevalence, provided data → caption
+//   "provenance"?: Provenance}              // (optional) data-source tag; absent → no claim made
+// matrix is a labels.length² square of counts. All new fields are optional; when absent the
+// figure degrades to its prior single-derivation behaviour.
+import { sequential, autoContrastText, provenanceTag, type Provenance } from "./theme";
 
 type Norm = "row" | "col" | "none";
 type Spec = {
@@ -13,6 +20,9 @@ type Spec = {
   labels: string[];
   matrix: number[][];
   normalize?: Norm;
+  n?: number;
+  prevalence?: number | number[];
+  provenance?: Provenance;
 };
 
 // colorbar swatch count (unsigned magnitude → sequential viridis, low→high).
@@ -45,25 +55,38 @@ export function Confusion({ spec: raw, caption }: { spec: string; caption?: stri
   const accuracy = total ? diag / total : 0;
   const mode: Norm = spec.normalize === "row" || spec.normalize === "col" ? spec.normalize : "none";
 
-  // color intensity (normalized per mode); frac = the % shown/tooltip'd.
+  // Optional caption enrichment — all provided data (never invented). n falls back to the derived
+  // count total; prevalence renders only when the spec supplies it; provenance → a source note.
+  const nStated = Number.isFinite(spec.n) && Number(spec.n) > 0 ? Math.round(Number(spec.n)) : null;
+  const nShown = nStated ?? total;
+  let prevText = "";
+  if (typeof spec.prevalence === "number" && Number.isFinite(spec.prevalence)) {
+    prevText = ` · 患病率 prevalence ${(spec.prevalence * 100).toFixed(1)}%`;
+  } else if (Array.isArray(spec.prevalence)) {
+    const parts = spec.prevalence
+      .map((p, i) => (Number.isFinite(p) && labels[i] != null ? `${labels[i]} ${(Number(p) * 100).toFixed(0)}%` : null))
+      .filter((s): s is string => s != null);
+    if (parts.length) prevText = ` · 类别患病率 ${parts.join(", ")}`;
+  }
+  const provTag = provenanceTag(spec.provenance);
+
+  // color intensity (normalized per mode); the on-cell secondary label is ALWAYS row-normalized
+  // (v / rowSums[r]) so the diagonal reads as per-class recall regardless of the color mode.
   const colorT = (r: number, c: number): number => {
     const v = M[r][c];
     if (mode === "col") return colSums[c] ? v / colSums[c] : 0;
     if (mode === "row") return rowSums[r] ? v / rowSums[r] : 0;
     return v / maxCount;
   };
-  const frac = (r: number, c: number): number => {
-    const v = M[r][c];
-    if (mode === "col") return colSums[c] ? v / colSums[c] : 0;
-    if (mode === "row") return rowSums[r] ? v / rowSums[r] : 0;
-    return total ? v / total : 0;
-  };
-  const shareOf = mode === "col" ? "该预测列" : mode === "row" ? "该真实行" : "全体";
+  const rowFrac = (r: number, c: number): number => (rowSums[r] ? M[r][c] / rowSums[r] : 0);
+  const colFrac = (r: number, c: number): number => (colSums[c] ? M[r][c] / colSums[c] : 0);
 
   // layout — left/bottom padding adapt to the longest label so class names never clip off-canvas
   // (rows and cols share the same label set). ~6px/char at these font sizes; rotated 50° cols.
   const maxLab = Math.max(1, ...labels.map((l) => l.length));
   const cell = 48;
+  // dual-label only when the cell is tall enough for two legible lines; else count-only.
+  const showDual = cell >= 34;
   const padL = Math.max(104, maxLab * 6 + 34); // actual-axis title + row labels
   const padT = spec.title ? 48 : 30; // title + "predicted" header
   const padB = Math.max(70, Math.round(maxLab * 6 * 0.77 + 26)); // rotated predicted labels
@@ -137,7 +160,8 @@ export function Confusion({ spec: raw, caption }: { spec: string; caption?: stri
               const t = colorT(r, c);
               const fillC = sequential(t);
               const ink = autoContrastText(fillC);
-              const pct = frac(r, c) * 100;
+              const rp = rowFrac(r, c) * 100; // secondary label: % of this ACTUAL row (recall view)
+              const cp = colFrac(r, c) * 100; // tooltip only: % of this PREDICTED col (precision view)
               return (
                 <g key={`cell${r}-${c}`}>
                   <rect
@@ -150,17 +174,24 @@ export function Confusion({ spec: raw, caption }: { spec: string; caption?: stri
                     stroke="var(--ax-surface)"
                     strokeWidth="1"
                   >
-                    <title>{`真实 ${labels[r]} → 预测 ${labels[c]} · ${v} 例 (${pct.toFixed(1)}% / ${shareOf})`}</title>
+                    <title>{`真实 ${labels[r]} → 预测 ${labels[c]} · ${v} 例 · 行内 ${rp.toFixed(1)}%（占该真实类) · 列内 ${cp.toFixed(1)}%（占该预测类)`}</title>
                   </rect>
                   {v > 0 ? (
-                    <>
-                      <text x={cx(c)} y={cy(r) - 1} fontSize="12.5" fontWeight="600" textAnchor="middle" fill={ink}>
+                    showDual ? (
+                      <>
+                        <text x={cx(c)} y={cy(r) - 1} fontSize="12.5" fontWeight="600" textAnchor="middle" fill={ink}>
+                          {v}
+                        </text>
+                        <text x={cx(c)} y={cy(r) + 11} fontSize="8" textAnchor="middle" fill={ink} opacity="0.72">
+                          {rp.toFixed(1)}%
+                        </text>
+                      </>
+                    ) : (
+                      // not enough room for two lines → count stays primary, proportion drops to tooltip
+                      <text x={cx(c)} y={cy(r) + 4} fontSize="12" fontWeight="600" textAnchor="middle" fill={ink}>
                         {v}
                       </text>
-                      <text x={cx(c)} y={cy(r) + 11} fontSize="8" textAnchor="middle" fill={ink} opacity="0.72">
-                        {pct.toFixed(1)}%
-                      </text>
-                    </>
+                    )
                   ) : (
                     <text x={cx(c)} y={cy(r) + 3.5} fontSize="11" textAnchor="middle" fill={ink} opacity="0.42">
                       0
@@ -205,8 +236,15 @@ export function Confusion({ spec: raw, caption }: { spec: string; caption?: stri
         <span className="ax-fig__kind">混淆矩阵 · confusion</span>
         {(caption || spec.title) && <span>{caption || spec.title}</span>}
         <span className="ax-fig__hint">
-          准确率 accuracy {(accuracy * 100).toFixed(1)}% · n={total}
+          准确率 accuracy {(accuracy * 100).toFixed(1)}% · n={nShown}
+          {nStated != null && nStated !== total ? `(格内计数合计 ${total})` : ""}
+          {prevText} · 格内比例=行归一化 row-normalized
         </span>
+        {provTag && (
+          <span className="ax-fig__note">
+            {provTag.kind === "ok" ? ` · 数据来源:${provTag.text}` : ` · ${provTag.text}`}
+          </span>
+        )}
       </figcaption>
     </figure>
   );

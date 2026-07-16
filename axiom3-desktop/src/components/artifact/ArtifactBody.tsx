@@ -39,6 +39,9 @@ import { Dose } from "./Dose";
 import { Slope } from "./Slope";
 import { Pyfig } from "./Pyfig";
 import { FigureFrame } from "./FigureFrame";
+import { PrismaFlow } from "./PrismaFlow";
+import { Survival } from "./Survival";
+import { Funnel } from "./Funnel";
 
 marked.use({ gfm: true, breaks: true });
 
@@ -46,12 +49,13 @@ type Kind =
   | "smiles" | "mermaid" | "math" | "chart" | "protein" | "dotplot"
   | "forest" | "heatmap" | "confusion" | "dist" | "volcano" | "manhattan"
   | "band" | "msa" | "rxn" | "field" | "quiver" | "network" | "track" | "tree"
-  | "roc" | "seqlogo" | "sankey" | "spectrum" | "dose" | "slope" | "pyfig";
+  | "roc" | "seqlogo" | "sankey" | "spectrum" | "dose" | "slope" | "pyfig"
+  | "prisma" | "km" | "survival" | "funnel";
 type Seg = { t: "md"; body: string } | { t: Kind; body: string };
 
 // Split the text at native-figure fences; everything else is markdown.
 function segment(text: string): Seg[] {
-  const re = /```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|field|quiver|network|track|tree|roc|seqlogo|sankey|spectrum|dose|slope|pyfig)[^\n]*\n([\s\S]*?)```/g;
+  const re = /```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|field|quiver|network|track|tree|roc|seqlogo|sankey|spectrum|dose|slope|pyfig|prisma|km|survival|funnel)[^\n]*\n([\s\S]*?)```/g;
   const segs: Seg[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
@@ -205,6 +209,10 @@ export function ArtifactBody({ text, sources }: { text: string; sources?: CiteSo
           spectrum: <Spectrum spec={s.body} />,
           dose: <Dose spec={s.body} />,
           slope: <Slope spec={s.body} />,
+          prisma: <PrismaFlow spec={s.body} />,
+          km: <Survival spec={s.body} />,
+          survival: <Survival spec={s.body} />,
+          funnel: <Funnel spec={s.body} />,
         };
         if (native[s.t]) return <FigureFrame key={i} kind={s.t}>{native[s.t]}</FigureFrame>;
         if (s.t === "pyfig") return <Pyfig key={i} spec={s.body} />;

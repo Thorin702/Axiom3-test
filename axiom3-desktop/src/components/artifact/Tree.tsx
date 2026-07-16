@@ -9,9 +9,17 @@
 
 import { catColor, isDark } from "./theme";
 
-type TreeNode = { name?: string; length?: number; children: TreeNode[] };
-type RawNode = { name?: unknown; length?: unknown; children?: unknown };
-type Spec = { title?: string; newick?: string; root?: RawNode };
+type TreeNode = { name?: string; length?: number; support?: number; children: TreeNode[] };
+type RawNode = { name?: unknown; length?: unknown; support?: unknown; children?: unknown };
+type Spec = {
+  title?: string;
+  newick?: string;
+  root?: RawNode;
+  // optional support/rendering hints — all default to auto-detection when omitted
+  support_type?: string; // "BS"|"bootstrap" | "PP"|"posterior" — disambiguates the support scale
+  italicize_tips?: boolean; // force tip italics on/off; omitted → auto-detect latin binomials
+  cladogram?: boolean; // force topology-only (ignore branch lengths) even if lengths are present
+};
 
 // ── ~40-line Newick parser (recursive descent over a position index) ──
 function parseNewick(input: string): TreeNode | null {
@@ -85,6 +93,7 @@ function normalize(r: unknown, depth: number): TreeNode | null {
   return {
     name: typeof o.name === "string" ? o.name : undefined,
     length: typeof o.length === "number" && Number.isFinite(o.length) ? o.length : undefined,
+    support: typeof o.support === "number" && Number.isFinite(o.support) ? o.support : undefined,
     children: kids,
   };
 }
@@ -142,12 +151,47 @@ function isSupportLabel(s: string): boolean {
   return /^[\d]/.test(s.trim()) && /^[\d./\\|:()%\s-]+$/.test(s.trim());
 }
 
+// Parse a branch-support value into { value, kind, low } for graphical de-emphasis. Accepts a bare
+// number (0–100 bootstrap % or a 0–1 posterior probability) or a joined label ("85/95", "0.98").
+// Scale is auto-inferred (any number > 1 → bootstrap %, else posterior) unless spec.support_type
+// overrides it. "Low" follows the field convention: BS < 70, or PP < 0.95 — those branches are
+// dimmed/dashed so weakly-supported clades read as tentative, never as confident.
+type Support = { value: number; kind: "BS" | "PP"; low: boolean; raw: string };
+function parseSupport(raw: string | number | undefined, hint?: string): Support | null {
+  let nums: number[] = [];
+  let rawStr = "";
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    nums = [raw];
+    rawStr = trimZeros(fmt(raw));
+  } else if (typeof raw === "string") {
+    rawStr = raw.trim();
+    const m = rawStr.match(/\d+(?:\.\d+)?/g);
+    if (m) nums = m.map(Number).filter((x) => Number.isFinite(x));
+  }
+  if (!nums.length) return null;
+  const primary = nums[0];
+  const h = (hint ?? "").toLowerCase();
+  let kind: "BS" | "PP";
+  if (h === "bs" || h === "bootstrap") kind = "BS";
+  else if (h === "pp" || h === "posterior") kind = "PP";
+  else kind = nums.some((x) => x > 1) ? "BS" : "PP";
+  const low = kind === "BS" ? primary < 70 : primary < 0.95;
+  return { value: primary, kind, low, raw: rawStr };
+}
+
+// A tip label that reads as a latin binomial (Genus species …) is italicised, per nomenclature
+// convention. Conservative regex so codes/accessions ("OTU 12", "SEQ001") stay upright.
+function looksBinomial(nm: string): boolean {
+  return /^[A-Z][a-z]{2,}\s+[a-z]{2,}/.test(nm.trim());
+}
+
 // laid-out node (data + pixel coords), computed client-side so nothing is fabricated.
 type Laid = {
   name?: string;
   isLeaf: boolean;
   cum: number; // cumulative branch length from root (lengths clamped ≥ 0)
   h: number; // height in edges to the furthest leaf below (0 for a leaf)
+  support: Support | null; // parsed branch support (internal nodes only)
   children: Laid[];
   y: number;
   px: number;
@@ -178,7 +222,11 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
     const children = node.children.map((c) => build(c, cum));
     const isLeaf = children.length === 0;
     const h = isLeaf ? 0 : 1 + Math.max(...children.map((c) => c.h));
-    return { name: node.name, isLeaf, cum, h, children, y: 0, px: 0 };
+    // support = explicit numeric `support` field, else a support-like Newick internal label.
+    const supRaw =
+      node.support !== undefined ? node.support : node.name && isSupportLabel(node.name) ? node.name : undefined;
+    const support = isLeaf ? null : parseSupport(supRaw, d.support_type);
+    return { name: node.name, isLeaf, cum, h, support, children, y: 0, px: 0 };
   }
   const laid = build(safeRoot, 0);
 
@@ -193,7 +241,8 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
     return Math.max(l.cum, ...l.children.map(maxCumOf));
   }
   const maxCum = maxCumOf(laid);
-  const phylo = maxCum > 0; // any positive branch length → phylogram, else cladogram
+  // any positive branch length → phylogram, else cladogram; spec.cladogram forces topology-only.
+  const phylo = !d.cladogram && maxCum > 0;
   const H = laid.h; // tree height in edges (for cladogram x)
 
   // Auto-tint clades by the leading token of each leaf name (e.g. "Arch"/"Bact"/"Euk" domain
@@ -266,23 +315,26 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
   })(laid);
 
   // flatten into drawable segments.
-  type Seg = { x1: number; y1: number; x2: number; y2: number };
+  type Seg = { x1: number; y1: number; x2: number; y2: number; low?: boolean };
   type VSeg = { x: number; y1: number; y2: number };
   type Tip = { px: number; y: number; name: string; cum: number };
   const hSegs: Seg[] = [];
   const vSegs: VSeg[] = [];
   const leaders: Seg[] = [];
   const tips: Tip[] = [];
-  const supports: { x: number; y: number; text: string }[] = []; // internal-node branch support
+  const supports: { x: number; y: number; text: string; low: boolean }[] = []; // internal-node branch support
+  let lowCount = 0;
   (function walk(l: Laid, parentPx: number | null): void {
-    if (parentPx !== null) hSegs.push({ x1: parentPx, y1: l.y, x2: l.px, y2: l.y });
+    // the branch leading INTO a weakly-supported node is dimmed/dashed (its support is the branch's).
+    if (parentPx !== null) hSegs.push({ x1: parentPx, y1: l.y, x2: l.px, y2: l.y, low: l.support?.low });
     if (!l.isLeaf) {
       const ys = l.children.map((c) => c.y);
       vSegs.push({ x: l.px, y1: Math.min(...ys), y2: Math.max(...ys) });
-      // A non-root internal node's label is its branch-support value — render it (the whole point of
-      // a "with SH-aLRT/uBS support" tree). Skip the root and skip labels that aren't support-like.
-      if (parentPx !== null && l.name && isSupportLabel(l.name)) {
-        supports.push({ x: l.px, y: l.y, text: l.name });
+      // A non-root internal node carries a branch-support value (bootstrap % / posterior / SH-aLRT
+      // uBS) — render it (the whole point of a "with support" tree). Skip the root.
+      if (parentPx !== null && l.support) {
+        if (l.support.low) lowCount++;
+        supports.push({ x: l.px, y: l.y, text: l.support.raw, low: l.support.low });
       }
       l.children.forEach((c) => walk(c, l.px));
     } else {
@@ -297,6 +349,13 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
   const scaleY = plotBottom + 22;
 
   const label = caption || d.title || "phylogenetic tree";
+
+  // caption self-disclosure: a cladogram must not be read as distances; flag low-support de-emphasis.
+  const capBase = caption || d.title || "";
+  const notes: string[] = [];
+  if (!phylo) notes.push("枝长不代表进化距离（分支拓扑）");
+  if (lowCount > 0) notes.push("灰/虚线分支为低支持（BS<70 或 PP<0.95）");
+  const capText = notes.length ? (capBase ? `${capBase} · ` : "") + notes.join("；") : capBase;
 
   return (
     <figure className="ax-fig">
@@ -327,7 +386,8 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
             <line key={`v${i}`} x1={s.x} y1={s.y1} x2={s.x} y2={s.y2} stroke="var(--ax-ink)" strokeWidth="1.3" />
           ))}
 
-          {/* internal-node branch support (SH-aLRT/uBS or bootstrap), just above-left of each node */}
+          {/* internal-node branch support (bootstrap / posterior / SH-aLRT uBS), above-left of node;
+              low support (BS<70 or PP<0.95) is greyed to read as tentative */}
           {supports.map((sp, i) => (
             <text
               key={`sup${i}`}
@@ -335,13 +395,13 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
               y={sp.y - 3.5}
               fontSize="7.5"
               textAnchor="end"
-              fill="var(--ax-ink-soft)"
+              fill={sp.low ? "var(--ax-ink-faint)" : "var(--ax-ink-soft)"}
             >
               {truncate(sp.text, 11)}
-              <title>{`支持值 ${sp.text}`}</title>
+              <title>{`支持值 ${sp.text}${sp.low ? "（低支持）" : ""}`}</title>
             </text>
           ))}
-          {/* horizontal branches */}
+          {/* horizontal branches — low-support branches dimmed + dashed (colour+linetype redundant) */}
           {hSegs.map((s, i) => (
             <line
               key={`hb${i}`}
@@ -349,19 +409,23 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
               y1={s.y1}
               x2={s.x2}
               y2={s.y2}
-              stroke="var(--ax-ink)"
+              stroke={s.low ? "var(--ax-ink-faint)" : "var(--ax-ink)"}
               strokeWidth="1.3"
               strokeLinecap="round"
+              strokeDasharray={s.low ? "3 2" : undefined}
             />
           ))}
 
           {/* tips: node dot + aligned label, tinted by clade group when the tree partitions cleanly */}
           {tips.map((t, i) => {
             const col = leafColor(t.name) ?? "var(--ax-ink)";
+            // latin binomials rendered in italic (nomenclature convention); spec.italicize_tips forces it.
+            const ital =
+              d.italicize_tips === false ? false : d.italicize_tips === true ? true : looksBinomial(t.name);
             return (
               <g key={`t${i}`}>
                 <circle cx={t.px} cy={t.y} r={1.9} fill={col} />
-                <text x={labelX} y={t.y + 3.5} fontSize="11" fill={col}>
+                <text x={labelX} y={t.y + 3.5} fontSize="11" fill={col} fontStyle={ital ? "italic" : undefined}>
                   {truncateToWidth(t.name || "(未命名)", labelWidth)}
                   <title>{phylo ? `${t.name || "(未命名)"} · 根到叶 ${fmt(t.cum)}` : t.name || "(未命名)"}</title>
                 </text>
@@ -405,7 +469,7 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
         </svg>
       </div>
       <figcaption className="ax-fig__cap">
-        <span className="ax-fig__kind">进化树 · tree</span> {caption || d.title || ""}
+        <span className="ax-fig__kind">进化树 · tree</span> {capText}
       </figcaption>
     </figure>
   );
