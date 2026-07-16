@@ -12,7 +12,7 @@ import { ArtifactBody } from "./artifact/ArtifactBody";
 import { AgentSteps } from "./AgentSteps";
 import { ArtifactProvenance } from "./ArtifactProvenance";
 import { ArtifactInspector } from "./ArtifactInspector";
-import { buildReportHtml } from "../lib/exportReport";
+import { buildReportHtml, buildWordHtml, exportPdf } from "../lib/exportReport";
 import { toFindings, renderInlineMd } from "../lib/reviewText";
 
 type Tab = "artifact" | "messages" | "review" | "provenance";
@@ -47,7 +47,7 @@ export function ArtifactPane({
   forkedFromTitle?: string;
   liveRun?: RunView; // the in-flight run for this session — drives the live agent-status strip
   onExport: () => void;
-  onSaveReport?: (html: string, defaultName: string) => void;
+  onSaveReport?: (html: string, defaultName: string, ext?: "html" | "doc") => void;
   onClose: () => void;
   onRevise?: (newSynthesis: string, note: string) => void; // splice a surgically-revised passage in as a new version
   expanded?: boolean;
@@ -57,13 +57,22 @@ export function ArtifactPane({
   const zh = lang === "zh";
   const artifactRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
-  function exportReport() {
-    if (!artifactRef.current || !onSaveReport) return;
-    const theme = document.documentElement.dataset.theme || "light";
-    const title = task.title || task.goal || (zh ? "研究报告" : "Report");
-    const html = buildReportHtml(artifactRef.current, title, theme);
-    const name = title.slice(0, 40).replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "report";
-    onSaveReport(html, name);
+  // Export the whole rendered artifact (text + figures + tables + references) as PDF / Word / HTML.
+  const [expMenu, setExpMenu] = useState(false);
+  const docTitle = () => task.title || task.goal || (zh ? "研究报告" : "Report");
+  const docName = () => docTitle().slice(0, 40).replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "report";
+  const themeNow = () => document.documentElement.dataset.theme || "light";
+  function exportPdfDoc() {
+    if (artifactRef.current) exportPdf(artifactRef.current, docTitle(), themeNow());
+    setExpMenu(false);
+  }
+  function exportWordDoc() {
+    if (artifactRef.current && onSaveReport) onSaveReport(buildWordHtml(artifactRef.current, docTitle(), themeNow()), docName(), "doc");
+    setExpMenu(false);
+  }
+  function exportHtmlDoc() {
+    if (artifactRef.current && onSaveReport) onSaveReport(buildReportHtml(artifactRef.current, docTitle(), themeNow()), docName(), "html");
+    setExpMenu(false);
   }
 
   // Version history: a follow-up iterates the artifact (v1 → v2 …). Default to the latest.
@@ -243,9 +252,21 @@ export function ArtifactPane({
             {copied ? <Check size={15} aria-hidden /> : <Copy size={15} aria-hidden />}
           </button>
           {onSaveReport && (
-            <button className="ax-iconbtn" onClick={exportReport} disabled={busy} title={zh ? "导出报告(HTML)" : "Export report (HTML)"} aria-label="export report">
-              <FileText size={15} aria-hidden />
-            </button>
+            <div className="ax-exp">
+              <button className="ax-iconbtn" onClick={() => setExpMenu((o) => !o)} disabled={busy} title={zh ? "导出报告(PDF / Word / HTML)" : "Export (PDF / Word / HTML)"} aria-label="export report" aria-expanded={expMenu}>
+                <FileText size={15} aria-hidden />
+              </button>
+              {expMenu && (
+                <>
+                  <div className="ax-exp__scrim" onClick={() => setExpMenu(false)} />
+                  <div className="ax-exp__menu" role="menu">
+                    <button className="ax-exp__item" onClick={exportPdfDoc}>{zh ? "导出 PDF" : "PDF"}</button>
+                    <button className="ax-exp__item" onClick={exportWordDoc}>{zh ? "导出 Word" : "Word (.doc)"}</button>
+                    <button className="ax-exp__item" onClick={exportHtmlDoc}>{zh ? "导出 HTML" : "HTML"}</button>
+                  </div>
+                </>
+              )}
+            </div>
           )}
           <button className="ax-iconbtn" onClick={onExport} disabled={busy} title={zh ? "导出溯源" : "Export provenance"} aria-label="export provenance">
             <FileDown size={15} aria-hidden />

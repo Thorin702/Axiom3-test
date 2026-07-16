@@ -36,7 +36,7 @@ fn ln_gamma(x: f64) -> f64 {
 }
 
 /// Continued-fraction evaluation for the incomplete beta (Numerical Recipes `betacf`).
-fn betacf(a: f64, b: f64, x: f64) -> f64 {
+fn betacf(a: f64, b: f64, x: f64) -> Option<f64> {
     const MAXIT: usize = 300;
     const EPS: f64 = 3.0e-12;
     const FPMIN: f64 = 1.0e-300;
@@ -77,10 +77,10 @@ fn betacf(a: f64, b: f64, x: f64) -> f64 {
         let del = d * c;
         h *= del;
         if (del - 1.0).abs() < EPS {
-            break;
+            return Some(h);
         }
     }
-    h
+    None // did not converge within MAXIT — caller yields NaN, statcheck then reports "inconclusive"
 }
 
 /// Regularized incomplete beta function `I_x(a, b)` ∈ [0, 1].
@@ -93,9 +93,9 @@ fn betai(a: f64, b: f64, x: f64) -> f64 {
     }
     let bt = (ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b) + a * x.ln() + b * (1.0 - x).ln()).exp();
     if x < (a + 1.0) / (a + b + 2.0) {
-        bt * betacf(a, b, x) / a
+        betacf(a, b, x).map(|cf| bt * cf / a).unwrap_or(f64::NAN)
     } else {
-        1.0 - bt * betacf(b, a, 1.0 - x) / b
+        betacf(b, a, 1.0 - x).map(|cf| 1.0 - bt * cf / b).unwrap_or(f64::NAN)
     }
 }
 
@@ -128,7 +128,7 @@ pub fn r_to_t(r: f64, df: f64) -> f64 {
 }
 
 /// Lower regularized incomplete gamma `P(a, x)` via the series (good for `x < a+1`).
-fn gser(a: f64, x: f64) -> f64 {
+fn gser(a: f64, x: f64) -> Option<f64> {
     let gln = ln_gamma(a);
     let mut ap = a;
     let mut sum = 1.0 / a;
@@ -138,14 +138,14 @@ fn gser(a: f64, x: f64) -> f64 {
         del *= x / ap;
         sum += del;
         if del.abs() < sum.abs() * 1e-15 {
-            break;
+            return Some(sum * (-x + a * x.ln() - gln).exp());
         }
     }
-    sum * (-x + a * x.ln() - gln).exp()
+    None // series did not converge (e.g. very large chi-square df) → NaN → inconclusive
 }
 
 /// Upper regularized incomplete gamma `Q(a, x)` via the continued fraction (`x >= a+1`).
-fn gcf(a: f64, x: f64) -> f64 {
+fn gcf(a: f64, x: f64) -> Option<f64> {
     const FPMIN: f64 = 1.0e-300;
     let gln = ln_gamma(a);
     let mut b = x + 1.0 - a;
@@ -167,10 +167,10 @@ fn gcf(a: f64, x: f64) -> f64 {
         let del = d * c;
         h *= del;
         if (del - 1.0).abs() < 1e-15 {
-            break;
+            return Some((-x + a * x.ln() - gln).exp() * h);
         }
     }
-    (-x + a * x.ln() - gln).exp() * h
+    None // continued fraction did not converge → NaN → inconclusive
 }
 
 /// Upper regularized incomplete gamma `Q(a, x) = P(X >= x)` for a Gamma(a). Both the
@@ -183,9 +183,9 @@ fn gammq(a: f64, x: f64) -> f64 {
         return 1.0;
     }
     if x < a + 1.0 {
-        1.0 - gser(a, x)
+        gser(a, x).map(|s| 1.0 - s).unwrap_or(f64::NAN)
     } else {
-        gcf(a, x)
+        gcf(a, x).unwrap_or(f64::NAN)
     }
 }
 

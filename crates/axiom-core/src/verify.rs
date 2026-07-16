@@ -377,7 +377,7 @@ fn is_own_results_context(text: &str) -> bool {
 fn has_p_value(low: &str) -> bool {
     let c: Vec<char> = low.chars().collect();
     for i in 0..c.len() {
-        if c[i] != 'p' || (i > 0 && c[i - 1].is_alphabetic()) {
+        if c[i] != 'p' || (i > 0 && c[i - 1].is_ascii_alphabetic()) {
             continue;
         }
         let mut j = i + 1;
@@ -414,7 +414,7 @@ fn has_p_value(low: &str) -> bool {
 fn has_sample_size(text: &str) -> bool {
     let c: Vec<char> = text.chars().collect();
     for i in 0..c.len() {
-        if c[i] != 'n' || (i > 0 && c[i - 1].is_alphabetic()) {
+        if c[i] != 'n' || (i > 0 && c[i - 1].is_ascii_alphabetic()) {
             continue;
         }
         let mut j = i + 1;
@@ -456,7 +456,7 @@ fn has_float_label(low: &str) -> bool {
                     continue 'scan;
                 }
             }
-            if i > 0 && c[i - 1].is_alphabetic() {
+            if i > 0 && c[i - 1].is_ascii_alphabetic() {
                 continue;
             }
             let mut k = i + kw.len();
@@ -599,7 +599,7 @@ const METHOD_TERMS: &[&str] = &["方法", "采用", "我们使用", "measured", 
 const DEFINITION_TERMS: &[&str] = &["定义为", "是指", "is defined as", "refers to", "we define"];
 const BEARING_TERMS: &[&str] = &["因此", "综上", "首次", "表明", "证明", "we show", "we demonstrate", "we conclude", "our results show"];
 /// Negations that, appearing just before a flagged term, defuse it ("not always").
-const NEGATIONS: &[&str] = &["not ", " no ", "n't", "neither", "without", "cannot", "不", "没", "无", "非", "未"];
+const NEGATIONS: &[&str] = &["not ", " no ", "n't", "neither", "without", "cannot", "不", "没", "无", "非", "未", "勿", "别"];
 /// Generic words too common to signal a shared TOPIC between two claims.
 const STOPWORDS: &[&str] = &[
     "result", "results", "method", "methods", "study", "studies", "data", "value",

@@ -359,6 +359,15 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-continue-btn:hover { background: var(--ax-accent); color: #fff; }
 .ax-continue-btn:active { filter: brightness(0.96); }
 .ax-continue-btn:focus-visible { outline: none; box-shadow: var(--ax-focus); }
+/* 导出下拉:PDF / Word / HTML */
+.ax-exp { position: relative; display: inline-flex; }
+.ax-exp__scrim { position: fixed; inset: 0; z-index: 40; }
+.ax-exp__menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 41; min-width: 132px;
+  background: var(--ax-surface); border: 0.5px solid var(--ax-line); border-radius: 10px;
+  box-shadow: var(--ax-shadow); padding: 5px; display: flex; flex-direction: column; gap: 2px; }
+.ax-exp__item { font-family: var(--ax-sans); font-size: 13px; text-align: left; color: var(--ax-ink);
+  background: none; border: none; border-radius: 7px; padding: 7px 11px; cursor: pointer; }
+.ax-exp__item:hover { background: var(--ax-surface-2); }
 .ax-iconbtn:focus-visible, .ax-nav__item:focus-visible, .ax-recent:focus-visible,
 .ax-set-nav__item:focus-visible, .ax-chip:focus-visible { outline: none; box-shadow: var(--ax-focus); }
 .ax-nav__item, .ax-recent { transition: background 0.12s ease, color 0.12s ease; }

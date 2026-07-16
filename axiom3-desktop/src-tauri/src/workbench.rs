@@ -1543,14 +1543,38 @@ pub struct ExportSummary {
 /// a relative path is cheap defense-in-depth against a future caller treating this as a
 /// general write primitive. (It is NOT one: it only ever writes a provenance artifact,
 /// to the single path the user picked in the save dialog.)
-fn atomic_export_write(path: &str, bytes: &[u8]) -> Result<(), String> {
-    let dest = std::path::Path::new(path);
+fn atomic_export_write(path: &str, bytes: &[u8], allowed_exts: &[&str]) -> Result<(), String> {
+    use std::path::{Component, Path};
+    let dest = Path::new(path);
     if !dest.is_absolute() {
         return Err("export path must be absolute".to_string());
     }
-    let tmp = format!("{path}.tmp");
+    // Reject traversal + confine by extension: even though these commands only fire from the save
+    // dialog today, a compromised WebView could invoke them with an arbitrary path/extension (e.g.
+    // ~/.zshrc) — so validate on the backend, never trust the frontend-supplied path.
+    if dest.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Err("export path must not contain '..'".to_string());
+    }
+    let ext_ok = dest
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| allowed_exts.contains(&e.to_ascii_lowercase().as_str()))
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err(format!("export file must end in one of {allowed_exts:?}"));
+    }
+    let file_name = dest.file_name().ok_or("export path has no file name")?;
+    let parent = dest.parent().ok_or("export path has no parent directory")?;
+    // canonicalize the parent (must already exist; resolves symlinks) and rebuild the dest under the
+    // REAL directory, so a symlinked component can't redirect the write elsewhere.
+    let real_parent = std::fs::canonicalize(parent).map_err(|e| format!("export directory not found: {e}"))?;
+    if !real_parent.is_dir() {
+        return Err("export parent is not a directory".to_string());
+    }
+    let final_dest = real_parent.join(file_name);
+    let tmp = real_parent.join(format!(".{}.tmp", file_name.to_string_lossy()));
     std::fs::write(&tmp, bytes).map_err(|e| format!("write failed: {e}"))?;
-    std::fs::rename(&tmp, dest).map_err(|e| {
+    std::fs::rename(&tmp, &final_dest).map_err(|e| {
         let _ = std::fs::remove_file(&tmp); // don't leave a stray temp on failure
         format!("finalize failed: {e}")
     })
@@ -1562,7 +1586,8 @@ fn atomic_export_write(path: &str, bytes: &[u8]) -> Result<(), String> {
 /// picked in the save dialog; `atomic_export_write` rejects a non-absolute path.
 #[tauri::command]
 pub async fn save_report_html(path: String, html: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || atomic_export_write(&path, html.as_bytes()))
+    // html/htm + doc (Word opens the report HTML saved with a .doc extension)
+    tauri::async_runtime::spawn_blocking(move || atomic_export_write(&path, html.as_bytes(), &["html", "htm", "doc"]))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1572,7 +1597,8 @@ pub async fn save_report_html(path: String, html: String) -> Result<(), String> 
 /// register, so it silently fails in the packaged app — this native path is why download works.
 #[tauri::command]
 pub async fn save_png(path: String, bytes: Vec<u8>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || atomic_export_write(&path, &bytes))
+    // png (figures) + json (provenance export via save_png, see App.tsx) are the only sinks
+    tauri::async_runtime::spawn_blocking(move || atomic_export_write(&path, &bytes, &["png", "json"]))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -1646,7 +1672,7 @@ pub async fn export_provenance(
     tauri::async_runtime::spawn_blocking(move || {
         let record = wb.latest_provenance().map_err(|e| e.to_string())?;
         let json = record.to_export_json().map_err(|e| e.to_string())?;
-        atomic_export_write(&path, json.as_bytes())?;
+        atomic_export_write(&path, json.as_bytes(), &["json"])?;
         let anchor = record.anchor.as_ref();
         Ok(ExportSummary {
             path,
@@ -2785,9 +2811,19 @@ const REFRAME_SYSTEM: &str = "\
 You convert a user's plain-language request into a rigorous, self-contained RESEARCH DIRECTIVE that a \
 capable research agent will execute. The user speaks casually; make their intent PRECISE and DEMANDING \
 — never invent scope, domain, or specifics they did not ask for, and keep their actual question and any \
-concrete details. Into the directive, bake the depth a good researcher brings:\n\
-- DELIVERABLE: state exactly what the final answer must contain (e.g. a mechanism diagram + testable \
-predictions; a ranked comparison; a decision with its justification). MATCH the deliverable to the \
+concrete details.\n\
+- NORTH STAR (anti-drift): OPEN the directive by restating the user's ORIGINAL question as the anchor \
+the agent MUST answer — its first job is to answer THAT question, never to wander off into a tangential \
+'novel angle'. If the user asked a CONCRETE question (how / what / which / why / is-it-feasible), \
+answering it comes FIRST and novelty is only a bonus; only when the user explicitly asks to 'propose a \
+novel X' does novelty-positioning become the main line.\n\
+Into the directive, bake the depth a good researcher brings:\n\
+- DELIVERABLE: state exactly what the final answer must contain, AND require it to include a CONCRETE, \
+EXECUTABLE plan matched to the question type — a decisive experiment design (materials, methods, key \
+parameters, read-outs, decision criteria, controls) for a mechanism/hypothesis question; a clear \
+recommendation + step-by-step implementation path for a selection/decision question; a feasibility \
+verdict + key blockers + the immediate next action for a feasibility question; a step-by-step protocol \
+for a how-to question. It must NOT stop at 'summarizing what is already known'. MATCH the deliverable to the \
 QUESTION TYPE — a mechanism / data-analysis / modeling question warrants a computed figure, but a pure \
 literature-review, methodology / how-to, or feasibility question usually does NOT need one (a good \
 researcher answers those in prose and only draws when a relationship is genuinely too complex for \
@@ -2847,16 +2883,16 @@ async fn reframe_goal(provider: &str, model_id: &str, raw: &str, cancel: &Cancel
 
 /// Cross-model quality check for a deep-research report. REVIEW ONLY — never rewrites (so it can't
 /// fabricate). Run on a DIFFERENT model than the author when possible for an independent perspective.
-const RESEARCH_REVIEW_SYSTEM: &str = "你是一位独立、严格的科研审稿人,正在评审下面这份研究报告(它由另一个智能体产出)。请只做【评审、不要改写报告】,简明列点指出:①有没有过度声明/未被证据支撑的断言(尤其「最新颖/完全空白/一定/最优/根本不兼容」这类),以及结论是否与报告自列的局限自相矛盾;②有没有引用与结论不匹配、缺引用、或无出处的裸数字被当作事实的关键论断;③论证/方法有没有明显缺口或逻辑跳跃,结构标签是否自洽(如把 apo 无金属结构却读出金属间距);④如果报告本身扎实、诚实,就明确说「整体扎实」并只列少数可改进点。要具体(指到具体论断),别泛泛。绝不编造报告里没有的事实。**全程纯简体中文,不要夹英文词**,控制在 6-10 条以内。";
+const RESEARCH_REVIEW_SYSTEM: &str = "你是一位独立、严格的科研审稿人,正在评审下面这份研究报告(它由另一个智能体产出)。请只做【评审、不要改写报告】,简明列点指出:①有没有过度声明/未被证据支撑的断言(尤其「最新颖/完全空白/一定/最优/根本不兼容」这类),以及结论是否与报告自列的局限自相矛盾;②有没有引用与结论不匹配、缺引用、或无出处的裸数字被当作事实的关键论断;③论证/方法有没有明显缺口或逻辑跳跃,结构标签是否自洽(如把 apo 无金属结构却读出金属间距);④**是否直接回答了用户最初的问题**——有没有跑偏成「发现了个新颖角度」却没正面回答用户问的那件事(若跑偏,明确指出);⑤**是否给出了具体可执行方案**(决定性实验/明确推荐+落地路径/操作规程,且落到参数与判据),还是只停在「总结已知知识」、没给用户任何能照着做的东西(若只是综述、没有可执行方案,明确指出这是缺陷);⑥如果报告本身扎实、诚实、既答了问题又给了方案,就明确说「整体扎实」并只列少数可改进点。要具体(指到具体论断),别泛泛。绝不编造报告里没有的事实。**全程纯简体中文,不要夹英文词**,控制在 6-10 条以内。";
 
 /// Reliability net: when the author model couldn't synthesize the final report even after retries, a
 /// fast independent model writes it FROM THE RETRIEVED SOURCES. It may only use the [Sn] markers it is
 /// given (never invent one), and must not fabricate facts beyond the provided source excerpts.
-const REPORT_SYNTH_SYSTEM: &str = "你是一名深度研究科学家,正在根据下面提供的『已检索到的来源』撰写一份结构化、连贯、带引用的中文深度研究报告。硬性要求:①只依据提供的来源与其摘录写作,绝不编造来源里没有的事实、数字或结论;②在每个有来源支撑的论断句末标注对应的 [Sn] 角标,只能使用提供的角标、不得新造;③分模块论述,提出并权衡竞争性假说、指出证据强弱与不确定处,对新颖性保持诚实,并写明一句显式创新点「相对现有工作的新增在于 X」;④用 Markdown,只输出报告正文,不要输出 JSON、不要图表代码块;⑤**全文简体中文**,不要把普通英文词(evade/exploited/merely 等)直接嵌进中文句;结论不要用「最优/唯一/充要/一定」等绝对措辞,降级为「循证等级最高/主要」并与自列局限自洽;⑥结尾附「参考文献」小节,把正文用到的 [Sn] 逐条列出题名/DOI/链接,确保正文 [Sn] 与清单一一对应。";
+const REPORT_SYNTH_SYSTEM: &str = "你是一名深度研究科学家,正在根据下面提供的『已检索到的来源』撰写一份结构化、连贯、带引用的中文深度研究报告。硬性要求:①只依据提供的来源与其摘录写作,绝不编造来源里没有的事实、数字或结论;②在每个有来源支撑的论断句末标注对应的 [Sn] 角标,只能使用提供的角标、不得新造;③**按固定五段组织**:㈠直接回答——开篇正面、简明回答用户最初问的那个问题(先给答案/判断/推荐,不跑偏成「另一个新颖角度」);㈡机制与证据分析——权衡 2-3 个竞争假说、证据分级(相关→因果)、对新颖性诚实并写明一句「相对现有工作的新增在于 X」;㈢**可执行方案(必给)**——把分析落到用户能照着做的具体方案:机制/假说题给决定性实验方案(体系材料、方法与关键参数、读出指标、判定判据、对照、预期),选型/决策题给明确推荐+分步落地路径,可行性题给可行性判定+关键卡点+下一步动作,how-to 题给操作规程;必须具体到能照做、给参数与判据,严禁写「建议进一步实验验证」这类正确的废话;㈣关键风险与可证伪缺口;㈤参考文献。你给的是「照着能做的方案+预期与判据」,不是「一定成功」的断言,是否采纳由用户判断;④用 Markdown,只输出报告正文,不要输出 JSON、不要图表代码块;⑤**全文简体中文**,不要把普通英文词(evade/exploited/merely 等)直接嵌进中文句;结论不要用「最优/唯一/充要/一定」等绝对措辞,降级为「循证等级最高/主要」并与自列局限自洽;⑥结尾附「参考文献」小节,把正文用到的 [Sn] 逐条列出题名/DOI/链接,确保正文 [Sn] 与清单一一对应。";
 
 const RECAP_SYSTEM: &str = "你是用户的科研助手，刚完成用户交办的一项分析/研究任务，完整报告在下面。请用**对话口吻**、面向用户写一段收尾汇报（像在聊天里向他交代结果那样），分三部分：\n\
 1) 用「**核心结论**」作小标题，列 2-4 条一针见血的关键发现（每条一句），直击这次最重要的结果——**把每条里的关键数字、名称或结论用 `**加粗**` 高亮**；只挑最有分量的，别罗列全部，别写套话式的正确废话。\n\
-2) 另起一行用「**建议下一步**」作小标题，结合你对用户真实意图的判断，列 2-3 条具体、可执行、真正有价值的深化/验证/扩展方向（每条一句，落到具体动作，不要泛泛而谈）。\n\
+2) 另起一行用「**可执行方案要点**」作小标题——报告里已经给出了一份可执行方案(决定性实验/落地路径/操作规程),请把它**最关键的 2-3 步**提炼出来(具体动作,让用户一眼知道现在就能做什么),而不是空泛地「建议下一步」;只有当报告确实没有可给的方案时,才退回列 2-3 条深化/验证方向。\n\
 3) 最后用一句话主动提问：预判用户此刻最可能想让你继续做的**那一件事**，直接问他要不要现在就做（例如「要我把 X 展开成一张对比图，或就 Y 再深挖一层吗？」）。\n\
 硬性要求：不复述报告全文；不用一级标题(#)；绝不编造报告里没有的内容或数字；不输出任何图表代码块。全程简体中文，语气自然、专业、锐利。";
 
@@ -2909,7 +2945,13 @@ const RESEARCH_MODE_DIRECTIVE: &str = "【深度研究模式 · 无预算限制�
 2) **没有步数/时间预算压力**——要把课题做透:定位领域已知与空白 → 提出 2-3 个真正不同的竞争假设并各自权衡 → 明确指出你的**新颖点**(可借鉴邻域机制做跨域迁移),但对新颖性要诚实(先自查证是否已发表)。\n\
 3) 遇到**宽而可分**的子问题(竞争假说权衡、跨领域机制普查、正反证据梳理)时,用 **delegate** 开一支子智能体团队并行深挖各角度、再综合;只有单点问题才自己一步步做。必要时用 python 做真实计算/建模支撑论证。图:机理/通路/概念图**优先用原生图块**(通路流程 ```mermaid、带激活/抑制的关系网 ```network、化学反应 ```reaction),数据图用原生图块填真实计算值,matplotlib 只在原生图块都表达不了时用。\n\
 4) 自我批判:说清楚你的结论的弱点、如何被证伪、验证从相关到因果的阶梯(含增益实验与阴性对照)。\n\
-5) 最终产出一份结构化、可独立阅读的深度报告(立论→证据与分析→图→竞争假设权衡→新颖点→验证方案→诚实的局限与引用),用用户的语言。质量与深度是唯一目标,不要为了收尾而草率。\n\
+5) **最终产出既是综述、又给可执行方案的深度报告**(核心原则:不能只停在「总结已知知识」,必须落到「用户在真实场景里具体能做什么」)。固定下面五段、用用户的语言:\n\
+ ① **直接回答**:开篇就正面、简明地回答用户最初问的那个问题(先给出你的答案/判断/推荐),再展开——绝不跑偏成「我发现了个新角度」,用户问什么就先答什么;\n\
+ ② **机制与证据分析**:领域已知与空白、2-3 个竞争假说的权衡、证据分级(相关→因果)、支撑图、诚实的新颖点;\n\
+ ③ **可执行方案(必给、不可省略)**:把上面的分析落到用户能照着做的具体方案,按问题类型交付——机制/假说题给一套**决定性实验方案**(具体体系与材料、方法与关键参数、读出指标、**判定判据**即什么结果支持或证伪哪个假说、必需的阴性/阳性对照、预期结果与备选路径);选型/决策题给**明确推荐+落地路径**(首选是什么及理由、分步怎么落地、所需资源、如何规避主要风险);可行性题给**可行性判定**(可行/不可行/有条件可行)+关键卡点+立即可做的下一步具体动作;方法/how-to 题给**可执行操作规程**(逐步流程+关键参数+常见坑与规避)。**必须具体到能照着做、给出参数/数字/判据;严禁写「建议进一步实验验证」「可开展相关研究」这类正确的废话;方案基于证据,但要诚实标注哪一步是已确立、哪一步是推断**;\n\
+ ④ **关键风险与可证伪缺口**:这套方案/结论的弱点、什么证据会推翻它;\n\
+ ⑤ **参考文献**。\n\
+ 红线:你给的是「照着能做的方案 + 预期与判据」,不是「这个方案一定成功」的断言——是否采纳、结论对错由用户判断。质量与深度是唯一目标,不要为了收尾而草率。\n\
 6) **精加工自检(交付前逐条过一遍,这些细节决定它像不像成品)**:\n\
  · **全文简体中文**:面向用户的正文与结论一律简体中文,不要把 evade/exploited/merely/allosteric 这类普通英文词直接嵌进中文句(专业术语首次出现用中文、括注英文即可);常见易错词务必写对——螯合(不是鳌合/抯合)、抑制剂(不是抯制剂)、taniborbactam、INSTI。\n\
  · **每张图都要被正文点名并配图注**:你生成的每张图,按生成先后编号 图1、图2……;在讨论它的段落里写一句「如图N所示……」,并给一行中文图注「图N. 展示什么 + 说明了什么」。绝不生成一张正文从不提及的图;也绝不引用一张你并未真正插入的图(例如写「见上文 mermaid 通路图」但上文根本没有该图块)。\n\
@@ -3715,15 +3757,19 @@ mod tests {
     fn atomic_export_write_requires_absolute_and_replaces_cleanly() {
         let dir = tempdir().unwrap();
         // Relative path is rejected (defense-in-depth).
-        assert!(atomic_export_write("relative/out.json", b"{}").is_err());
+        assert!(atomic_export_write("relative/out.json", b"{}", &["json"]).is_err());
+        // Disallowed extension is rejected.
+        assert!(atomic_export_write(dir.path().join("evil.sh").to_str().unwrap(), b"x", &["json"]).is_err());
+        // Path traversal is rejected.
+        assert!(atomic_export_write(dir.path().join("../x.json").to_str().unwrap(), b"{}", &["json"]).is_err());
         // Absolute write lands the bytes and leaves no stray temp file.
         let target = dir.path().join("prov.json");
         let p = target.to_str().unwrap();
-        atomic_export_write(p, b"{\"a\":1}").unwrap();
+        atomic_export_write(p, b"{\"a\":1}", &["json"]).unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"a\":1}");
-        assert!(!dir.path().join("prov.json.tmp").exists(), "no temp left behind");
+        assert!(!dir.path().join(".prov.json.tmp").exists(), "no temp left behind");
         // Overwrite replaces the whole content (all-or-nothing rename).
-        atomic_export_write(p, b"{\"b\":2}").unwrap();
+        atomic_export_write(p, b"{\"b\":2}", &["json"]).unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"b\":2}");
     }
 

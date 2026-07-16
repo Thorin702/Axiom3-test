@@ -1055,14 +1055,15 @@ function App() {
     }
   }
   // Save a self-contained report HTML (built by ArtifactPane from the rendered artifact).
-  async function saveReport(html: string, defaultName: string) {
+  async function saveReport(html: string, defaultName: string, ext: "html" | "doc" = "html") {
+    const isDoc = ext === "doc";
     const path = await save({
-      defaultPath: `${defaultName || "report"}.html`,
-      filters: [{ name: "HTML", extensions: ["html"] }],
+      defaultPath: `${defaultName || "report"}.${ext}`,
+      filters: [isDoc ? { name: "Word", extensions: ["doc"] } : { name: "HTML", extensions: ["html"] }],
     });
     if (typeof path === "string") {
       const ok = await run(() => invoke("save_report_html", { path, html }));
-      if (ok !== undefined) note(`${lang === "zh" ? "已导出报告" : "Report exported"}: ${path.split(/[/\\]/).pop()}`);
+      if (ok !== undefined) note(`${lang === "zh" ? "已导出" : "Exported"}: ${path.split(/[/\\]/).pop()}`);
     }
   }
 

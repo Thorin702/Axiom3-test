@@ -158,7 +158,9 @@ fn parse_nhst(text: &str) -> Vec<Nhst> {
     while i < c.len() {
         // A test symbol must stand alone: preceded by a non-ALPHANUMERIC, so neither
         // "first(" (letter before) nor "3r(" (digit before) matches.
-        let prev_is_alnum = i > 0 && c[i - 1].is_alphanumeric();
+        // ASCII-only: a preceding Han char (CJK returns true for is_alphanumeric) must read as a
+        // word BOUNDARY, so a stat token glued to Chinese prose ("得到t(28)=2.05") still parses.
+        let prev_is_alnum = i > 0 && c[i - 1].is_ascii_alphanumeric();
         if !prev_is_alnum {
             let test = if matches!(c[i], 't' | 'F' | 'r') && c.get(i + 1) == Some(&'(') {
                 Some((c[i], i + 1)) // (kind, index of '(')

@@ -55,6 +55,16 @@ html,body{background:var(--ax-paper,#faf9f5);color:var(--ax-ink,#292827);margin:
 .ax-report{max-width:840px;margin:0 auto;padding:40px 28px 80px;font-family:var(--ax-sans);}
 .ax-report__h{font-family:var(--ax-serif);font-size:25px;line-height:1.25;margin:0 0 8px;color:var(--ax-ink);}
 .ax-report__meta{color:var(--ax-ink-faint);font-size:12px;border-bottom:0.5px solid var(--ax-line);padding-bottom:18px;margin-bottom:26px;}
+/* print / PDF: A4 pages, keep figures & tables whole, headings with their content */
+@page{size:A4;margin:1.7cm 1.5cm;}
+@media print{
+  html,body{background:#fff;}
+  .ax-report{max-width:none;margin:0;padding:0;}
+  figure,table,.ax-fig,.ax-fig__frame,.tablewrap,pre{page-break-inside:avoid;break-inside:avoid;}
+  h1,h2,h3{page-break-after:avoid;break-after:avoid;}
+  img,svg{max-width:100%!important;}
+  .ax-fig__tools,.ax-lightbox{display:none!important;}
+}
 </style>
 </head>
 <body>
@@ -65,4 +75,45 @@ ${clone.outerHTML}
 </div>
 </body>
 </html>`;
+}
+
+/** Open the rendered report in a hidden iframe and trigger the print dialog — the user chooses
+ *  "Save as PDF". Reuses the exact rendered figures/tables + the @page/print CSS above. */
+export function exportPdf(artifactNode: HTMLElement, title: string, theme: string): void {
+  const html = buildReportHtml(artifactNode, title, theme);
+  const iframe = document.createElement("iframe");
+  iframe.setAttribute("aria-hidden", "true");
+  Object.assign(iframe.style, { position: "fixed", right: "0", bottom: "0", width: "0", height: "0", border: "0", opacity: "0" });
+  document.body.appendChild(iframe);
+  const doc = iframe.contentDocument || iframe.contentWindow?.document;
+  if (!doc) { iframe.remove(); return; }
+  const fire = () =>
+    setTimeout(() => {
+      try {
+        iframe.contentWindow?.focus();
+        iframe.contentWindow?.print();
+      } finally {
+        setTimeout(() => iframe.remove(), 1500);
+      }
+    }, 400); // let embedded images/fonts settle
+  iframe.onload = fire;
+  doc.open();
+  doc.write(html);
+  doc.close();
+  if (doc.readyState === "complete") fire();
+}
+
+/** Build a Word-openable (.doc) document: the report body wrapped in the Office/Word MSO header so
+ *  Word renders the styles + embedded PNG figures. (Inline-SVG figures need Word 2016+.) */
+export function buildWordHtml(artifactNode: HTMLElement, title: string, theme: string): string {
+  const inner = buildReportHtml(artifactNode, title, theme);
+  const style = inner.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+  const body = inner.match(/<body>([\s\S]*?)<\/body>/)?.[1] ?? inner;
+  const t = esc(title || "研究报告");
+  return `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="utf-8"><title>${t}</title>
+<!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom></w:WordDocument></xml><![endif]-->
+<style>@page{size:A4;margin:2cm;}
+${style}</style>
+</head><body>${body}</body></html>`;
 }

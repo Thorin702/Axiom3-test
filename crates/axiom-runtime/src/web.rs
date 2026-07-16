@@ -32,7 +32,7 @@ impl WebClient {
         let client = reqwest::Client::builder()
             .user_agent(UA)
             .timeout(std::time::Duration::from_secs(25))
-            .redirect(reqwest::redirect::Policy::limited(5))
+            .redirect(reqwest::redirect::Policy::none()) // we follow redirects manually + guard each hop
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
         Self { client }
@@ -40,30 +40,43 @@ impl WebClient {
 
     /// Fetch a URL and return its readable text (HTML stripped, bounded). SSRF-guarded.
     pub async fn fetch(&self, url: &str) -> anyhow::Result<String> {
-        let url = url.trim();
-        guard_public_url(url)?;
+        let url = url.trim().to_string();
+        guard_public_url(&url).await?;
         let body = retry_async(&RetryPolicy::default(), is_retryable_error, || {
             let client = self.client.clone();
-            let url = url.to_string();
+            let start = url.clone();
             async move {
-                let resp = client.get(&url).send().await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
-                let status = resp.status();
-                if status.is_server_error() {
-                    anyhow::bail!("upstream error HTTP {} fetching the page", status.as_u16());
+                let mut current = reqwest::Url::parse(&start).map_err(|_| anyhow::anyhow!("invalid URL"))?;
+                for _hop in 0..6 {
+                    // guard BEFORE connecting to each hop so an internal host is never even contacted
+                    guard_public_url(current.as_str()).await?;
+                    let resp = client.get(current.clone()).send().await.map_err(|e| anyhow::anyhow!(e.to_string()))?;
+                    let status = resp.status();
+                    if status.is_redirection() {
+                        let loc = resp
+                            .headers()
+                            .get(reqwest::header::LOCATION)
+                            .and_then(|v| v.to_str().ok())
+                            .ok_or_else(|| anyhow::anyhow!("redirect with no Location header"))?;
+                        current = current.join(loc).map_err(|_| anyhow::anyhow!("bad redirect target"))?;
+                        continue;
+                    }
+                    if status.is_server_error() {
+                        anyhow::bail!("upstream error HTTP {} fetching the page", status.as_u16());
+                    }
+                    if !status.is_success() {
+                        anyhow::bail!("HTTP {} fetching {current}", status.as_u16());
+                    }
+                    let ctype = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    let bytes = bytes_bounded(resp, MAX_FETCH_BYTES).await?;
+                    return Ok::<_, anyhow::Error>((ctype, bytes));
                 }
-                if !status.is_success() {
-                    anyhow::bail!("HTTP {} fetching {url}", status.as_u16());
-                }
-                // A redirect could jump to an internal host — re-check the FINAL url.
-                guard_public_url(resp.url().as_str())?;
-                let ctype = resp
-                    .headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .to_string();
-                let bytes = bytes_bounded(resp, MAX_FETCH_BYTES).await?;
-                Ok::<_, anyhow::Error>((ctype, bytes))
+                anyhow::bail!("too many redirects fetching {start}")
             }
         })
         .await?;
@@ -109,36 +122,71 @@ impl WebClient {
     }
 }
 
-/// Refuse non-http(s) schemes and non-public hosts (localhost / private ranges / cloud metadata /
-/// .local / .internal). Not full DNS-rebinding protection, but it closes the obvious SSRF holes when
-/// the URL is derived from an untrusted goal.
-fn guard_public_url(url: &str) -> anyhow::Result<()> {
-    let lower = url.trim().to_ascii_lowercase();
-    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
-        anyhow::bail!("web_fetch only allows http(s) URLs");
+/// True for any IP we must never fetch: loopback / private / link-local (cloud metadata 169.254.169.254) /
+/// reserved. Checks the REAL address, so decimal/octal/hex/IPv4-mapped-IPv6 encodings all collapse here.
+fn ip_is_forbidden(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local()
+                || v4.is_broadcast() || v4.is_unspecified() || v4.is_documentation()
+                || o[0] == 0                                    // 0.0.0.0/8
+                || (o[0] == 100 && (64..128).contains(&o[1]))   // 100.64/10 CGNAT
+                || o[0] >= 240                                  // 240/4 reserved
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00        // fc00::/7 ULA
+                || (v6.segments()[0] & 0xffc0) == 0xfe80        // fe80::/10 link-local
+                || v6.to_ipv4_mapped().map(|m| ip_is_forbidden(IpAddr::V4(m))).unwrap_or(false)
+                || v6.to_ipv4().map(|m| ip_is_forbidden(IpAddr::V4(m))).unwrap_or(false)
+        }
     }
-    // host = between "://" and the first '/', '?', '#', or end; drop any userinfo@ and :port.
-    let after = &lower[lower.find("://").map(|i| i + 3).unwrap_or(0)..];
-    let host = after
-        .split(|c| c == '/' || c == '?' || c == '#')
-        .next()
-        .unwrap_or("")
-        .rsplit('@')
-        .next()
-        .unwrap_or("");
-    let host = host.split(':').next().unwrap_or("").trim_matches(['[', ']']);
-    let blocked_exact = ["localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal"];
-    let blocked_prefix = ["127.", "10.", "192.168.", "169.254.", "::1", "fc", "fd"];
-    let blocked_suffix = [".local", ".internal", ".localhost"];
-    // 172.16.0.0 – 172.31.255.255
-    let is_172_private = host.strip_prefix("172.").and_then(|r| r.split('.').next()).and_then(|o| o.parse::<u32>().ok()).map(|o| (16..=31).contains(&o)).unwrap_or(false);
-    if host.is_empty()
-        || blocked_exact.contains(&host)
-        || blocked_prefix.iter().any(|p| host.starts_with(p))
-        || blocked_suffix.iter().any(|s| host.ends_with(s))
-        || is_172_private
+}
+
+/// Refuse non-http(s) schemes, internal hostnames, and hosts that RESOLVE to a forbidden IP. Unlike a
+/// lexical blocklist this parses the URL and runs the resolver, so decimal/octal/hex/IPv4-mapped IP
+/// encodings AND DNS names that point at an internal address are all caught. Called before EVERY
+/// redirect hop (see `fetch`) so a public URL can't 302 into the metadata endpoint.
+async fn guard_public_url(raw: &str) -> anyhow::Result<()> {
+    let u = reqwest::Url::parse(raw.trim()).map_err(|_| anyhow::anyhow!("invalid URL"))?;
+    match u.scheme() {
+        "http" | "https" => {}
+        s => anyhow::bail!("web_fetch only allows http(s) URLs (got {s})"),
+    }
+    let host = u.host_str().ok_or_else(|| anyhow::anyhow!("URL has no host"))?.to_string();
+    let port = u.port_or_known_default().unwrap_or(80);
+    // host_str() brackets an IPv6 literal ("[::ffff:a9fe:a9fe]") — strip them for the IpAddr fast-path.
+    let bare = host.trim_start_matches('[').trim_end_matches(']').to_string();
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        if ip_is_forbidden(ip) {
+            anyhow::bail!("refused to fetch an internal IP ({ip})");
+        }
+        return Ok(());
+    }
+    let h = bare.to_ascii_lowercase();
+    if h == "localhost" || h.ends_with(".localhost") || h.ends_with(".local")
+        || h.ends_with(".internal") || h == "metadata.google.internal"
     {
-        anyhow::bail!("refused to fetch a non-public/internal host ({host}) — only public web URLs are allowed");
+        anyhow::bail!("refused to fetch an internal host ({h})");
+    }
+    // resolve off the async runtime (getaddrinfo is blocking)
+    let rhost = bare.clone();
+    let addrs = tokio::task::spawn_blocking(move || {
+        use std::net::ToSocketAddrs;
+        (rhost.as_str(), port).to_socket_addrs().map(|it| it.map(|s| s.ip()).collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e.to_string()))?
+    .map_err(|e| anyhow::anyhow!("could not resolve {host}: {e}"))?;
+    if addrs.is_empty() {
+        anyhow::bail!("host {host} did not resolve");
+    }
+    for ip in addrs {
+        if ip_is_forbidden(ip) {
+            anyhow::bail!("refused: {host} resolves to an internal IP ({ip})");
+        }
     }
     Ok(())
 }
@@ -306,19 +354,23 @@ fn cap_chars(s: &str, max: usize) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ssrf_guard_blocks_internal() {
-        assert!(guard_public_url("http://localhost/x").is_err());
-        assert!(guard_public_url("http://127.0.0.1:8080/").is_err());
-        assert!(guard_public_url("http://169.254.169.254/latest/meta-data/").is_err());
-        assert!(guard_public_url("http://10.0.0.5/").is_err());
-        assert!(guard_public_url("http://192.168.1.1/").is_err());
-        assert!(guard_public_url("http://172.16.0.1/").is_err());
-        assert!(guard_public_url("http://foo.internal/").is_err());
-        assert!(guard_public_url("ftp://example.com/").is_err());
-        // public hosts allowed
-        assert!(guard_public_url("https://www.ncbi.nlm.nih.gov/geo/").is_ok());
-        assert!(guard_public_url("http://172.32.0.1/").is_ok()); // just outside the private block
+    #[tokio::test]
+    async fn ssrf_guard_blocks_internal() {
+        for u in [
+            "http://localhost/x",
+            "http://127.0.0.1:8080/",
+            "http://169.254.169.254/latest/meta-data/", // cloud metadata
+            "http://10.0.0.5/",
+            "http://192.168.1.1/",
+            "http://172.16.0.1/",
+            "http://foo.internal/",
+            "ftp://example.com/",
+            "http://[::ffff:169.254.169.254]/", // IPv4-mapped IPv6 — the old lexical guard missed this
+        ] {
+            assert!(guard_public_url(u).await.is_err(), "should refuse {u}");
+        }
+        // a public IP literal is allowed (no DNS lookup needed, deterministic offline)
+        assert!(guard_public_url("http://172.32.0.1/").await.is_ok());
     }
 
     #[test]

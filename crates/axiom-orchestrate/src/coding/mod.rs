@@ -740,7 +740,7 @@ pub async fn delegate_tooled(
 async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str, sources: &[Source], cancel: &Cancel) -> String {
     let wrap_ctx = compact_transcript(transcript, 22_000);
     let wrap_user = format!(
-        "{wrap_ctx}\n\n[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统地组织成一篇有结论、有引用的报告(已生成的图会自动附上,不要再画)。给出明确的主要发现与结论;如果个别方向还能更深入,就在结尾用「后续可深化的方向」简短列出——把它当作完整报告的自然延伸,而不是说报告没做完。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
+        "{wrap_ctx}\n\n[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统组织成报告(已生成的图会自动附上,不要再画)。**按固定五段**:①**直接回答**——开篇正面、简明回答用户最初问的那个问题(先给答案/判断/推荐,别跑偏成另一个新颖角度);②机制/证据分析——主要发现、竞争假说权衡、带 [Sn] 引用;③**可执行方案(必给)**——把分析落到用户能照着做的具体方案:机制/假说题给决定性实验方案(体系材料、方法与关键参数、读出指标、判定判据、对照、预期),选型/决策题给明确推荐+分步落地路径,可行性题给可行性判定+关键卡点+立即可做的下一步动作,how-to 题给操作规程;**具体到能照做、给参数与判据,别写「建议进一步验证」这类空话**;④关键风险与可证伪缺口;⑤参考文献。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
     );
     // The final synthesis is the make-or-break deliverable — retry so a transient blip doesn't force
     // the fallback (backoff between tries; cancellation bails immediately).
