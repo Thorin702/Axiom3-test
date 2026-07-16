@@ -1,0 +1,63 @@
+name: Windows Build
+
+# Builds the Windows NSIS installer in the cloud so we don't depend on a local Windows toolchain.
+# Trigger manually (Actions tab → Run workflow, or `gh workflow run windows-build.yml`) or by pushing
+# a version tag (v1.0.34, …). No secrets needed at build time — signing is deferred, keys are runtime.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      # prost-build (a transitive dep) invokes protoc at build time — one of the original Windows
+      # blockers. setup-protoc puts it on PATH.
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: axiom3-desktop/pnpm-lock.yaml
+
+      - name: Install frontend deps
+        working-directory: axiom3-desktop
+        run: pnpm install --frozen-lockfile
+
+      # NSIS only — skip the MSI/WiX target (slower + flakier). The workspace target/ lives at the
+      # repo root, so the bundle lands in ./target/release/bundle/nsis/ regardless of working-directory.
+      - name: Build Tauri (NSIS installer)
+        working-directory: axiom3-desktop
+        run: pnpm tauri build --bundles nsis
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: axiom3-windows-nsis
+          path: target/release/bundle/nsis/*.exe
+          if-no-files-found: error
