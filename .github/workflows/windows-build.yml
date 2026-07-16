@@ -13,7 +13,7 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,6 +25,11 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          # Save the compiled-deps cache even when the build fails — the first cold build is the slow
+          # one; once it caches, later runs drop to ~10 min. (A timeout-cancel still can't save, so we
+          # also lower the opt-level below to make the cold build fit.)
+          cache-on-failure: true
 
       # prost-build (a transitive dep) invokes protoc at build time — one of the original Windows
       # blockers. setup-protoc puts it on PATH.
@@ -57,12 +62,18 @@ jobs:
       - name: Build Tauri (NSIS installer)
         working-directory: axiom3-desktop
         env:
-          # The committed release profile (fat LTO + codegen-units=1, for smallest binary) is too slow
-          # to LINK on the 2-core CI runner — it blew past the 60-min job timeout. Override to thin LTO
-          # + parallel codegen for CI ONLY (~2-3x faster link, negligible runtime difference for a
-          # desktop app). Local/Mac release builds still use the committed fat-LTO profile.
-          CARGO_PROFILE_RELEASE_LTO: "thin"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          # The committed release profile (opt-level=s + fat LTO + codegen-units=1, for smallest
+          # binary) makes a COLD build on the 2-core CI runner blow past even a 90-min timeout — the
+          # bottleneck is compiling hundreds of heavy dep crates (arrow/lance/…), which optimization
+          # level dominates. Override to opt-level=1 + no LTO + parallel codegen for CI ONLY: a
+          # functional test installer that compiles ~2x faster. Local/Mac release keeps the committed
+          # fat-LTO profile (smallest, most optimized). Once one CI build completes, the dep cache
+          # makes later runs ~10 min regardless.
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: "1"
+          CARGO_PROFILE_RELEASE_LTO: "false"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
+          CARGO_PROFILE_RELEASE_INCREMENTAL: "false"
         run: pnpm tauri build --bundles nsis
 
       - name: Upload installer artifact
