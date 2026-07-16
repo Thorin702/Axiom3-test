@@ -33,10 +33,13 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # pnpm 11: the project's pnpm-workspace.yaml uses pnpm-10/11 config keys (allowBuilds,
+      # verifyDepsBeforeRun). pnpm 9 misreads that file as a workspace def and dies with
+      # "packages field missing or empty". Match the local toolchain (11.x).
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11.9.0
 
       - name: Setup Node
         uses: actions/setup-node@v4
