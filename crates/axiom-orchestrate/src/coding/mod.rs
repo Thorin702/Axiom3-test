@@ -157,7 +157,7 @@ const RESTORE_CODE: &str = "import pickle as _pk, os\nif os.path.exists('.axiom_
 // CROSS-PLATFORM: darwin/linux verified; the Windows (win-64) branch is written but must be
 // re-verified on a real Windows box (micromamba there ships as micromamba.exe under Library/bin,
 // and a conda env's executables live in the env root + Scripts + Library/bin, not bin/).
-const CONDA_INSTALL: &str = r#"import os, sys, subprocess, platform, tarfile, io, requests
+const CONDA_INSTALL: &str = r#"import os, sys, subprocess, platform, tarfile, io, requests, time
 _win = platform.system().lower() == 'windows'
 ROOT = os.path.expanduser('~/.axiom3'); MM = os.path.join(ROOT, 'bin', 'micromamba.exe' if _win else 'micromamba'); ENV = os.path.join(ROOT, 'bioenv')
 os.makedirs(os.path.join(ROOT, 'bin'), exist_ok=True); os.makedirs('.axiom_jobs', exist_ok=True)
@@ -167,16 +167,41 @@ if not os.path.exists(MM):
     elif _s == 'linux': _key = 'linux-aarch64' if _m in ('aarch64','arm64') else 'linux-64'
     elif _s == 'windows': _key = 'win-64'
     else: raise SystemExit('unsupported platform ' + _s + ' ' + _m)
-    _d = requests.get('https://micro.mamba.pm/api/micromamba/%s/latest' % _key, timeout=180).content
+    _d = None; _err = None
+    for _try in range(3):   # mainland networks can drop the CDN mid-fetch; retry before giving up
+        try:
+            _d = requests.get('https://micro.mamba.pm/api/micromamba/%s/latest' % _key, timeout=300).content; break
+        except Exception as _e:
+            _err = _e; time.sleep(3)
+    if _d is None: raise SystemExit('micromamba download failed after 3 tries: ' + str(_err))
     with tarfile.open(fileobj=io.BytesIO(_d), mode='r:bz2') as _tf:
         _mem = next(x for x in _tf.getmembers() if x.name.replace('\\','/').endswith('bin/micromamba') or x.name.replace('\\','/').endswith('bin/micromamba.exe'))
         _mem.name = os.path.basename(_mem.name); _tf.extract(_mem, os.path.join(ROOT, 'bin'))
     try: os.chmod(MM, 0o755)
     except OSError: pass
-_sub = 'install' if os.path.isdir(ENV) else 'create'
 _pkgs = __PKGS__
-_cmd = [MM, _sub, '-y', '-p', ENV, '-c', 'conda-forge', '-c', 'bioconda'] + _pkgs
-_wrap = ("import subprocess, sys\n" "r = subprocess.run(%r, capture_output=True, text=True)\n" "sys.stdout.write(r.stdout or ''); sys.stderr.write(r.stderr or '')\n" "open('.axiom_jobs/__ID__.status', 'w').write('done' if r.returncode == 0 else 'failed')\n") % (_cmd,)
+# `micromamba install -p ENV` creates the env if it's missing, so retrying across channel sets is
+# safe. Try the China (TUNA) mirror FIRST — conda-forge/bioconda direct are slow/blocked on mainland
+# networks (this is what made PyMOL installs error + poll forever) — then fall back to the official
+# channels. Robust in every region: the mirror is reachable abroad too, and the fallback covers an
+# outage. Each attempt is hard-capped at 30 min so a stalled network fails cleanly instead of looping.
+_CN = 'https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud'
+_mir = [MM, 'install', '-y', '-p', ENV, '-c', _CN + '/conda-forge', '-c', _CN + '/bioconda'] + _pkgs
+_off = [MM, 'install', '-y', '-p', ENV, '-c', 'conda-forge', '-c', 'bioconda'] + _pkgs
+_wrap = (
+    "import subprocess, sys\n"
+    "for _i, _cmd in enumerate([%r, %r]):\n"
+    "    try:\n"
+    "        r = subprocess.run(_cmd, capture_output=True, text=True, timeout=1800)\n"
+    "    except subprocess.TimeoutExpired:\n"
+    "        sys.stderr.write('conda attempt %%d timed out after 30 min\\n' %% _i); continue\n"
+    "    sys.stdout.write(r.stdout or ''); sys.stderr.write(r.stderr or '')\n"
+    "    if r.returncode == 0:\n"
+    "        open('.axiom_jobs/__ID__.status', 'w').write('done'); break\n"
+    "    sys.stderr.write('\\n--- channel set %%d failed (rc=%%d), trying next ---\\n' %% (_i, r.returncode))\n"
+    "else:\n"
+    "    open('.axiom_jobs/__ID__.status', 'w').write('failed')\n"
+) % (_mir, _off)
 open('.axiom_jobs/__ID__.py', 'w').write(_wrap)
 try: os.remove('.axiom_jobs/__ID__.status')
 except OSError: pass
@@ -1179,10 +1204,15 @@ pub async fn run_coding_agent_steered(
                         // persistent kernel immediately after.
                         let list_py = pkgs.iter().map(|p| format!("{p:?}")).collect::<Vec<_>>().join(", ");
                         let names = pkgs.join(", ");
+                        // China mirror (TUNA) first, official pypi.org as EXTRA fallback — see
+                        // pip_mirror_env in workbench.rs. Mainland networks otherwise stall on pypi.org.
                         let code = format!(
-                            "import subprocess, sys\n\
+                            "import subprocess, sys, os\n\
+                             _env = dict(os.environ)\n\
+                             _env.setdefault('PIP_INDEX_URL', 'https://pypi.tuna.tsinghua.edu.cn/simple')\n\
+                             _env.setdefault('PIP_EXTRA_INDEX_URL', 'https://pypi.org/simple')\n\
                              _r = subprocess.run([sys.executable,'-m','pip','install','--quiet',\
-                             '--disable-pip-version-check', {list_py}], capture_output=True, text=True)\n\
+                             '--disable-pip-version-check', {list_py}], capture_output=True, text=True, env=_env)\n\
                              print('pip exit', _r.returncode)\n\
                              _msg = (_r.stderr or _r.stdout).strip()\n\
                              print(_msg[-1500:] if _msg else 'installed: {names}')"

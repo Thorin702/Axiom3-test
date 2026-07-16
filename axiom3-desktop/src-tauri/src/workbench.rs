@@ -1786,6 +1786,7 @@ fn seed_sci_stack(base: &std::path::Path) -> Result<std::path::PathBuf, String> 
                 cmd.env("SSL_CERT_FILE", c);
             }
         }
+        pip_mirror_env(&mut cmd);
         no_window(&mut cmd);
         let out = cmd
             .output()
@@ -1822,6 +1823,21 @@ fn no_window(cmd: &mut std::process::Command) {
 }
 #[cfg(not(windows))]
 fn no_window(_cmd: &mut std::process::Command) {}
+
+/// PyPI mirror for mainland-China networks: query the Tsinghua (TUNA) mirror FIRST, and keep the
+/// official pypi.org as an EXTRA index so anything missing on the mirror — or a mirror outage —
+/// transparently resolves against the real PyPI. That fallback makes it safe in every region, not
+/// just China. Skipped if the user has already pinned their own PIP_INDEX_URL. Mainland networks
+/// otherwise crawl or time out against pypi.org directly, which is what made the sci-stack / RDKit
+/// installs look like they were "failing".
+fn pip_mirror_env(cmd: &mut std::process::Command) {
+    if std::env::var_os("PIP_INDEX_URL").is_none() {
+        cmd.env("PIP_INDEX_URL", "https://pypi.tuna.tsinghua.edu.cn/simple");
+        if std::env::var_os("PIP_EXTRA_INDEX_URL").is_none() {
+            cmd.env("PIP_EXTRA_INDEX_URL", "https://pypi.org/simple");
+        }
+    }
+}
 
 fn axiom3_root() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
@@ -1880,12 +1896,18 @@ fn ensure_micromamba(base: &std::path::Path) -> Result<std::path::PathBuf, Strin
     let py = ensure_kernel_env(base)?;
     // NOTE: on Windows the archive member is Library/bin/micromamba.exe — handled by matching a
     // path that ENDS in bin/micromamba(.exe); validated on macOS here, re-checked in the Win port.
-    const BOOT: &str = r#"import os,platform,tarfile,io,requests,sys
+    const BOOT: &str = r#"import os,platform,tarfile,io,requests,sys,time
 ROOT=os.path.expanduser('~/.axiom3');BIN=os.path.join(ROOT,'bin');os.makedirs(BIN,exist_ok=True)
 s=platform.system().lower();m=platform.machine().lower()
 key=('osx-arm64' if m in('arm64','aarch64') else 'osx-64') if s=='darwin' else (('linux-aarch64' if m in('aarch64','arm64') else 'linux-64') if s=='linux' else ('win-64' if s=='windows' else None))
 if not key: sys.exit('unsupported platform '+s+' '+m)
-d=requests.get('https://micro.mamba.pm/api/micromamba/%s/latest'%key,timeout=180).content
+d=None;err=None
+for _t in range(3):   # mainland networks can drop the CDN mid-fetch; retry before giving up
+    try:
+        d=requests.get('https://micro.mamba.pm/api/micromamba/%s/latest'%key,timeout=300).content;break
+    except Exception as e:
+        err=e;time.sleep(3)
+if d is None: sys.exit('micromamba download failed after 3 tries: '+str(err))
 with tarfile.open(fileobj=io.BytesIO(d),mode='r:bz2') as tf:
     mem=next(x for x in tf.getmembers() if x.name.replace('\\','/').endswith('bin/micromamba') or x.name.replace('\\','/').endswith('bin/micromamba.exe'))
     mem.name=os.path.basename(mem.name);tf.extract(mem,BIN)
@@ -1910,24 +1932,33 @@ print('ok',mmp)"#;
 }
 
 /// Synchronous conda install into the bioenv (blocks until the solve finishes — minutes for PyMOL).
+/// Tries the China (TUNA) mirror channels FIRST — conda-forge/bioconda direct are slow/blocked on
+/// mainland networks, which is what made the onboarding PyMOL install fail — then falls back to the
+/// official channels. `install -p ENV` creates the env if missing, so retrying is safe.
 fn conda_install_sync(base: &std::path::Path, pkgs: &[&str]) -> Result<(), String> {
     let mm = ensure_micromamba(base)?;
     let env = bioenv_dir().ok_or("no home dir")?;
-    let sub = if env.is_dir() { "install" } else { "create" };
     let env_s = env.to_string_lossy().into_owned();
-    let mut args: Vec<&str> = vec![sub, "-y", "-p", &env_s, "-c", "conda-forge", "-c", "bioconda"];
-    args.extend_from_slice(pkgs);
-    let mut mcmd = std::process::Command::new(&mm);
-    mcmd.args(&args);
-    no_window(&mut mcmd);
-    let out = mcmd
-        .output()
-        .map_err(|e| format!("micromamba 无法启动 · {e}"))?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(String::from_utf8_lossy(&out.stderr).chars().rev().take(600).collect::<String>().chars().rev().collect())
+    const CN: &str = "https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud";
+    let cf = format!("{CN}/conda-forge");
+    let bc = format!("{CN}/bioconda");
+    let channel_sets: [[&str; 2]; 2] = [[cf.as_str(), bc.as_str()], ["conda-forge", "bioconda"]];
+    let mut last_err = String::new();
+    for chans in channel_sets {
+        let mut args: Vec<&str> = vec!["install", "-y", "-p", &env_s, "-c", chans[0], "-c", chans[1]];
+        args.extend_from_slice(pkgs);
+        let mut mcmd = std::process::Command::new(&mm);
+        mcmd.args(&args);
+        no_window(&mut mcmd);
+        match mcmd.output() {
+            Ok(out) if out.status.success() => return Ok(()),
+            Ok(out) => {
+                last_err = String::from_utf8_lossy(&out.stderr).chars().rev().take(600).collect::<String>().chars().rev().collect();
+            }
+            Err(e) => last_err = format!("micromamba 无法启动 · {e}"),
+        }
     }
+    Err(last_err)
 }
 
 /// pip install into the kernel venv (mirrors seed_sci_stack's SSL handling).
@@ -1939,6 +1970,7 @@ fn venv_pip_install(py: &std::path::Path, pkgs: &[&str]) -> Result<(), String> {
             cmd.env("SSL_CERT_FILE", c);
         }
     }
+    pip_mirror_env(&mut cmd);
     no_window(&mut cmd);
     let out = cmd.output().map_err(|e| format!("pip 无法启动 · {e}"))?;
     if out.status.success() {
@@ -2911,6 +2943,12 @@ pub async fn coding_run(
     // Session setting "自动审查": when true, a deep-research report is passed through the independent
     // reviewer before it's delivered; when false, no reviewer runs (the deliverable ships un-reviewed).
     review: Option<bool>,
+    // CONTINUATION of an existing thread — a follow-up message OR a "继续执行" on an interrupted task.
+    // Set by the frontend whenever there's an appendTo target. Suppresses the forced intake card: a
+    // continue must NEVER re-open the clarifying-intake gate (that derails the research direction). An
+    // interrupted run has an empty `prior` (no completed findings yet), so `prior_ctx.is_none()` can't
+    // distinguish "fresh first run" from "continue after interruption" — this flag does.
+    continued: Option<bool>,
 ) -> Result<CodingRunResult, String> {
     let goal = prepend_skill(goal, skill);
     if goal.trim().is_empty() {
@@ -3057,7 +3095,7 @@ pub async fn coding_run(
     // Force an ask_user INTAKE card as the first action of a first-round analysis — GLM won't ask on
     // its own discretion, so without this the clarifying intake never fires. Follow-ups (prior_ctx set)
     // and non-analysis code runs skip it; the loop relents after a bounded nudge if the model refuses.
-    if is_analyze && prior_ctx.is_none() {
+    if is_analyze && prior_ctx.is_none() && !continued.unwrap_or(false) {
         pause.require_intake();
     }
     // Deep research (the Opus tier) can spawn multi-agent sub-workflows for complex subtasks — and is

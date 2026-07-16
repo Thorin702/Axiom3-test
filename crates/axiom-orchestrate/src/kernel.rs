@@ -30,20 +30,40 @@ try:
     _socket.setdefaulttimeout(120)
 except Exception:
     pass
+_AX_SAVED = []   # (id(fig), base64 png) for every figure the current cell explicitly savefig()'d
 try:
     import matplotlib
     matplotlib.use('Agg')
-    # Default CJK-capable fonts so Chinese labels NEVER render as boxes — the model often forgets
-    # to set font.sans-serif, and matplotlib's default (DejaVu Sans) has no CJK glyphs. These faces
-    # ship on macOS; DejaVu Sans stays as the Latin fallback. Set once at kernel boot, global.
-    matplotlib.rcParams['font.sans-serif'] = ['Arial Unicode MS','Heiti TC','STHeiti','PingFang SC','PingFang HK','Songti SC','DejaVu Sans']
+    # Default CJK-capable fonts so Chinese labels NEVER render as boxes — the model often forgets to
+    # set font.sans-serif, and matplotlib's default (DejaVu Sans) has no CJK glyphs. Cover EVERY OS:
+    # macOS (PingFang/Heiti), Windows (Microsoft YaHei / SimHei / SimSun), Linux (Noto / WenQuanYi).
+    # Without the Windows faces, figure labels boxed on the Windows build. DejaVu Sans = Latin fallback.
+    matplotlib.rcParams['font.sans-serif'] = ['Arial Unicode MS','Heiti TC','STHeiti','PingFang SC','PingFang HK','Songti SC','Microsoft YaHei','SimHei','SimSun','Noto Sans CJK SC','WenQuanYi Zen Hei','DejaVu Sans']
     matplotlib.rcParams['axes.unicode_minus'] = False
+    # Capture figures the code explicitly saves — EVEN IF it then plt.close()s them. The structure /
+    # composition pipelines do `savefig(path); plt.close()`, which get_fignums() (open figures only)
+    # can't see, so the figure was drawn to disk but "not loaded" into the report. Hooking savefig
+    # records the bytes at save time, so a saved-then-closed figure still lands inline.
+    import matplotlib.figure as _mfig
+    if not getattr(_mfig.Figure, '_ax_hooked', False):
+        _mfig.Figure._ax_orig = _mfig.Figure.savefig
+        def _ax_savefig(self, *a, **k):
+            _r = _mfig.Figure._ax_orig(self, *a, **k)
+            try:
+                _bb = io.BytesIO(); _mfig.Figure._ax_orig(self, _bb, format='png', dpi=110, bbox_inches='tight')
+                _AX_SAVED.append((id(self), base64.b64encode(_bb.getvalue()).decode()))
+            except Exception:
+                pass
+            return _r
+        _mfig.Figure.savefig = _ax_savefig
+        _mfig.Figure._ax_hooked = True
 except Exception:
     pass
 NS = {'__name__': '__main__'}
 REAL = sys.stdout
 def run(code):
     out = io.StringIO(); figs = []; err = None; ok = True
+    del _AX_SAVED[:]   # per-cell reset (in place so the savefig hook keeps its reference)
     try:
         block = ast.parse(code, '<cell>', 'exec')
         tail = None
@@ -57,10 +77,22 @@ def run(code):
                     print(repr(val))
             try:
                 import matplotlib.pyplot as plt
+                import matplotlib.figure as _mfig
+                seen = set()   # dedup by PNG bytes: a figure both saved AND left open renders identically
+                # 1) figures the code explicitly saved (survive plt.close())
+                saved_ids = set()
+                for _fid, _d in _AX_SAVED:
+                    if _d in seen: continue
+                    figs.append(_d); seen.add(_d); saved_ids.add(_fid)
+                # 2) any still-open figure that was never saved (e.g. just left open / plt.show())
+                _orig = getattr(_mfig.Figure, '_ax_orig', None)
                 for n in plt.get_fignums():
+                    f = plt.figure(n)
+                    if id(f) in saved_ids: continue
                     b = io.BytesIO()
-                    plt.figure(n).savefig(b, format='png', dpi=110, bbox_inches='tight')
-                    figs.append(base64.b64encode(b.getvalue()).decode())
+                    (_orig or _mfig.Figure.savefig)(f, b, format='png', dpi=110, bbox_inches='tight')
+                    _d = base64.b64encode(b.getvalue()).decode()
+                    if _d not in seen: figs.append(_d); seen.add(_d)
                 plt.close('all')
             except Exception:
                 pass

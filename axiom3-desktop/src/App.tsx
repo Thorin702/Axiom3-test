@@ -995,7 +995,7 @@ function App() {
     setRailOpen(true);
     localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string; review?: string; sources?: CiteSource[]; trace?: AgentStepView[] }>(() =>
-      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute, research, review: sessionCfg.autoReview })
+      invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute, research, review: sessionCfg.autoReview, continued: !!appendTo })
     );
     if (!appendTo) { setCodeAttachments([]); }
     setPendingSkill(null);
@@ -1187,6 +1187,19 @@ function App() {
     else if (mode === "analysis" || codeAttachments.length > 0) runCoding(text, true); // Loc-SAgent
     else runCoding(text, true, undefined, true); // Glob-DAgent (research) — the default mode
     return true;
+  }
+
+  // "继续执行" — resume an INTERRUPTED task (cancelled/failed) with its OWN goal, as a continuation
+  // (appendTo = the task itself). This archives whatever partial progress it made and re-runs as a
+  // follow-up round: `continued` is set, so the clarifying-intake card never fires and the research
+  // direction is preserved. Without this, reopening an interrupted task and asking to continue forced
+  // an intake ask_user card that derailed the topic (cross-platform bug, Win + Mac).
+  function continueTask(tk: Task) {
+    const g = (tk.goal ?? "").trim();
+    if (!g) return;
+    if (tk.type === "research") runCoding(g, true, tk.id, true);
+    else if (tk.type === "workflow") runWorkflow(g, tk.id);
+    else runCoding(g, true, tk.id); // code / analysis
   }
 
   // The slash composer — shared by the home screen and thread follow-ups. Typing "/"
@@ -2036,6 +2049,21 @@ function App() {
                             : lang === "zh" ? "任务未完成。" : "Task did not complete."}
                         </p>
                       )}
+
+                      {/* Resume an interrupted task WITHOUT re-asking the intake card — one click picks up
+                          the same goal as a continuation (see continueTask). Shows on any interrupted
+                          research/analysis/workflow task; hidden while a round is running. */}
+                      {(tk.status === "cancelled" || tk.status === "failed") &&
+                        (tk.type === "code" || tk.type === "research" || tk.type === "workflow") && (
+                          <button
+                            className="ax-continue-btn"
+                            style={{ marginTop: 12 }}
+                            onClick={() => continueTask(tk)}
+                            title={lang === "zh" ? "从中断处继续,不重新提问" : "Resume from where it stopped, no re-prompt"}
+                          >
+                            {lang === "zh" ? "继续执行" : "Continue"}
+                          </button>
+                        )}
 
                       {tk.result && (
                         <>
