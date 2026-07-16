@@ -5,16 +5,7 @@
 // Spec: {"title"?, "ylabel"?, "show"?:["box","violin","points"], "groups":[{"label","values":[..]}
 //   | {"label","q1","median","q3","whiskerLo"?,"whiskerHi"?,"outliers"?}]}
 import type { ReactNode } from "react";
-
-// data-viz categorical palette (validated, CVD-safe), light / dark by slot order.
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
+import { catColor, isDark } from "./theme";
 
 type Stats = {
   label: string;
@@ -45,7 +36,10 @@ function isFiniteNum(x: unknown): x is number {
 }
 
 // Normalise a raw or pre-summarised group into Stats, or null if unusable.
-function toStats(g: unknown): Stats | null {
+// whiskerMode selects the whisker rule for raw groups: "tukey" (default,
+// 1.5·IQR fences) or "5-95" (5th–95th-percentile clips). Both are computed
+// from the raw values, so the caption can state exactly what the whiskers mean.
+function toStats(g: unknown, whiskerMode: "tukey" | "5-95" = "tukey"): Stats | null {
   if (!g || typeof g !== "object") return null;
   const o = g as Record<string, unknown>;
   const label = typeof o.label === "string" ? o.label : "";
@@ -57,13 +51,25 @@ function toStats(g: unknown): Stats | null {
       const q1 = quantile(s, 0.25);
       const median = quantile(s, 0.5);
       const q3 = quantile(s, 0.75);
-      const iqr = q3 - q1;
-      const loFence = q1 - 1.5 * iqr;
-      const hiFence = q3 + 1.5 * iqr;
-      const inl = s.filter((v) => v >= loFence && v <= hiFence);
-      const whiskerLo = inl.length ? inl[0] : s[0];
-      const whiskerHi = inl.length ? inl[inl.length - 1] : s[s.length - 1];
-      const outliers = s.filter((v) => v < loFence || v > hiFence);
+      let whiskerLo: number;
+      let whiskerHi: number;
+      let outliers: number[];
+      if (whiskerMode === "5-95") {
+        const loFence = quantile(s, 0.05);
+        const hiFence = quantile(s, 0.95);
+        const inl = s.filter((v) => v >= loFence && v <= hiFence);
+        whiskerLo = inl.length ? inl[0] : s[0];
+        whiskerHi = inl.length ? inl[inl.length - 1] : s[s.length - 1];
+        outliers = s.filter((v) => v < loFence || v > hiFence);
+      } else {
+        const iqr = q3 - q1;
+        const loFence = q1 - 1.5 * iqr;
+        const hiFence = q3 + 1.5 * iqr;
+        const inl = s.filter((v) => v >= loFence && v <= hiFence);
+        whiskerLo = inl.length ? inl[0] : s[0];
+        whiskerHi = inl.length ? inl[inl.length - 1] : s[s.length - 1];
+        outliers = s.filter((v) => v < loFence || v > hiFence);
+      }
       return { label, q1, median, q3, whiskerLo, whiskerHi, outliers, values: vals, n: vals.length };
     }
   }
@@ -76,7 +82,9 @@ function toStats(g: unknown): Stats | null {
   const whiskerLo = isFiniteNum(o.whiskerLo) ? o.whiskerLo : q1;
   const whiskerHi = isFiniteNum(o.whiskerHi) ? o.whiskerHi : q3;
   const outliers = Array.isArray(o.outliers) ? (o.outliers as unknown[]).filter(isFiniteNum) : [];
-  return { label, q1, median, q3, whiskerLo, whiskerHi, outliers, values: null, n: 0 };
+  // optional declared sample size for pre-summarised groups (no raw values to count)
+  const nDecl = isFiniteNum(o.n) && o.n >= 0 ? Math.round(o.n) : 0;
+  return { label, q1, median, q3, whiskerLo, whiskerHi, outliers, values: null, n: nDecl };
 }
 
 // nice-number axis ticks (Heckbert).
@@ -232,7 +240,7 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
   }
   const { niceMin: dMin, niceMax: dMax, out: ticks } = niceTicks(gMin, gMax, 5);
 
-  const cat = isDark() ? CAT_DARK : CAT_LIGHT;
+  const dark = isDark();
   const anyRaw = groups.some((s) => s.values && s.values.length);
 
   // geometry
@@ -302,7 +310,7 @@ export function Distribution({ spec: raw, caption }: { spec: string; caption?: s
           {/* per-group marks */}
           {groups.map((s, i) => {
             const x = gx(i);
-            const color = cat[i % cat.length];
+            const color = catColor(i, dark);
             const iqr = s.q3 - s.q1;
             const yQ1 = yScale(s.q1);
             const yQ3 = yScale(s.q3);

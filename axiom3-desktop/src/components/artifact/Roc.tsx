@@ -4,20 +4,33 @@
 // in the legend exactly as emitted (never recomputed). Axes are fixed to [0,1].
 //
 // Spec (```roc JSON): {"title"?, "kind"?:"roc"|"pr",
-//   "curves":[{"name":<str>,"auc"?:<0..1>,"points":[[x,y],...]}]}
+//   "curves":[{"name":<str>,"auc"?:<0..1>,"ci"?:<half-width>|[lo,hi],"dash"?:<str>,"points":[[x,y],...]}]}
 //   kind:"roc" -> points=[fpr,tpr] (draws chance diagonal) | "pr" -> points=[recall,precision].
-type CurveIn = { name?: string; auc?: number; points?: number[][] };
-type Spec = { title?: string; kind?: string; curves: CurveIn[] };
+// Optional publication-grade fields (all degrade to the current render when absent):
+//   curves[].ci        — number (± half-width) or [lo,hi]; annotated next to the verbatim AUC.
+//   curves[].dash      — per-curve SVG dash override; otherwise a color-blind-safe dash cycle is
+//                        applied automatically when >1 curve overlap (redundant to hue, not color-only).
+//   positive/negative  — class definitions surfaced in the caption.
+//   n                  — sample size surfaced in the caption.
+//   split              — data division ("train"|"held-out"|"cv"|"test"|free text) surfaced in caption.
+//   illustrative       — when true, stamps a "示意·非实测" badge (no fabricated numbers implied).
+import { catColor, isDark } from "./theme";
 
-// data-viz reference categorical palette (validated, CVD-safe), light / dark by slot order.
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
+type CurveIn = { name?: string; auc?: number; ci?: number | number[]; dash?: string; points?: number[][] };
+type Spec = {
+  title?: string;
+  kind?: string;
+  curves: CurveIn[];
+  positive?: string;
+  negative?: string;
+  n?: number;
+  split?: string;
+  illustrative?: boolean;
+};
+
+// color-blind-safe dash cycle: first curve solid, rest get distinguishable patterns so the
+// figure stays readable in grayscale / for dichromats (redundant encoding, not hue-only).
+const DASH_CYCLE = ["", "6 4", "2 3", "9 4 2 4", "1 4", "10 5"];
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
@@ -64,8 +77,8 @@ export function Roc({ spec: raw, caption }: { spec: string; caption?: string }) 
     return <div className="ax-fig__err">ROC 需要有效的 curves（每条含 points:[[x,y],…]）</div>;
   }
 
-  const cat = isDark() ? CAT_DARK : CAT_LIGHT;
-  const color = (i: number) => cat[i % cat.length];
+  const dark = isDark();
+  const color = (i: number) => catColor(i, dark);
 
   // axis semantics differ between the two kinds; the domain is fixed to [0,1] for both.
   const xName = kind === "roc" ? "False positive rate" : "Recall";
@@ -139,7 +152,8 @@ export function Roc({ spec: raw, caption }: { spec: string; caption?: string }) 
             />
           )}
 
-          {/* curves as polylines, in emitted order */}
+          {/* curves as polylines, in emitted order — dash cycle gives a redundant (non-hue)
+              encoding so multiple curves stay separable in grayscale / for dichromats */}
           {curves.map((c, ci) => (
             <polyline
               key={`pl${ci}`}
@@ -149,6 +163,7 @@ export function Roc({ spec: raw, caption }: { spec: string; caption?: string }) 
               strokeWidth="2"
               strokeLinejoin="round"
               strokeLinecap="round"
+              strokeDasharray={curves.length > 1 ? DASH_CYCLE[ci % DASH_CYCLE.length] || undefined : undefined}
             />
           ))}
 
@@ -189,7 +204,7 @@ export function Roc({ spec: raw, caption }: { spec: string; caption?: string }) 
             const by = legTop + ci * legRowH;
             return (
               <g key={`lg${ci}`}>
-                <line x1={lx} y1={by + 4} x2={lx + 16} y2={by + 4} stroke={color(ci)} strokeWidth="2.5" strokeLinecap="round" />
+                <line x1={lx} y1={by + 4} x2={lx + 16} y2={by + 4} stroke={color(ci)} strokeWidth="2.5" strokeLinecap="round" strokeDasharray={curves.length > 1 ? DASH_CYCLE[ci % DASH_CYCLE.length] || undefined : undefined} />
                 <circle cx={lx + 8} cy={by + 4} r={2} fill={color(ci)} />
                 <text x={lx + 22} y={by + 7} fontSize="9.5" fill="var(--ax-ink-soft)">
                   {c.name || `curve ${ci + 1}`}

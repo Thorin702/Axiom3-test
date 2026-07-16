@@ -7,6 +7,7 @@
 // Spec (```field JSON): {"title"?, "xlabel"?, "ylabel"?, "unit"?, "scale"?:"sequential"|"diverging",
 //   "x":[...], "y":[...], "z":[[..row-major z[iy][ix]..]], "contours"?:[...], "domain"?:[min,max]}
 import { useId } from "react";
+import { sequential } from "./theme";
 
 type Spec = {
   title?: string;
@@ -23,15 +24,12 @@ type Spec = {
 
 type Pt = { x: number; y: number };
 
-// data-viz sequential blue ramp (100 → 700), same accessor as the dot-plot / heat-map.
-const RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
-function ramp(t: number): string {
-  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1);
-  return RAMP[Math.min(Math.floor(x), RAMP.length - 1)];
-}
-// diverging poles (opacity carries magnitude; midpoint = theme surface underneath).
-const NEG = "#2a78d6";
-const POS = "#e34948";
+// Continuous colour follows the rubric: viridis for unsigned magnitude (perceptually uniform,
+// CVD-safe) via the shared `sequential()`. Diverging keeps two RdBu poles over the theme surface
+// (opacity carries magnitude; midpoint = theme surface underneath) — never a hue at 0.
+const NEG = "#2166ac"; // RdBu blue pole
+const POS = "#b2182b"; // RdBu red pole
+const SEQ_STOPS = 8; // viridis samples for the sequential colorbar gradient
 
 // cell boundaries at the midpoints between samples (handles non-uniform spacing); the two
 // outer edges extend half a step so the field tiles the plot exactly.
@@ -257,8 +255,8 @@ export function Field({ spec: raw, caption }: { spec: string; caption?: string }
               </linearGradient>
             ) : (
               <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-                {RAMP.map((_, i) => (
-                  <stop key={i} offset={`${(i / (RAMP.length - 1)) * 100}%`} stopColor={RAMP[RAMP.length - 1 - i]} />
+                {Array.from({ length: SEQ_STOPS }, (_, i) => (
+                  <stop key={i} offset={`${(i / (SEQ_STOPS - 1)) * 100}%`} stopColor={sequential(1 - i / (SEQ_STOPS - 1))} />
                 ))}
               </linearGradient>
             )}
@@ -284,7 +282,7 @@ export function Field({ spec: raw, caption }: { spec: string; caption?: string }
                 fill = v < 0 ? NEG : POS;
                 opacity = Math.min(1, Math.abs(v) / maxAbs);
               } else {
-                fill = ramp((v - dmin) / span);
+                fill = sequential((v - dmin) / span);
                 opacity = 1;
               }
               const cx0 = px(ex[ix]);

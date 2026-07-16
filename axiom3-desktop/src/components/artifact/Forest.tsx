@@ -4,25 +4,30 @@
 // Neutral by construction: it draws only the interval + the data-defined reference, never a verdict.
 //
 // Spec (```forest JSON): {"title"?, "xlabel"?, "reference"?, "logx"?,
-//   "rows":[{"label":string,"estimate":number,"lo":number,"hi":number}, ...]}
-type Row = { label: string; estimate: number; lo: number; hi: number };
+//   "effectType"?: "OR"|"HR"|"RR"|"diff"|"SMD",   // ratio types → null=1 + log axis; diff/SMD → null=0 linear
+//   "pooled"?: {"est":number,"lo":number,"hi":number,"label"?},  // rendered as a diamond
+//   "heterogeneity"?: {"i2"?:number,"tau2"?:number},             // written into the caption
+//   "rows":[{"label":string,"estimate":number,"lo":number,"hi":number,"weight"?:number,"n"?:number}, ...]}
+// Whiskers always denote 95% CI (labelled in the caption). All fields above title/xlabel/reference/logx/rows
+// are OPTIONAL: when absent the plot renders exactly as before (equal-area dots, no diamond, no meta line).
+type EffectType = "OR" | "HR" | "RR" | "diff" | "SMD";
+type Row = { label: string; estimate: number; lo: number; hi: number; weight?: number; n?: number };
+type Pooled = { est: number; lo: number; hi: number; label?: string };
+type Hetero = { i2?: number; tau2?: number };
 type Spec = {
   title?: string;
   xlabel?: string;
   reference?: number;
   logx?: boolean;
+  effectType?: EffectType;
+  pooled?: Pooled;
+  heterogeneity?: Hetero;
   rows: Row[];
 };
 
+import { catColor, isDark } from "./theme";
+
 // Single categorical identity token (CAT slot 0) for the mark — one series, no per-row coloring.
-const DOT_LIGHT = "#2a78d6";
-const DOT_DARK = "#3987e5";
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
 
 function fmt(v: number): string {
   if (!Number.isFinite(v)) return "—";
@@ -113,7 +118,7 @@ export function Forest({ spec, caption }: { spec: string; caption?: string }) {
 
   const hasRef = Number.isFinite(d.reference) && (!logx || (d.reference as number) > 0);
   const refVal = d.reference as number;
-  const dotColor = isDark() ? DOT_DARK : DOT_LIGHT;
+  const dotColor = catColor(0, isDark());
 
   // ── x-domain (in transformed space; log10 for ratios) ──
   const tx = (v: number) => (logx ? Math.log10(Math.max(v, 1e-9)) : v);

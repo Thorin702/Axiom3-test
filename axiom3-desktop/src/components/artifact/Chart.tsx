@@ -8,17 +8,8 @@
 //   {"type":"bar","title","xlabel","ylabel","data":[{"label","value","group"?}]}
 //   {"type":"line","title","xlabel","ylabel","series":[{"name","points":[[x,y]...]}]}
 import { useEffect, useRef, useState } from "react";
+import { catColor, isDark } from "./theme";
 
-// data-viz reference categorical palette (validated), light / dark by slot order.
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
 function tokens() {
   const cs = getComputedStyle(document.documentElement);
   const v = (n: string, f: string) => (cs.getPropertyValue(n).trim() || f);
@@ -27,7 +18,7 @@ function tokens() {
     soft: v("--ax-ink-soft", "#555"),
     faint: v("--ax-ink-faint", "#999"),
     line: v("--ax-line", "#e4e3dd"),
-    cat: isDark() ? CAT_DARK : CAT_LIGHT,
+    dark: isDark(),
   };
 }
 
@@ -85,7 +76,7 @@ function build(spec: Spec, tk: ReturnType<typeof tokens>) {
     const datasets = (single ? [""] : groups).map((g, i) => ({
       label: g || "points",
       data: (spec.points ?? []).filter((p) => (single ? true : (p.group ?? "") === g)).map((p) => ({ x: p.x, y: p.y })),
-      backgroundColor: tk.cat[i % tk.cat.length],
+      backgroundColor: catColor(i, tk.dark),
       pointRadius: 3,
       pointHoverRadius: 5,
     }));
@@ -99,7 +90,7 @@ function build(spec: Spec, tk: ReturnType<typeof tokens>) {
       type: "bar",
       data: {
         labels: rows.map((r) => r.label),
-        datasets: [{ label: spec.ylabel || "value", data: rows.map((r) => r.value), backgroundColor: rows.map((_, i) => tk.cat[i % tk.cat.length]), borderRadius: 4, borderSkipped: false }],
+        datasets: [{ label: spec.ylabel || "value", data: rows.map((r) => r.value), backgroundColor: rows.map((_, i) => catColor(i, tk.dark)), borderRadius: 4, borderSkipped: false }],
       },
       options: { ...base, plugins: { ...base.plugins, legend: { display: false } }, scales: { ...base.scales, x: { ...base.scales.x, grid: { display: false } } } },
     };
@@ -109,8 +100,8 @@ function build(spec: Spec, tk: ReturnType<typeof tokens>) {
   const datasets = (spec.series ?? []).map((s, i) => ({
     label: s.name,
     data: s.points.map(([x, y]) => ({ x, y })),
-    borderColor: tk.cat[i % tk.cat.length],
-    backgroundColor: tk.cat[i % tk.cat.length],
+    borderColor: catColor(i, tk.dark),
+    backgroundColor: catColor(i, tk.dark),
     borderWidth: 2,
     pointRadius: 2,
     tension: 0.2,

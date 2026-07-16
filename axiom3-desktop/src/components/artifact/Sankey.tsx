@@ -6,18 +6,9 @@
 // Spec (```sankey JSON): {"title"?, "nodes":[string | {"id":string}, ...],
 //   "links":[{"source":<name|idx>,"target":<name|idx>,"value":number}, ...]}
 import { useMemo } from "react";
+import { catColor, categorical, isDark } from "./theme";
 
 type Spec = { title?: unknown; nodes?: unknown; links?: unknown };
-
-// categorical identity palette (fixed order; a source node keeps its slot, ribbons inherit it).
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
 
 // compact numeric label: round to 2dp, drop trailing zeros, group the integer part with commas.
 function fmtNum(v: number): string {
@@ -249,7 +240,7 @@ function build(raw: string): Result {
         h,
         // cycle the palette (i % len) so a 9th+ node keeps a distinct hue instead of collapsing to
         // one flat neutral that reads as "ungrouped"; position + ribbons still disambiguate repeats.
-        color: i % CAT_LIGHT.length,
+        color: i % categorical().length,
         side: ci === 0 ? "L" : "R",
         through: through[i],
         inSum: inSum[i],
@@ -329,8 +320,8 @@ export function Sankey({ spec, caption }: { spec: string; caption?: string }) {
   const res = useMemo(() => build(spec), [spec]);
   if ("error" in res) return <div className="ax-fig__err">{res.error}</div>;
 
-  const cat = isDark() ? CAT_DARK : CAT_LIGHT;
-  const color = (slot: number): string => (slot >= 0 && slot < cat.length ? cat[slot] : "var(--ax-ink-faint)");
+  const dark = isDark();
+  const color = (slot: number): string => (slot >= 0 ? catColor(slot, dark) : "var(--ax-ink-faint)");
   const label = caption || res.title || "sankey diagram";
 
   return (

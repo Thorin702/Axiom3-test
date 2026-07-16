@@ -6,13 +6,7 @@
 // Also accepts a reaction-SMILES body: "A.B>>C.D" or "A.B>agents>C.D".
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import SmilesDrawer from "smiles-drawer";
-
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
+import { isDark } from "./theme";
 
 type Model =
   | { ok: true; title?: string; reactants: string[]; products: string[]; above?: string; below?: string }

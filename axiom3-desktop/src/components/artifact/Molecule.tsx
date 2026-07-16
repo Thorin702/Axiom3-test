@@ -3,13 +3,7 @@
 // rendered in its native form, like Claude Science's chemical-structure viewer.
 import { useEffect, useRef, useState } from "react";
 import SmilesDrawer from "smiles-drawer";
-
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
+import { isDark } from "./theme";
 
 export function Molecule({ smiles, caption }: { smiles: string; caption?: string }) {
   const ref = useRef<SVGSVGElement>(null);

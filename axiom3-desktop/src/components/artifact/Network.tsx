@@ -9,22 +9,15 @@
 //   "nodes":[{"id":string,"group"?:string,"value"?:number}],
 //   "edges":[{"source":string,"target":string,"weight"?:number,"sign"?:"+"|"-"}]}
 import { useMemo } from "react";
+import { catColor, categorical, isDark } from "./theme";
 
 type NodeSpec = { id?: unknown; group?: unknown; value?: unknown };
 type EdgeSpec = { source?: unknown; target?: unknown; weight?: unknown; sign?: unknown };
 type Spec = { title?: string; directed?: boolean; nodes?: NodeSpec[]; edges?: EdgeSpec[] };
 
-// categorical identity palette (fixed order, indexed by group first-appearance). Past the 8 slots
-// the palette CYCLES (gi % len) and wrapped groups gain a distinguishing ring (see ringDash) so
-// identity-by-color survives instead of collapsing to one neutral swatch.
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
+// categorical identity palette (fixed order, indexed by group first-appearance). Past the palette
+// slots the colours CYCLE (gi % len) and wrapped groups gain a distinguishing ring (see groupDash)
+// so identity-by-color survives instead of collapsing to one neutral swatch.
 
 // deterministic PRNG (mulberry32) — fixed seed keeps the layout stable across re-renders.
 function mulberry32(seed: number): () => number {
@@ -347,11 +340,12 @@ export function Network({ spec, caption }: { spec: string; caption?: string }) {
 
   if ("error" in res) return <div className="ax-fig__err">{res.error}</div>;
 
-  const cat = isDark() ? CAT_DARK : CAT_LIGHT;
-  // Cycle the palette past 8 groups (was: collapse to one neutral → 9+ groups indistinguishable);
+  const dark = isDark();
+  const catLen = categorical(dark).length;
+  // Cycle the palette past its slots (was: collapse to one neutral → 9+ groups indistinguishable);
   // wrapped groups (2nd+ cycle) get a dashed ring so a repeated hue is still tellable apart.
-  const groupColor = (gi: number): string => (gi < 0 ? "var(--ax-lamp-neutral)" : cat[gi % cat.length]);
-  const groupDash = (gi: number): string | undefined => (gi >= cat.length ? "3 2.5" : undefined);
+  const groupColor = (gi: number): string => (gi < 0 ? "var(--ax-lamp-neutral)" : catColor(gi, dark));
+  const groupDash = (gi: number): string | undefined => (gi >= catLen ? "3 2.5" : undefined);
   const label = caption || res.title || "network";
 
   const legendX = res.padL + res.drawW + 12;
@@ -408,7 +402,7 @@ export function Network({ spec, caption }: { spec: string; caption?: string }) {
             <g key={`n${i}`}>
               <title>{`${nd.id} · ${nd.group} · value ${fmt(nd.value)} · degree ${nd.degree}`}</title>
               <circle cx={nd.x} cy={nd.y} r={nd.r} fill={groupColor(nd.gi)} stroke="var(--ax-surface)" strokeWidth={1.5} fillOpacity={0.92} />
-              {nd.gi >= cat.length && (
+              {nd.gi >= catLen && (
                 <circle cx={nd.x} cy={nd.y} r={nd.r + 2.2} fill="none" stroke={groupColor(nd.gi)} strokeWidth={1} strokeDasharray={groupDash(nd.gi)} />
               )}
               <text
@@ -431,7 +425,7 @@ export function Network({ spec, caption }: { spec: string; caption?: string }) {
           {res.groups.map((g, i) => (
             <g key={`lg${i}`}>
               <circle cx={legendX + 5} cy={groupTop + i * 17 + 4} r={5} fill={groupColor(i)} fillOpacity={0.92} />
-              {i >= cat.length && (
+              {i >= catLen && (
                 <circle cx={legendX + 5} cy={groupTop + i * 17 + 4} r={6.5} fill="none" stroke={groupColor(i)} strokeWidth={1} strokeDasharray="3 2.5" />
               )}
               <text x={legendX + 15} y={groupTop + i * 17 + 7.5} fontSize="9.5" fill="var(--ax-ink-soft)">

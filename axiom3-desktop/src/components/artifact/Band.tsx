@@ -9,15 +9,7 @@
 //   [x,y,err] ]}]}. Each point is self-describing: [x,y]=plain, [x,y,lo,hi]=ribbon,
 //   [x,y,err]=symmetric error caps. dash:true for model/reference lines.
 
-// data-viz reference categorical palette (validated), light / dark by slot order.
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
+import { catColor, isDark } from "./theme";
 
 type SeriesSpec = { name?: string; dash?: boolean; points: number[][] };
 type Spec = {
@@ -100,7 +92,7 @@ export function Band({ spec: raw, caption }: { spec: string; caption?: string })
 
   const xlog = spec.xscale === "log";
   const ylog = spec.yscale === "log";
-  const cat = isDark() ? CAT_DARK : CAT_LIGHT;
+  const dark = isDark();
 
   const seriesData = spec.series.map((s, i) => {
     const pts = (Array.isArray(s.points) ? s.points : [])
@@ -110,7 +102,7 @@ export function Band({ spec: raw, caption }: { spec: string; caption?: string })
     return {
       name: (typeof s.name === "string" && s.name ? s.name : `series ${i + 1}`).slice(0, 48),
       dash: !!s.dash,
-      color: cat[i % cat.length], // fixed slot order; modulo is a safe fallback for the rare >8-series case (legend labels disambiguate)
+      color: catColor(i, dark), // fixed slot order; catColor wraps with modulo for the rare >8-series case (legend labels disambiguate)
       pts,
       bandPts: pts.filter((p) => p.hasBand),
       errPts: pts.filter((p) => p.hasErr),

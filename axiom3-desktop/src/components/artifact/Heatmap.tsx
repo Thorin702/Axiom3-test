@@ -1,12 +1,14 @@
 // Native matrix heatmap: one color channel per cell for correlation / % identity / residue-contact /
 // attention / z-scored marker panels (distinct from the sparse size+color dot-plot). `sequential`
-// reuses the house blue ramp; `diverging` paints a signed pole over the theme surface so 0 reads as
+// uses viridis (shared theme); `diverging` paints an RdBu pole over the theme surface so 0 reads as
 // background and sign is instant. Optional agglomerative linkage (rowTree/colTree) reorders leaves
 // and draws dendrogram brackets. Pure inline SVG, no deps.
 //
 // Spec (```heatmap JSON): {"title"?, "rows":[...], "cols":[...], "values":[[..row-major values[r][c]..]],
 //   "scale"?:"sequential"|"diverging", "domain"?:[min,max], "colorLabel"?, "showValues"?,
 //   "rowTree"?/"colTree"?: [[i,j,height],...] agglomerative merges}
+import { sequential, autoContrastText } from "./theme";
+
 type Spec = {
   title?: string;
   rows: string[];
@@ -20,15 +22,12 @@ type Spec = {
   colTree?: number[][];
 };
 
-// data-viz sequential blue ramp (100 → 700), same accessor as the dot-plot.
-const RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
-function ramp(t: number): string {
-  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1);
-  return RAMP[Math.min(Math.floor(x), RAMP.length - 1)];
-}
-// diverging poles (opacity carries magnitude; midpoint = theme surface underneath).
-const NEG = "#2a78d6";
-const POS = "#e34948";
+// Continuous colour follows the rubric: viridis for unsigned magnitude (perceptually uniform,
+// CVD-safe) via the shared `sequential()`. Diverging keeps two RdBu poles with the theme surface
+// as the neutral midpoint (opacity carries magnitude) — "two hues + neutral midpoint", never a
+// hue at 0.
+const NEG = "#2166ac"; // RdBu blue pole
+const POS = "#b2182b"; // RdBu red pole
 
 function fmt(v: number): string {
   const a = Math.abs(v);
@@ -212,7 +211,8 @@ export function Heatmap({ spec: raw, caption }: { spec: string; caption?: string
   const swW = 13;
   const swH = 8;
   const DIV_STOPS = 13;
-  const legendH = (diverging ? DIV_STOPS : RAMP.length) * swH;
+  const SEQ_STOPS = 9; // viridis colorbar swatches
+  const legendH = (diverging ? DIV_STOPS : SEQ_STOPS) * swH;
   const legendBottom = barTop + legendH + 8;
 
   const w = gridLeft + gridW + padR;
@@ -298,17 +298,16 @@ export function Heatmap({ spec: raw, caption }: { spec: string; caption?: string
                 opacity = Math.min(1, Math.abs(v) / maxAbs);
               } else {
                 t = (v - dmin) / span;
-                fill = ramp(t);
+                fill = sequential(t);
                 opacity = 1;
               }
-              // contrast-aware on-cell label (fixed hex over a filled data cell, house convention)
+              // contrast-aware on-cell label: WCAG auto-pick over the viridis fill; for the
+              // opacity-graded diverging cells fall back to ink until the pole is strong enough.
               const labelColor = diverging
                 ? opacity > 0.55
-                  ? "#f7f8f9"
+                  ? autoContrastText(v < 0 ? NEG : POS)
                   : "var(--ax-ink)"
-                : t > 0.5
-                  ? "#f7f8f9"
-                  : "#123a5e";
+                : autoContrastText(fill);
               return (
                 <g key={`${r}-${c}`}>
                   <rect
@@ -372,11 +371,13 @@ export function Heatmap({ spec: raw, caption }: { spec: string; caption?: string
             </>
           ) : (
             <>
-              {[...RAMP].reverse().map((c, i) => (
-                <rect key={`sb${i}`} x={barX} y={barTop + i * swH} width={swW} height={swH} fill={c} />
+              {Array.from({ length: SEQ_STOPS }, (_, i) => (
+                // top swatch = high value: viridis yellow at the top, purple at the bottom
+                <rect key={`sb${i}`} x={barX} y={barTop + i * swH} width={swW} height={swH} fill={sequential(1 - i / (SEQ_STOPS - 1))} />
               ))}
               <rect x={barX} y={barTop} width={swW} height={legendH} fill="none" stroke="var(--ax-line)" strokeWidth="0.5" />
               <text x={barX + swW + 5} y={barTop + 6} fontSize="8.5" fill="var(--ax-ink-faint)">{fmt(dmax)}</text>
+              <text x={barX + swW + 5} y={barTop + legendH / 2 + 3} fontSize="8.5" fill="var(--ax-ink-faint)">{fmt((dmax + dmin) / 2)}</text>
               <text x={barX + swW + 5} y={barTop + legendH} fontSize="8.5" fill="var(--ax-ink-faint)">{fmt(dmin)}</text>
             </>
           )}

@@ -1,11 +1,13 @@
 // Native 2D vector-field / quiver plot: an arrow at each sample point (x,y) whose direction is
 // the field components (u,v) and whose LENGTH is the field magnitude. Arrow length auto-scales
-// to the median sample spacing so arrows do not overlap; color encodes magnitude via the house
-// sequential blue ramp with a colorbar. Uniform pixels-per-unit keeps arrow angles true. Pure SVG.
+// to the median sample spacing so arrows do not overlap; color encodes magnitude via the shared
+// sequential (viridis) colormap with a colorbar. Uniform pixels-per-unit keeps arrow angles true.
+// Pure SVG.
 //
 // Spec (```quiver JSON): {"title"?, "xlabel"?, "ylabel"?, "unit"?,
 //   "vectors":[{"x":<num>,"y":<num>,"u":<num>,"v":<num>}, ...]}
 import { useId } from "react";
+import { sequential } from "./theme";
 
 type Vec = { x: number; y: number; u: number; v: number };
 type Spec = {
@@ -16,23 +18,8 @@ type Spec = {
   vectors: Vec[];
 };
 
-// data-viz sequential blue ramp (100 → 700), same accessor as the dot-plot / field map. The LIGHT
-// ramp runs light → dark-navy (high magnitude is darkest); on the dark surface (--ax-surface ≈
-// #30302E) those darkest stops render dark-on-dark and vanish, so the dark theme uses a mirrored
-// ramp whose high-magnitude stops are BRIGHT and read against the dark background.
-const RAMP_LIGHT = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
-const RAMP_DARK = ["#22456e", "#2f5f97", "#3e7bc4", "#5497e6", "#7db4ef", "#a9cef7", "#d4e7fc"];
-function isDark(): boolean {
-  if (typeof document === "undefined") return false; // SSR / test guard
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
-function ramp(colors: string[], t: number): string {
-  const x = Math.max(0, Math.min(1, t)) * (colors.length - 1);
-  return colors[Math.min(Math.floor(x), colors.length - 1)];
-}
+// Magnitude is coloured via the shared sequential (viridis) colormap — perceptually uniform and
+// CVD-safe, and legible on both the light and dark surface without a per-theme mirror.
 
 // nice round tick step for a span, aiming for ~target divisions (shared idiom with volcano/manhattan).
 function niceStep(span: number, target: number): number {
@@ -86,8 +73,7 @@ export function Quiver({ spec: raw, caption }: { spec: string; caption?: string 
   const uid = useId().replace(/:/g, "");
   const gradId = `axquiver-${uid}`;
   const kindLabel = "矢量场 · quiver";
-  const dark = isDark();
-  const RAMP = dark ? RAMP_DARK : RAMP_LIGHT; // high-magnitude stops must read on the active surface
+  const RAMP_STOPS = 9; // colorbar gradient resolution (viridis sampled evenly, high → low)
 
   let spec: Spec;
   try {
@@ -186,8 +172,12 @@ export function Quiver({ spec: raw, caption }: { spec: string; caption?: string 
         >
           <defs>
             <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
-              {RAMP.map((_, i) => (
-                <stop key={i} offset={`${(i / (RAMP.length - 1)) * 100}%`} stopColor={RAMP[RAMP.length - 1 - i]} />
+              {Array.from({ length: RAMP_STOPS }, (_, i) => (
+                <stop
+                  key={i}
+                  offset={`${(i / (RAMP_STOPS - 1)) * 100}%`}
+                  stopColor={sequential(1 - i / (RAMP_STOPS - 1))}
+                />
               ))}
             </linearGradient>
           </defs>
@@ -216,7 +206,7 @@ export function Quiver({ spec: raw, caption }: { spec: string; caption?: string 
             const x2 = x1 + dxPx;
             const y2 = y1 + dyPx;
             const len = Math.hypot(dxPx, dyPx);
-            const color = ramp(RAMP, (m - mMin) / mSpan);
+            const color = sequential((m - mMin) / mSpan);
             const title = (
               <title>{`x=${fmt(d.x)}, y=${fmt(d.y)} — (u ${fmt(d.u)}, v ${fmt(d.v)}) · |·| ${fmt(m)}${unit ? " " + unit : ""}`}</title>
             );

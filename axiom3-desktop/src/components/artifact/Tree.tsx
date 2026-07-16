@@ -7,6 +7,8 @@
 // Spec (```tree JSON): {"title"?, "newick"?: "((A:0.1,B:0.2):0.05,C:0.3);",
 //   "root"?: {"name"?, "length"?, "children":[ ...nested... ]}}  — provide newick OR root.
 
+import { catColor, isDark } from "./theme";
+
 type TreeNode = { name?: string; length?: number; children: TreeNode[] };
 type RawNode = { name?: unknown; length?: unknown; children?: unknown };
 type Spec = { title?: string; newick?: string; root?: RawNode };
@@ -133,17 +135,6 @@ function niceRound(x: number): number {
   return nf * Math.pow(10, exp);
 }
 
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
-// Colorblind-safe categorical hues that read on BOTH the warm-white paper and the dark surface,
-// used to tint leaf clades when the labels cleanly partition by a leading token (e.g. domain prefix).
-const GROUP_LIGHT = ["#2a78d6", "#0f8f3f", "#c07800", "#7a45c2", "#c23b6a", "#0f8f8f"];
-const GROUP_DARK = ["#5a9bf0", "#3aa876", "#d99a2a", "#a488ee", "#e07398", "#3fb5b5"];
-
 // A Newick internal-node label is a branch-support value (IQ-TREE "SH-aLRT/uBS", or a bootstrap %).
 // Show it only when it actually looks like support — a number, or slash/parenthesis-joined numbers —
 // so a genuine internal clade NAME isn't mistaken for support and vice-versa.
@@ -209,7 +200,6 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
   // prefixes) — but ONLY when that token cleanly partitions the tree (2–6 groups, each ≥2 leaves,
   // covering ≥80% of tips), so ungrouped data (all-distinct first tokens) stays monochrome.
   const dark = isDark();
-  const groupPalette = dark ? GROUP_DARK : GROUP_LIGHT;
   const firstTok = (nm?: string): string => (nm ?? "").trim().split(/\s+/)[0] ?? "";
   const tokCount = new Map<string, number>();
   for (const lf of leaves) {
@@ -220,7 +210,7 @@ export function Tree({ spec, caption }: { spec: string; caption?: string }) {
   const coveredByGroups = leaves.filter((lf) => tokCount.get(firstTok(lf.name))! >= 2 && groupTokens.includes(firstTok(lf.name))).length;
   const grouped = groupTokens.length >= 2 && groupTokens.length <= 6 && coveredByGroups >= 0.8 * leaves.length;
   const groupColor = new Map<string, string>();
-  if (grouped) groupTokens.forEach((t, i) => groupColor.set(t, groupPalette[i % groupPalette.length]));
+  if (grouped) groupTokens.forEach((t, i) => groupColor.set(t, catColor(i, dark)));
   const leafColor = (nm?: string): string | null => (grouped ? groupColor.get(firstTok(nm)) ?? null : null);
 
   // ── layout geometry ──

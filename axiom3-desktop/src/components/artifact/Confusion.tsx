@@ -5,6 +5,8 @@
 //
 // Spec (```confusion JSON): {"title"?, "labels":[...], "matrix":[[...],...],
 //   "normalize"?: "row"|"col"|"none"}  // matrix is a labels.length² square of counts.
+import { sequential, autoContrastText } from "./theme";
+
 type Norm = "row" | "col" | "none";
 type Spec = {
   title?: string;
@@ -13,18 +15,8 @@ type Spec = {
   normalize?: Norm;
 };
 
-// data-viz sequential blue ramp (100 → 700); light→dark = low→high.
-const RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
-function ramp(t: number): string {
-  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1);
-  return RAMP[Math.min(Math.floor(x), RAMP.length - 1)];
-}
-// contrast-aware ink for text drawn ON a filled data cell (fixed colors: the cell fill is a fixed
-// data color in either theme, so the label's contrast color must be fixed too, not a theme var).
-function cellInk(t: number): string {
-  const idx = Math.min(Math.floor(Math.max(0, Math.min(1, t)) * (RAMP.length - 1)), RAMP.length - 1);
-  return idx >= 3 ? "#f2f7ff" : "#12233b";
-}
+// colorbar swatch count (unsigned magnitude → sequential viridis, low→high).
+const CB_STEPS = 7;
 
 export function Confusion({ spec: raw, caption }: { spec: string; caption?: string }) {
   let spec: Spec;
@@ -143,7 +135,8 @@ export function Confusion({ spec: raw, caption }: { spec: string; caption?: stri
           {M.map((row, r) =>
             row.map((v, c) => {
               const t = colorT(r, c);
-              const ink = cellInk(t);
+              const fillC = sequential(t);
+              const ink = autoContrastText(fillC);
               const pct = frac(r, c) * 100;
               return (
                 <g key={`cell${r}-${c}`}>
@@ -153,7 +146,7 @@ export function Confusion({ spec: raw, caption }: { spec: string; caption?: stri
                     width={cell}
                     height={cell}
                     rx={1.5}
-                    fill={ramp(t)}
+                    fill={fillC}
                     stroke="var(--ax-surface)"
                     strokeWidth="1"
                   >
@@ -197,13 +190,13 @@ export function Confusion({ spec: raw, caption }: { spec: string; caption?: stri
           <text x={legendX} y={padT + 4} fontSize="9" fill="var(--ax-ink-faint)">
             {cbLabel}
           </text>
-          {RAMP.map((c, i) => (
-            <rect key={`cb${i}`} x={legendX} y={padT + 14 + i * 8} width="14" height="8" fill={c} />
+          {Array.from({ length: CB_STEPS }, (_, i) => (
+            <rect key={`cb${i}`} x={legendX} y={padT + 14 + i * 8} width="14" height="8" fill={sequential(i / (CB_STEPS - 1))} />
           ))}
           <text x={legendX + 18} y={padT + 21} fontSize="8" fill="var(--ax-ink-faint)">
             {cbMin}
           </text>
-          <text x={legendX + 18} y={padT + 14 + RAMP.length * 8} fontSize="8" fill="var(--ax-ink-faint)">
+          <text x={legendX + 18} y={padT + 14 + CB_STEPS * 8} fontSize="8" fill="var(--ax-ink-faint)">
             {cbMax}
           </text>
         </svg>

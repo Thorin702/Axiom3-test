@@ -1,10 +1,12 @@
 // Native gene-expression dot-plot (the Tabula Sapiens figure): rows (cell types) × columns
 // (genes/features), dot SIZE = fraction of cells, dot COLOR = mean expression. Pure SVG, no
-// dependency. Color uses the data-viz sequential blue ramp (light→dark = low→high); size and
+// dependency. Color uses the shared sequential colormap (viridis, low→high); size and
 // color are two encodings of two measures, each with its own legend (never color-alone).
 //
 // Spec (```dotplot JSON): {"title"?, "rows":[...], "cols":[...],
 //   "cells":[{"r":<rowIdx>,"c":<colIdx>,"size":0..1,"color":0..1}], "sizeLabel"?, "colorLabel"?}
+import { sequential } from "./theme";
+
 type Spec = {
   title?: string;
   rows: string[];
@@ -14,13 +16,8 @@ type Spec = {
   colorLabel?: string;
 };
 
-// data-viz sequential blue ramp (100 → 700).
-const RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
-function ramp(t: number): string {
-  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1);
-  const i = Math.floor(x);
-  return RAMP[Math.min(i, RAMP.length - 1)];
-}
+// Legend swatches sampled from the shared sequential colormap (low→high), same count as before.
+const COLOR_STOPS = Array.from({ length: 7 }, (_, i) => sequential(i / 6));
 
 export function DotPlot({ spec: raw, caption }: { spec: string; caption?: string }) {
   let spec: Spec;
@@ -47,7 +44,7 @@ export function DotPlot({ spec: raw, caption }: { spec: string; caption?: string
   const cell = 24;
   const rMax = 9;
   const w = padL + spec.cols.length * cell + padR;
-  const legendBottom = padT + 100 + RAMP.length * 7 + 6; // color legend extends past a short grid
+  const legendBottom = padT + 100 + COLOR_STOPS.length * 7 + 6; // color legend extends past a short grid
   const h = Math.max(padT + spec.rows.length * cell + padB, legendBottom);
   const cx = (c: number) => padL + c * cell + cell / 2;
   const cy = (r: number) => padT + r * cell + cell / 2;
@@ -78,7 +75,7 @@ export function DotPlot({ spec: raw, caption }: { spec: string; caption?: string
             const sz = Number.isFinite(d.size) ? d.size : 0;
             const r = 1.5 + Math.max(0, Math.min(1, sz)) * rMax;
             return (
-              <circle key={i} cx={cx(d.c)} cy={cy(d.r)} r={r} fill={ramp(col)} stroke="var(--ax-surface)" strokeWidth="0.5">
+              <circle key={i} cx={cx(d.c)} cy={cy(d.r)} r={r} fill={sequential(col)} stroke="var(--ax-surface)" strokeWidth="0.5">
                 <title>{`${spec.rows[d.r]} · ${spec.cols[d.c]} — ${spec.sizeLabel ?? "fraction"} ${(sz * 100).toFixed(0)}% · ${spec.colorLabel ?? "expr"} ${col.toFixed(2)}`}</title>
               </circle>
             );
@@ -93,11 +90,11 @@ export function DotPlot({ spec: raw, caption }: { spec: string; caption?: string
           ))}
           {/* color legend */}
           <text x={w - padR + 6} y={padT + 92} fontSize="9" fill="var(--ax-ink-faint)">{spec.colorLabel ?? "expr"}</text>
-          {RAMP.map((c, i) => (
+          {COLOR_STOPS.map((c, i) => (
             <rect key={`cl${i}`} x={w - padR + 14} y={padT + 100 + i * 7} width="12" height="7" fill={c} />
           ))}
           <text x={w - padR + 30} y={padT + 106} fontSize="8" fill="var(--ax-ink-faint)">low</text>
-          <text x={w - padR + 30} y={padT + 100 + RAMP.length * 7} fontSize="8" fill="var(--ax-ink-faint)">high</text>
+          <text x={w - padR + 30} y={padT + 100 + COLOR_STOPS.length * 7} fontSize="8" fill="var(--ax-ink-faint)">high</text>
         </svg>
       </div>
       {caption && <figcaption className="ax-fig__cap"><span className="ax-fig__kind">点图 · dot-plot</span> {caption}</figcaption>}

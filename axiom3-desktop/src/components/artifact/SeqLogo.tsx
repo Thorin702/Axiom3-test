@@ -6,6 +6,8 @@
 // Spec (```seqlogo JSON): {"title"?, "type":"dna"|"rna"|"protein", "start"?:int(default 1),
 //   "columns":[{"A":0.9,"C":0.03,"G":0.04,"T":0.03}, ...]}  // each column need not sum to 1.
 
+import { catColor, isDark } from "./theme";
+
 type Spec = { title?: unknown; type?: unknown; start?: unknown; columns?: unknown };
 type StackItem = { res: string; p: number; bits: number };
 type Column = { bits: number; stack: StackItem[] };
@@ -14,16 +16,9 @@ const DNA = ["A", "C", "G", "T"];
 const RNA = ["A", "C", "G", "U"];
 const PROTEIN = ["A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"];
 
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
-
-// nucleotide colors (A green · C blue · G gold · T/U red), theme-adaptive by slot.
-const NT_LIGHT: Record<string, string> = { A: "#008300", C: "#2a78d6", G: "#d99100", T: "#e34948", U: "#e34948" };
-const NT_DARK: Record<string, string> = { A: "#199e70", C: "#3987e5", G: "#c98500", T: "#e66767", U: "#e66767" };
+// nucleotide colors keyed to CVD-safe categorical slots, preserving the classic hue convention
+// (A green · C blue · G gold · T/U vermilion). Hex now comes from the shared palette via catColor.
+const NT_SLOT: Record<string, number> = { A: 2, C: 0, G: 1, T: 3, U: 3 };
 
 // protein "chemistry" scheme: polar green · neutral purple · basic blue · acidic red · hydrophobic ink.
 const AA_GROUP: Record<string, "polar" | "neutral" | "basic" | "acidic" | "hydro"> = {
@@ -33,9 +28,14 @@ const AA_GROUP: Record<string, "polar" | "neutral" | "basic" | "acidic" | "hydro
   D: "acidic", E: "acidic",
   A: "hydro", V: "hydro", L: "hydro", I: "hydro", P: "hydro", W: "hydro", F: "hydro", M: "hydro",
 };
-const GROUP_LIGHT: Record<string, string> = { polar: "#008300", neutral: "#4a3aa7", basic: "#2a78d6", acidic: "#e34948", hydro: "var(--ax-ink)" };
-const GROUP_DARK: Record<string, string> = { polar: "#199e70", neutral: "#9085e9", basic: "#3987e5", acidic: "#e66767", hydro: "var(--ax-ink)" };
+// protein-chemistry groups keyed to CVD-safe slots, preserving hues (polar green · basic blue ·
+// acidic vermilion · neutral purple); hydro stays neutral ink. slot < 0 → neutral ink.
+const GROUP_SLOT: Record<string, number> = { polar: 2, neutral: 5, basic: 0, acidic: 3, hydro: -1 };
 const GROUP_LABEL: Record<string, string> = { polar: "极性 polar", neutral: "中性 neutral", basic: "碱性 basic", acidic: "酸性 acidic", hydro: "疏水 hydrophobic" };
+function groupColor(g: string, dark: boolean): string {
+  const slot = GROUP_SLOT[g] ?? -1;
+  return slot < 0 ? "var(--ax-ink)" : catColor(slot, dark);
+}
 
 // glyph metrics: text drawn at font-size FS (in the pinned bold font below) has its cap-height ≈ CAP
 // above the baseline; a vertical scale of height/CAP makes a capital letter exactly `height` px tall.
@@ -122,8 +122,9 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
 
   const dark = isDark();
   const colorOf = (res: string): string => {
-    if (isProtein) return (dark ? GROUP_DARK : GROUP_LIGHT)[AA_GROUP[res] ?? "hydro"];
-    return (dark ? NT_DARK : NT_LIGHT)[res] ?? "var(--ax-ink)";
+    if (isProtein) return groupColor(AA_GROUP[res] ?? "hydro", dark);
+    const slot = NT_SLOT[res];
+    return slot == null ? "var(--ax-ink)" : catColor(slot, dark);
   };
 
   // geometry
@@ -247,7 +248,7 @@ export function SeqLogo({ spec: raw, caption }: { spec: string; caption?: string
                 const ly = y0 + rulerH + 8;
                 return (
                   <g key={`lg${i}`}>
-                    <rect x={lx} y={ly - 7} width="9" height="9" fill={(dark ? GROUP_DARK : GROUP_LIGHT)[g]} />
+                    <rect x={lx} y={ly - 7} width="9" height="9" fill={groupColor(g, dark)} />
                     <text x={lx + 13} y={ly + 1} fontSize="8.5" fill="var(--ax-ink-soft)">
                       {GROUP_LABEL[g]}
                     </text>

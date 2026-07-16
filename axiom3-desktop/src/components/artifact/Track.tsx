@@ -9,17 +9,7 @@
 type Domain = { name: string; from: number; to: number };
 type Marker = { pos: number; label?: string; count: number; class?: string };
 type Spec = { title?: string; length: number; unit?: string; domains?: Domain[]; markers?: Marker[] };
-
-// categorical identity palette (light/dark by slot order) — domains cycle it; classes map fixed slots.
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
+import { catColor, isDark, autoContrastText } from "./theme";
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -59,15 +49,6 @@ function textW(s: string, fontSize: number): number {
   return w;
 }
 
-// perceptual luminance of an #rrggbb fill → pick a readable label ink for text drawn on it.
-function inkOn(hex: string): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16) / 255;
-  const g = parseInt(h.slice(2, 4), 16) / 255;
-  const b = parseInt(h.slice(4, 6), 16) / 255;
-  return 0.299 * r + 0.587 * g + 0.114 * b > 0.62 ? "#16233d" : "#ffffff";
-}
-
 export function Track({ spec: raw, caption }: { spec: string; caption?: string }) {
   let spec: Spec;
   try {
@@ -87,7 +68,7 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
   }
 
   const unit = typeof spec.unit === "string" && spec.unit.trim() ? spec.unit.trim() : "aa";
-  const cat = isDark() ? CAT_DARK : CAT_LIGHT;
+  const dark = isDark();
 
   // geometry: horizontal scale by length; the frame scrolls if the ruler is wide.
   const padL = 46;
@@ -127,7 +108,7 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
       label: v.label,
       count: v.count,
       cls: v.cls,
-      color: cat[CLASS_SLOT[v.cls]],
+      color: catColor(CLASS_SLOT[v.cls], dark),
       stemH: minStem + f * (maxStem - minStem),
       rHead: rMin + f * (rMax - rMin),
       row: 0,
@@ -208,7 +189,7 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
             if (!isFinite(from) || !isFinite(to) || to <= from) return null;
             const x = resX(from - 1);
             const dw = Math.max(2, resX(to) - x);
-            const color = cat[i % cat.length];
+            const color = catColor(i, dark);
             const name = String(dm.name ?? "");
             const fits = dw - 6 >= textW(name, 9); // CJK-aware: full-width ~9px/char, Latin ~5.4px/char
             return (
@@ -217,7 +198,7 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
                   <title>{`${name} · ${from}–${to} ${unit}`}</title>
                 </rect>
                 {fits && (
-                  <text x={x + dw / 2} y={backboneY + 3.2} fontSize="9" textAnchor="middle" fill={inkOn(color)} style={{ pointerEvents: "none" }}>{name}</text>
+                  <text x={x + dw / 2} y={backboneY + 3.2} fontSize="9" textAnchor="middle" fill={autoContrastText(color)} style={{ pointerEvents: "none" }}>{name}</text>
                 )}
               </g>
             );
@@ -251,7 +232,7 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
           {/* color legend (variant class) — each swatch carries a text label, never color-alone */}
           {classLegend.map(({ c, x }) => (
             <g key={`lg${c}`}>
-              <circle cx={x + 4} cy={legendY - 3} r={4} fill={cat[CLASS_SLOT[c]]} />
+              <circle cx={x + 4} cy={legendY - 3} r={4} fill={catColor(CLASS_SLOT[c], dark)} />
               <text x={x + 13} y={legendY} fontSize="9" fill="var(--ax-ink-faint)">{c}</text>
             </g>
           ))}

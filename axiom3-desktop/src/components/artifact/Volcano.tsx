@@ -5,6 +5,8 @@
 //
 // Spec (```volcano JSON): {"title"?, "lfcThreshold"?=1, "pThreshold"?=0.05,
 //   "genes":[{"gene":<str>,"lfc":<log2FC>,"padj":<0..1>}]}
+import { catColor, isDark } from "./theme";
+
 type Gene = { gene: string; lfc: number; padj: number };
 type Spec = {
   title?: string;
@@ -12,16 +14,6 @@ type Spec = {
   pThreshold?: number;
   genes: Gene[];
 };
-
-// data-viz reference categorical palette (validated, CVD-safe), light / dark by slot order.
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
 
 // nice round tick step for a span, aiming for ~target divisions.
 function niceStep(span: number, target: number): number {
@@ -105,10 +97,11 @@ export function Volcano({ spec: raw, caption }: { spec: string; caption?: string
   const xLim = Math.max(maxAbs * 1.05, lfcT * 1.4);
   const yLim = Math.max(yFiniteMax, yThresh) * 1.08 || 1;
 
-  // colors: warm up-reg / cool down-reg / grey n.s. (grey = theme-adaptive ink token).
-  const cat = isDark() ? CAT_DARK : CAT_LIGHT;
-  const UP = cat[5]; // warm red
-  const DOWN = cat[0]; // cool blue
+  // colors follow the rubric: up-reg = vermilion, down-reg = blue, n.s. = grey ink token
+  // (Okabe–Ito via the shared palette; theme-adaptive).
+  const dark = isDark();
+  const UP = catColor(3, dark); // vermilion #D55E00
+  const DOWN = catColor(0, dark); // blue #0072B2
   const NS = "var(--ax-ink-faint)";
   const clsColor = (c: Pt["cls"]) => (c === "up" ? UP : c === "down" ? DOWN : NS);
 

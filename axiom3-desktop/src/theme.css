@@ -1102,6 +1102,8 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   font-size: 11.5px; color: var(--ax-ink-faint); }
 .ax-fig__kind { color: var(--ax-accent); background: var(--ax-accent-soft); border: var(--ax-hair) solid var(--ax-accent);
   border-radius: 999px; padding: 1.5px 8px; font-size: 10px; flex: none; }
+/* provenance / "示意·非实测" caption note — muted, so a data figure honestly flags a missing source */
+.ax-fig__note { color: var(--ax-ink-faint); font-size: 11px; font-style: italic; }
 .ax-fig__smiles { font-family: var(--ax-mono, ui-monospace, Menlo, monospace); word-break: break-all; }
 /* molecular viewer style switcher (Cartoon / Stick / Sphere / Surface / Line + atom count) */
 .ax-mol__bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px;

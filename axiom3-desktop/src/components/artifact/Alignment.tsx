@@ -7,15 +7,14 @@
 // Spec: {"title"?, "type":"dna"|"protein", "color":"clustal"|"identity", "start"?,
 //        "seqs":[{"id":string,"seq":string}]}  — seqs are pre-aligned equal-length strings, '-' = gap.
 
+import { sequential, autoContrastText } from "./theme";
+
 type Seq = { id: string; seq: string };
 type Spec = { title?: string; type?: string; color?: string; start?: number; seqs?: Seq[] };
 
-// data-viz sequential blue ramp (100 → 700) — used for conservation intensity + identity fill.
-const RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"];
-function ramp(t: number): string {
-  const x = Math.max(0, Math.min(1, t)) * (RAMP.length - 1);
-  return RAMP[Math.min(Math.floor(x), RAMP.length - 1)];
-}
+// data-viz sequential ramp — used for conservation intensity + identity fill (unsigned magnitude,
+// fraction 0→1, so it maps to the shared viridis `sequential(t)`). Fixed swatch stops for the legend.
+const IDENTITY_STOPS = [0, 1, 2, 3, 4, 5, 6].map((i) => sequential(i / 6));
 
 // Clustal-style amino-acid chemistry groups (fixed, domain-standard pastels).
 const AA_GROUP: Record<string, string> = {
@@ -33,13 +32,6 @@ const GROUP_COLOR: Record<string, string> = {
 const NT_COLOR: Record<string, string> = {
   A: "#5cb85c", C: "#4a7fe0", G: "#f0a53a", T: "#e05a4a", U: "#e05a4a",
 };
-
-// readable text color on a fixed-color cell fill (theme-independent because the fill is fixed).
-function contrastText(hex: string): string {
-  const h = hex.replace("#", "");
-  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
-  return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? "#1b1f1e" : "#f6f6f3";
-}
 
 // CJK / full-width codepoints render ~1em wide; Latin/digits ~0.55em. Used to fit right-anchored
 // sequence ids inside the left gutter by estimated rendered width (a char-count cap over-clips CJK).
@@ -114,7 +106,7 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
     if (ch === "-" || ch === ".") return null;
     if (colorMode === "identity") {
       const col = cols[c];
-      return col.res !== "-" && ch === col.res ? ramp(col.frac) : null;
+      return col.res !== "-" && ch === col.res ? sequential(col.frac) : null;
     }
     if (type === "dna") return NT_COLOR[ch] ?? null;
     const g = AA_GROUP[ch];
@@ -200,7 +192,7 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
             const bh = col.frac * (consBarH - 2);
             if (bh <= 0) return null;
             return (
-              <rect key={`b${c}`} x={padL + c * cellW + 1} y={consBarBase - bh} width={cellW - 2} height={bh} fill={ramp(col.frac)}>
+              <rect key={`b${c}`} x={padL + c * cellW + 1} y={consBarBase - bh} width={cellW - 2} height={bh} fill={sequential(col.frac)}>
                 <title>{`位置 ${start + c} · 共识 ${col.res} · 保守度 ${(col.frac * 100).toFixed(0)}%`}</title>
               </rect>
             );
@@ -217,7 +209,7 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
             cols.map((_, c) => {
               const ch = r.seqU[c] ?? "-";
               const fill = cellFill(ch, c);
-              const txt = fill ? contrastText(fill) : ch === "-" || ch === "." ? "var(--ax-ink-faint)" : "var(--ax-ink)";
+              const txt = fill ? autoContrastText(fill) : ch === "-" || ch === "." ? "var(--ax-ink-faint)" : "var(--ax-ink)";
               return (
                 <g key={`${i}-${c}`}>
                   {fill && <rect x={padL + c * cellW + 0.5} y={gridTop + i * rowH + 0.75} width={cellW - 1} height={rowH - 1.5} rx="1.5" fill={fill} />}
@@ -254,10 +246,10 @@ export function Alignment({ spec: raw, caption }: { spec: string; caption?: stri
             <g>
               <text x={padL} y={legendTop + 9} fontSize="9" fill="var(--ax-ink-soft)">与共识一致</text>
               <text x={padL + 62} y={legendTop + 9} fontSize="9" textAnchor="end" fill="var(--ax-ink-faint)">低</text>
-              {RAMP.map((c, i) => (
+              {IDENTITY_STOPS.map((c, i) => (
                 <rect key={`lr${i}`} x={padL + 66 + i * 12} y={legendTop} width="12" height="10" fill={c} />
               ))}
-              <text x={padL + 66 + RAMP.length * 12 + 4} y={legendTop + 9} fontSize="9" fill="var(--ax-ink-faint)">高</text>
+              <text x={padL + 66 + IDENTITY_STOPS.length * 12 + 4} y={legendTop + 9} fontSize="9" fill="var(--ax-ink-faint)">高</text>
             </g>
           ) : (
             placed.map((p, i) => (

@@ -7,7 +7,7 @@
 // Spec (```manhattan JSON): {"title"?, "threshold"?:number(-log10, default 7.3),
 //   "points":[{"chr":19,"pos":11202306,"p":1e-250,"snp"?:"rs..","gene"?:"LDLR"}]}
 type RawPoint = { chr: number | string; pos: number; p: number; snp?: string; gene?: string };
-type Spec = { title?: string; threshold?: number; points: RawPoint[] };
+type Spec = { title?: string; threshold?: number; suggestive?: number; points: RawPoint[] };
 type Pt = { chr: string; pos: number; p: number; y: number; snp?: string; gene?: string };
 type Band = { chr: string; rank: number; len: number; maxPos: number; pts: Pt[]; width: number; offset: number };
 
@@ -54,6 +54,8 @@ export function Manhattan({ spec: raw, caption }: { spec: string; caption?: stri
   }
 
   const thr = typeof spec.threshold === "number" && isFinite(spec.threshold) && spec.threshold > 0 ? spec.threshold : 7.3;
+  // suggestive line (GWAS convention: 1e-5 = -log10 5.0), drawn below the genome-wide line
+  const sugg = typeof spec.suggestive === "number" && isFinite(spec.suggestive) && spec.suggestive > 0 ? spec.suggestive : 5.0;
 
   // Parse + -log10 transform (client-side; nothing fabricated). Guard non-object entries so a
   // stray null in `points` can never throw. Clamp p to a plottable range.
@@ -189,6 +191,14 @@ export function Manhattan({ spec: raw, caption }: { spec: string; caption?: stri
           <line x1={padL} y1={plotBottom} x2={padL + plotW} y2={plotBottom} stroke="var(--ax-line)" strokeWidth="0.75" />
           <text x={12} y={padT + plotH / 2} fontSize="9.5" textAnchor="middle" fill="var(--ax-ink-faint)"
             transform={`rotate(-90 12 ${padT + plotH / 2})`}>-log10(P)</text>
+
+          {/* suggestive line (1e-5) — drawn first, faint, below the genome-wide line */}
+          {sugg < yTop && sugg < thr && (
+            <>
+              <line x1={padL} y1={yOf(sugg)} x2={padL + plotW} y2={yOf(sugg)} stroke="var(--ax-ink-faint)" strokeWidth="0.75" strokeDasharray="3 3" opacity="0.7" />
+              <text x={padL + plotW - 4} y={yOf(sugg) - 4} fontSize="8" textAnchor="end" fill="var(--ax-ink-faint)">{`P<${Math.pow(10, -sugg).toExponential(0)}`}</text>
+            </>
+          )}
 
           {/* genome-wide significance line */}
           <line x1={padL} y1={yOf(thr)} x2={padL + plotW} y2={yOf(thr)} stroke="var(--ax-accent)" strokeWidth="1" strokeDasharray="4 3" opacity="0.75" />

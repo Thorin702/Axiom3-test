@@ -8,6 +8,7 @@
 //   {"name":<str>, "ic50"?:<log10>, "hill"?:1, "top"?, "bottom"?,
 //    "points":[[<log10dose>,<response>], ...]} ]}
 import { useId } from "react";
+import { catColor, isDark, provenanceTag, type Provenance } from "./theme";
 
 type RawCurve = {
   name?: string;
@@ -21,18 +22,12 @@ type Spec = {
   title?: string;
   xlabel?: string;
   ylabel?: string;
+  // RED LINE: a fitted potency (EC50/IC50) is only trustworthy if the raw points came from cited
+  // or computed data. When `provenance` is absent the figure is flagged 示意·非实测 and the
+  // potency labels are softened — we never present an invented fit as a measured value.
+  provenance?: Provenance;
   curves: RawCurve[];
 };
-
-// data-viz reference categorical palette (validated, CVD-safe), light / dark by slot order.
-const CAT_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
-const CAT_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
 
 // nice round tick step for a span, aiming for ~target divisions.
 function niceStep(span: number, target: number): number {
@@ -107,7 +102,7 @@ export function Dose({ spec: raw, caption }: { spec: string; caption?: string })
     return <div className="ax-fig__err">剂量反应需要 curves 数组（每条含 points 或 ic50 拟合参数）</div>;
   }
 
-  const cat = isDark() ? CAT_DARK : CAT_LIGHT;
+  const dark = isDark();
 
   // clean each curve; keep it if it has plottable points OR a finite ic50 fit.
   const curves: Curve[] = [];
@@ -140,7 +135,7 @@ export function Dose({ spec: raw, caption }: { spec: string; caption?: string })
 
     curves.push({
       name: String(c.name ?? `curve ${i + 1}`),
-      color: i < cat.length ? cat[i] : "var(--ax-ink-soft)",
+      color: catColor(i, dark),
       fit,
       points: pts,
     });
@@ -223,6 +218,13 @@ export function Dose({ spec: raw, caption }: { spec: string; caption?: string })
   };
 
   const lx = w - padR + 10; // legend left edge
+
+  // Provenance guard: a fitted EC50/IC50 is only a real measurement if the raw points are sourced.
+  // Absent provenance → the figure is illustrative; flag it and soften the potency labels so an
+  // invented fit is never read as measured data.
+  const provTag = provenanceTag(spec.provenance);
+  const hasFit = curves.some((c) => c.fit);
+  const schematic = hasFit && (!provTag || provTag.kind !== "ok");
 
   return (
     <figure className="ax-fig">
@@ -317,7 +319,7 @@ export function Dose({ spec: raw, caption }: { spec: string; caption?: string })
                 <circle cx={lx + 8} cy={ly + 4} r={2.6} fill={c.color} stroke="var(--ax-surface)" strokeWidth="0.5" />
                 <text x={lx + 22} y={ly + 7} fontSize="9.5" fill="var(--ax-ink-soft)">{c.name}</text>
                 {c.fit ? (
-                  <text x={lx} y={ly + 19} fontSize="8" fill="var(--ax-ink-faint)">{`IC50 ${fmtConc(c.fit.ic50)} M`}</text>
+                  <text x={lx} y={ly + 19} fontSize="8" fill="var(--ax-ink-faint)">{`IC50 ${fmtConc(c.fit.ic50)} M${schematic ? " · 示意" : ""}`}</text>
                 ) : (
                   <text x={lx} y={ly + 19} fontSize="8" fill="var(--ax-ink-faint)">points only</text>
                 )}
@@ -326,7 +328,12 @@ export function Dose({ spec: raw, caption }: { spec: string; caption?: string })
           })}
         </svg>
       </div>
-      <figcaption className="ax-fig__cap"><span className="ax-fig__kind">剂量反应 · dose</span> {caption || spec.title || ""}</figcaption>
+      <figcaption className="ax-fig__cap">
+        <span className="ax-fig__kind">剂量反应 · dose</span> {caption || spec.title || ""}
+        {schematic
+          ? <span className="ax-fig__note"> · 示意 · 非实测数据(EC50/IC50 仅为示意,未标注被引/计算来源)</span>
+          : provTag?.kind === "ok" && <span className="ax-fig__note"> · 数据来源:{provTag.text}</span>}
+      </figcaption>
     </figure>
   );
 }

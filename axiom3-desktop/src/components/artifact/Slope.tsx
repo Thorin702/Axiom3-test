@@ -6,20 +6,13 @@
 //
 // Spec: {"title"?, "left"?, "right"?, "unit"?,
 //   "rows":[{"label":string,"from":number,"to":number}, ...]}
+import { catColor, isDark } from "./theme";
+
 type Row = { label: string; from: number; to: number };
 type Spec = { title?: string; left?: string; right?: string; unit?: string; rows?: unknown };
 
-// CAT green/red safe pair (slot 1 / slot 5) for direction; flat = neutral ink var.
-const UP_LIGHT = "#1baf7a";
-const UP_DARK = "#199e70";
-const DOWN_LIGHT = "#e34948";
-const DOWN_DARK = "#e66767";
-function isDark(): boolean {
-  const t = document.documentElement.dataset.theme;
-  if (t === "dark") return true;
-  if (t === "light") return false;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
-}
+// Direction uses the shared CVD-safe palette: rose = green slot (2), fell = vermilion slot (3),
+// flat = neutral ink var. Fixed categorical (not a continuous scale).
 
 function isFiniteNum(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
@@ -122,8 +115,9 @@ export function Slope({ spec, caption }: { spec: string; caption?: string }) {
   const unit = typeof d.unit === "string" ? d.unit : "";
   const leftName = typeof d.left === "string" ? d.left : "";
   const rightName = typeof d.right === "string" ? d.right : "";
-  const UP = isDark() ? UP_DARK : UP_LIGHT;
-  const DOWN = isDark() ? DOWN_DARK : DOWN_LIGHT;
+  const dark = isDark();
+  const UP = catColor(2, dark);
+  const DOWN = catColor(3, dark);
   const FLAT = "var(--ax-ink-faint)";
   const dirColor = (r: Row) => (r.to > r.from ? UP : r.to < r.from ? DOWN : FLAT);
   const hasFlat = rows.some((r) => r.to === r.from);
