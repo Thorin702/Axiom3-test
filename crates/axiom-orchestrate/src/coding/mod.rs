@@ -188,17 +188,23 @@ _pkgs = __PKGS__
 _CN = 'https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud'
 _mir = [MM, 'install', '-y', '-p', ENV, '-c', _CN + '/conda-forge', '-c', _CN + '/bioconda'] + _pkgs
 _off = [MM, 'install', '-y', '-p', ENV, '-c', 'conda-forge', '-c', 'bioconda'] + _pkgs
+# STREAM micromamba's output straight to the job log (NOT capture_output, which buffers until the
+# whole install finishes → the log stayed EMPTY for the several minutes a cold PyMOL download takes,
+# so job_status showed "RUNNING + empty log" and the agent wrongly concluded it had hung and gave up).
+# Streaming means the log shows live download/link progress, so a long-but-healthy install is visible.
 _wrap = (
-    "import subprocess, sys\n"
+    "import subprocess, sys, os\n"
+    "CF = 0x08000000 if os.name == 'nt' else 0   # CREATE_NO_WINDOW: no console flash on Windows\n"
     "for _i, _cmd in enumerate([%r, %r]):\n"
+    "    sys.stdout.write('>>> conda install attempt %%d (live micromamba output follows)\\n' %% (_i+1)); sys.stdout.flush()\n"
     "    try:\n"
-    "        r = subprocess.run(_cmd, capture_output=True, text=True, timeout=1800)\n"
+    "        rc = subprocess.run(_cmd, stdout=sys.stdout, stderr=subprocess.STDOUT, timeout=1800, creationflags=CF).returncode\n"
     "    except subprocess.TimeoutExpired:\n"
-    "        sys.stderr.write('conda attempt %%d timed out after 30 min\\n' %% _i); continue\n"
-    "    sys.stdout.write(r.stdout or ''); sys.stderr.write(r.stderr or '')\n"
-    "    if r.returncode == 0:\n"
+    "        sys.stdout.write('attempt %%d timed out after 30 min\\n' %% _i); sys.stdout.flush(); continue\n"
+    "    sys.stdout.flush()\n"
+    "    if rc == 0:\n"
     "        open('.axiom_jobs/__ID__.status', 'w').write('done'); break\n"
-    "    sys.stderr.write('\\n--- channel set %%d failed (rc=%%d), trying next ---\\n' %% (_i, r.returncode))\n"
+    "    sys.stdout.write('\\n--- channel set %%d failed (rc=%%d), trying next ---\\n' %% (_i, rc)); sys.stdout.flush()\n"
     "else:\n"
     "    open('.axiom_jobs/__ID__.status', 'w').write('failed')\n"
 ) % (_mir, _off)
@@ -293,8 +299,13 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              diagram IS: a signalling / regulatory / causal PATHWAY or process FLOW → ```mermaid (e.g. \
              `graph LR; A[受体激活]-->B[下游信号]; B-->|抑制|C[凋亡]`); a map of entities with \
              ACTIVATION vs INHIBITION edges → ```network (nodes + edges, tag each edge `\"sign\":\"+\"` or \
-             `\"-\"`); a CHEMICAL reaction / transformation → ```reaction; a molecular structure → \
-             ```smiles. Give real, specific node labels in the user's language — never a generic \
+             `\"-\"`); a CHEMICAL reaction / transformation → ```reaction; a SIMPLE molecular structure → \
+             ```smiles — BUT the SMILES MUST be a real, valid string copied from PubChem/ChEMBL, NEVER \
+             written from memory: a malformed SMILES (e.g. a wrong ring size) renders as '无法解析该 SMILES'. \
+             For any DRUG / INHIBITOR / non-trivial molecule, or if you are at all unsure the SMILES is \
+             exactly right, use the `small-molecule-figure` skill instead — RDKit VALIDATES it \
+             (`assert Chem.MolFromSmiles(smi) is not None`) and draws real stereochemistry, so it cannot \
+             silently ship a wrong structure. Give real, specific node labels in the user's language — never a generic \
              dots-and-lines placeholder. ONLY when no native block can express the idea (e.g. a spatial \
              cell-membrane cartoon) fall back to a matplotlib schematic, drawn like a clean Nature/Cell \
              illustration: cells = soft-filled ellipses (not rectangles), receptors = small rounded boxes on \
@@ -332,7 +343,11 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              {\"tool\":\"conda_install\",\"packages\":[\"mafft\",\"iqtree\"]}   (install BINARY tools that \
              pip can't — MAFFT, IQ-TREE, trimAl, FastTree, Cas-OFFinder, samtools, etc. — from bioconda \
              via micromamba. The solve runs as a background job (minutes): poll job_status with the \
-             returned id; once DONE the binaries are on PATH, call them from python with subprocess.)\n\
+             returned id; once DONE the binaries are on PATH, call them from python with subprocess. \
+             PATIENCE: a first-time PyMOL install downloads ~200MB and can take 3-5 minutes — as long as \
+             job_status returns RUNNING and its log tail is ADVANCING (download / extract / link lines), \
+             it is HEALTHY, so keep polling; do NOT conclude it has hung or fall back to a lesser figure \
+             while it is still progressing.)\n\
              {\"tool\":\"job_start\",\"code\":\"<python>\",\"label\":\"<what it does>\"}   (run a LONG \
              computation as a DETACHED background job that keeps going while you do other work — good \
              for a big download, a long fit, or a genome-scale scan. It runs in a FRESH process, so \
@@ -467,7 +482,8 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              ```dose {\"curves\":[{\"name\":..,\"points\":[[log10dose,resp]],\"ic50\"?:..,\"hill\"?:..}]}; \
              ```spectrum {\"kind\":\"ms|nmr|ir\",\"peaks\":[[x,intensity]],\"invertX\"?:false}; \
              ```protein <4-char PDB id like 1CRN, or inline PDB text>; \
-             ```smiles <one SMILES string>; \
+             ```smiles <one VALID SMILES copied from PubChem/ChEMBL — NOT from memory; a malformed one \
+             renders as '无法解析该 SMILES'; for drugs/inhibitors prefer the RDKit small-molecule-figure skill>; \
              ```rxn {\"reactants\":[SMILES],\"products\":[SMILES]}; \
              ```math <LaTeX>; ```mermaid <diagram>. \
              Prefer the DOMAIN block that fits (phylogeny → ```tree + ```seqlogo + ```msa; differential \
