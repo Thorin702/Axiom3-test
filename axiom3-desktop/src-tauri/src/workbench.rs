@@ -1736,7 +1736,13 @@ fn ensure_kernel_env(base: &std::path::Path) -> Result<std::path::PathBuf, Strin
     if py.exists() {
         return Ok(py); // another caller finished while we waited on the lock
     }
-    let sys = detect_python().ok_or("Python 3 未安装 — 请先安装 Python 3。 · Python 3 not found.")?;
+    // Prefer the system Python as the venv base; if the machine has NONE (common on a fresh
+    // Windows), don't dead-end onboarding — bootstrap a base interpreter via micromamba (which
+    // needs no Python of its own) and build the venv on top of that.
+    let sys = match detect_python() {
+        Some(p) => p,
+        None => ensure_mamba_base_python(base)?.to_string_lossy().into_owned(),
+    };
     std::fs::create_dir_all(&venv).ok();
     let mut vcmd = std::process::Command::new(&sys);
     vcmd.args(["-m", "venv"]).arg(&venv);
@@ -1912,6 +1918,132 @@ fn cmd_ok(prog: &str, arg: &str) -> bool {
     c.output().map(|o| o.status.success()).unwrap_or(false)
 }
 
+/// The micromamba release platform key for this OS/arch (matches the micro.mamba.pm API paths).
+fn mamba_platform_key() -> Result<&'static str, String> {
+    Ok(match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "osx-arm64",
+        ("macos", _) => "osx-64",
+        ("linux", "aarch64") => "linux-aarch64",
+        ("linux", _) => "linux-64",
+        ("windows", _) => "win-64",
+        (os, arch) => return Err(format!("unsupported platform {os} {arch}")),
+    })
+}
+
+/// Recursively find the first file named `want` under `dir` (used to locate the micromamba binary
+/// inside the extracted release tree, whose layout differs across platforms).
+fn find_file(dir: &std::path::Path, want: &str) -> Option<std::path::PathBuf> {
+    for e in std::fs::read_dir(dir).ok()?.flatten() {
+        let p = e.path();
+        match e.file_type() {
+            Ok(ft) if ft.is_dir() => {
+                if let Some(f) = find_file(&p, want) {
+                    return Some(f);
+                }
+            }
+            _ if p.file_name().map(|n| n == want).unwrap_or(false) => return Some(p),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Bootstrap micromamba WITHOUT needing any Python: download the release tarball over HTTPS
+/// (reqwest, which the shell already depends on) and extract the binary with the system `tar`
+/// (present on macOS, Windows 10 1803+, and Linux). This breaks the chicken-and-egg on a machine
+/// with zero Python — micromamba then provides the base interpreter for the kernel venv.
+fn ensure_micromamba_native(_base: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let mm = micromamba_bin().ok_or("no home dir")?;
+    if mm.exists() {
+        return Ok(mm);
+    }
+    let bin_dir = mm.parent().ok_or("bad micromamba path")?.to_path_buf();
+    std::fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
+    let key = mamba_platform_key()?;
+    let url = format!("https://micro.mamba.pm/api/micromamba/{key}/latest");
+    // Download bytes (retry — mainland CDNs drop mid-fetch). Driven to completion on this blocking
+    // thread; spawn_blocking threads are not runtime workers, so block_on here can't deadlock.
+    let bytes: Vec<u8> = tauri::async_runtime::block_on(async move {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut last = String::new();
+        for _ in 0..3 {
+            match client.get(&url).send().await.and_then(|r| r.error_for_status()) {
+                Ok(r) => match r.bytes().await {
+                    Ok(b) => return Ok(b.to_vec()),
+                    Err(e) => last = e.to_string(),
+                },
+                Err(e) => last = e.to_string(),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        }
+        Err::<Vec<u8>, String>(format!("micromamba 下载失败 · {last}"))
+    })?;
+    let tmp = bin_dir.join("_mm_download.tar.bz2");
+    std::fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
+    let ex = bin_dir.join("_mm_extract");
+    std::fs::create_dir_all(&ex).ok();
+    // `tar -xf` auto-detects bzip2 on bsdtar (mac/win) and GNU tar (linux).
+    let mut tcmd = std::process::Command::new("tar");
+    tcmd.arg("-xf").arg(&tmp).arg("-C").arg(&ex);
+    no_window(&mut tcmd);
+    let out = tcmd
+        .output()
+        .map_err(|e| format!("tar 无法启动(系统缺少 tar?)· {e}"))?;
+    if !out.status.success() {
+        std::fs::remove_file(&tmp).ok();
+        return Err(format!("解压 micromamba 失败 · {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    let want = if cfg!(windows) { "micromamba.exe" } else { "micromamba" };
+    let found = find_file(&ex, want).ok_or("压缩包中未找到 micromamba 可执行文件")?;
+    std::fs::copy(&found, &mm).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&mm, std::fs::Permissions::from_mode(0o755)).ok();
+    }
+    std::fs::remove_file(&tmp).ok();
+    std::fs::remove_dir_all(&ex).ok();
+    Ok(mm)
+}
+
+/// A base Python interpreter when the system has NONE: bootstrap micromamba (Python-free) and
+/// create a Python into the bioenv, returning that interpreter. Tries the China (TUNA) mirror
+/// channel first, then the official conda-forge. This is the fallback base for `ensure_kernel_env`.
+fn ensure_mamba_base_python(base: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    if let Some(p) = bioenv_python() {
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    let mm = ensure_micromamba_native(base)?;
+    let env = bioenv_dir().ok_or("no home dir")?;
+    let env_s = env.to_string_lossy().into_owned();
+    const CN_CF: &str = "https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge";
+    let mut last_err = String::new();
+    for chan in [CN_CF, "conda-forge"] {
+        let mut c = std::process::Command::new(&mm);
+        c.args(["create", "-y", "-p", &env_s, "-c", chan, "python=3.12"]);
+        no_window(&mut c);
+        match c.output() {
+            Ok(out) if out.status.success() => {
+                if let Some(p) = bioenv_python() {
+                    if p.exists() {
+                        return Ok(p);
+                    }
+                }
+            }
+            Ok(out) => {
+                last_err = String::from_utf8_lossy(&out.stderr).chars().rev().take(600).collect::<String>().chars().rev().collect();
+            }
+            Err(e) => last_err = format!("micromamba 无法启动 · {e}"),
+        }
+    }
+    Err(if last_err.is_empty() { "创建基础 Python 失败".into() } else { last_err })
+}
+
 /// Bootstrap a standalone micromamba (once) if absent, returning its path. Uses the venv python
 /// (which carries `requests`) to download+extract — the same proven path as the conda_install tool.
 fn ensure_micromamba(base: &std::path::Path) -> Result<std::path::PathBuf, String> {
@@ -1920,6 +2052,11 @@ fn ensure_micromamba(base: &std::path::Path) -> Result<std::path::PathBuf, Strin
         return Ok(mm);
     }
     let py = ensure_kernel_env(base)?;
+    // A no-Python machine reaches ensure_kernel_env → ensure_mamba_base_python, which already
+    // bootstrapped micromamba the Python-free way; skip the (now-redundant) Python download.
+    if mm.exists() {
+        return Ok(mm);
+    }
     // NOTE: on Windows the archive member is Library/bin/micromamba.exe — handled by matching a
     // path that ENDS in bin/micromamba(.exe); validated on macOS here, re-checked in the Win port.
     const BOOT: &str = r#"import os,platform,tarfile,io,requests,sys,time

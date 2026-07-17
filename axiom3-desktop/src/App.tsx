@@ -140,6 +140,14 @@ function stripStepFig(s: AgentStepView): AgentStepView {
   if (!s.output?.includes("```pyfig")) return s;
   return { ...s, output: s.output.replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "") };
 }
+// The marker `stripFigPayload` leaves in place of a base64 figure in the localStorage copy. After a
+// restart the task list is rebuilt from that lean copy, so a task whose synthesis contains this mark
+// has lost its images — they must be re-hydrated from the durable on-disk deliverables store.
+const LEAN_FIG_MARK = "[图形已存入产出物库]";
+function taskFiguresStripped(t: Task): boolean {
+  if (t.synthesis?.includes(LEAN_FIG_MARK)) return true;
+  return t.versions?.some((v) => v.synthesis?.includes(LEAN_FIG_MARK)) ?? false;
+}
 function leanTaskForStorage(t: Task): Task {
   return {
     ...t,
@@ -693,10 +701,25 @@ function App() {
   }
 
   // Open a session: show its thread.
-  function openTask(id: string) {
+  async function openTask(id: string) {
     setNav("tasks");
     setActiveId(id);
     setView("thread");
+    // After a restart the task list is restored from the LEAN localStorage cache, whose base64
+    // figures were replaced by a placeholder. The 产物 panel would then show blank figures. Re-hydrate
+    // the FULL report (with images) from the durable on-disk deliverables store the first time this
+    // task is opened — the same source the 产出物库 reads. No-op if figures aren't stripped or the
+    // task never produced a deliverable on disk.
+    const tk = tasks.find((x) => x.id === id);
+    if (tk && taskFiguresStripped(tk)) {
+      try {
+        const json = await invoke<string>("deliverable_load", { id });
+        const full: Task = { ...JSON.parse(json), recapPending: false };
+        setTasks((ts) => ts.map((x) => (x.id === id ? full : x)));
+      } catch {
+        /* not on disk (e.g. a run that produced no deliverable) — keep the lean copy */
+      }
+    }
   }
 
   // ── rename a session (a title override that persists in the task history) ──
