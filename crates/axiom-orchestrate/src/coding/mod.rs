@@ -414,6 +414,11 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              it to FRAME an analysis around a real published study, to find the canonical dataset/method \
              for a task, or to ground a claim in a citation. Retrieving an abstract is evidence, not \
              proof; cite what you found and stay honest about what it does and doesn't show.)\n\
+             {\"tool\":\"multi_search\",\"queries\":[\"<q1>\",\"<q2>\",\"<q3>\"]}   (PREFERRED when you have \
+             several INDEPENDENT literature queries — runs them ALL AT ONCE (concurrently) and returns the \
+             combined hits in ONE step, far faster than firing litsearch one-by-one. Give 2-4 genuinely \
+             different angles up front; results carry the same [Sn] citations. Use single litsearch only \
+             when the next query depends on what the last one returned.)\n\
              {\"tool\":\"web_search\",\"query\":\"<search terms>\"}   (search the WHOLE WEB, not just \
              papers — official databases (GEO/SRA/UniProt/PDB/Ensembl/PubChem), datasets, tool docs, \
              preprints, standards, org/news pages. Returns titles + URLs + snippets. Use it to FIND a \
@@ -553,13 +558,14 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
     if can_delegate {
         s.push_str(
             "\n{\"tool\":\"delegate\",\"task\":\"<a self-contained, non-trivial SUBTASK>\"}   (DEEP RESEARCH \
-             only: hand a COMPLEX, separable subtask to a multi-agent sub-team — it is decomposed into \
-             several angles, a focused sub-agent tackles each, and the results are synthesized back to \
-             you. Use it like a scientist opening a working group: when ONE step is itself broad (e.g. \
-             'survey all proposed mechanisms of X across fields', 'weigh the 4 competing hypotheses for \
-             Y', 'map the evidence for and against Z'), delegate it rather than doing it shallowly \
-             yourself; then build on what comes back. Don't delegate something you can answer in one \
-             step, and don't delegate the WHOLE task — decompose first, delegate the hard branches.)",
+             only, and SPARINGLY — a sub-team is EXPENSIVE, adding many minutes. **Most topics need ZERO \
+             delegation**: a single-focus task — SHOW/RENDER/COMPUTE/ANALYZE one thing (display a protein \
+             structure, plot one dataset, compare a fixed set of items, answer one focused question) — you \
+             do DIRECTLY and finish FAST; do NOT open a sub-team for it. Delegate ONLY when the topic \
+             genuinely splits into ≥2 INDEPENDENT hard research branches that each need their own deep \
+             literature/web dig (e.g. 'survey all proposed mechanisms of X across fields' AND 'weigh the 4 \
+             competing hypotheses for Y' — two separate deep digs). Decompose first, delegate only the hard \
+             branches, never the whole task. HARD LIMIT: at most 2 delegations per run.)",
         );
     }
     s.push_str(
@@ -882,6 +888,7 @@ pub async fn run_coding_agent_steered(
     let mut intake_done = !pause.intake_required(); // satisfied once the forced intake ask has fired
     let mut intake_nudges = 0u32; // bounded pushes to make the first action an ask_user intake card
     let mut delegated_once = false; // a delegate sub-team has been spawned this run
+    let mut delegate_calls = 0u32; // hard cap on delegations per run — a sub-team costs minutes
     let mut delegate_nudges = 0u32; // bounded push to open a sub-team on a complex research topic
     let mut all_figures: Vec<String> = Vec::new(); // computed figures across the whole run
     // Automatic kernel resilience: a cell timeout/crash restarts the kernel and WIPES in-memory state
@@ -1349,6 +1356,72 @@ pub async fn run_coding_agent_steered(
                 };
                 (q, obs)
             }
+            "multi_search" => {
+                // Concurrent literature search — fire several INDEPENDENT queries AT ONCE. These are
+                // external HTTP calls (safe to parallelize, unlike model calls which 429), so this
+                // collapses N sequential litsearch steps + N model round-trips into a SINGLE step,
+                // cutting the biggest sequential wait in a research run. Same dedup + 10-total cap.
+                let qs: Vec<String> = v
+                    .get("queries")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).filter(|s| s.chars().count() > 2).collect())
+                    .unwrap_or_default();
+                let mut fresh: Vec<String> = Vec::new();
+                for q in qs {
+                    if fresh.iter().any(|p| query_overlap(p, &q) >= 0.8) { continue; }
+                    if lit_queries.iter().any(|p| query_overlap(p, &q) >= 0.8) { continue; }
+                    fresh.push(q);
+                }
+                let remaining = 10usize.saturating_sub(lit_queries.len());
+                fresh.truncate(remaining.min(4)); // <=4 concurrent, and never past the 10-total litsearch cap
+                let obs = if fresh.is_empty() {
+                    format!("[skip] 这些检索与已检索高度重复或预算已用尽({} 次)。停止检索,基于已有文献出可交付物。", lit_queries.len())
+                } else {
+                    let mut set = tokio::task::JoinSet::new();
+                    for (i, q) in fresh.iter().cloned().enumerate() {
+                        set.spawn(async move {
+                            let r = LitSearch::new().search(&q, 5).await;
+                            (i, q, r)
+                        });
+                    }
+                    let mut done = Vec::new();
+                    while let Some(res) = set.join_next().await {
+                        if let Ok(t) = res {
+                            done.push(t);
+                        }
+                    }
+                    done.sort_by_key(|(i, _, _)| *i);
+                    let mut out = String::new();
+                    for (_, q, res) in done {
+                        lit_queries.push(q.clone());
+                        out.push_str(&format!("\n### 检索:{q}\n"));
+                        match res {
+                            Ok(works) if works.is_empty() => out.push_str("(no matching works)\n"),
+                            Ok(works) => {
+                                for w in works.iter() {
+                                    let authors = if w.authors.is_empty() { "—".into() } else { w.authors.join(", ") };
+                                    let year = w.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
+                                    let doi = w.doi.clone().unwrap_or_default();
+                                    let abs: String = w.abstract_text.chars().take(240).collect();
+                                    src_n += 1;
+                                    sources.push(Source {
+                                        id: src_n,
+                                        kind: "paper".into(),
+                                        title: w.title.clone(),
+                                        url: if doi.is_empty() { String::new() } else if doi.starts_with("http") { doi.clone() } else { format!("https://doi.org/{doi}") },
+                                        excerpt: format!("{} ({year}) — {authors}\n{}", w.title, w.abstract_text.chars().take(1200).collect::<String>()),
+                                    });
+                                    out.push_str(&format!("[S{}] {} ({year}) — {authors}\n    {abs}\n", src_n, w.title));
+                                }
+                            }
+                            Err(e) => out.push_str(&format!("ERROR: {e}\n")),
+                        }
+                    }
+                    out.push_str("\n[并发检索完成]基于以上来源继续深挖或收敛出可交付物。");
+                    out
+                };
+                (format!("并发检索 {} 条", fresh.len()), obs)
+            }
             "web_search" => {
                 // General web search (DuckDuckGo) — for anything that is NOT a peer-reviewed paper:
                 // official databases, datasets, docs, preprints, news, org pages. Distinct from
@@ -1418,10 +1491,17 @@ pub async fn run_coding_agent_steered(
                 let task = arg_str(&v, "task").to_string();
                 if task.trim().is_empty() {
                     ("delegate".to_string(), "ERROR: delegate needs a `task` — a self-contained subtask worth a whole sub-team.".to_string())
+                } else if delegate_calls >= 2 {
+                    // Hard cap: a sub-team costs minutes; beyond two, finish the remaining branches
+                    // yourself so the run converges instead of sprawling into more sequential sub-agents.
+                    ("delegate".to_string(), "[已达委派上限(每次运行最多 2 个子团队)—— 请自己完成剩余的子问题,然后收尾出报告]".to_string())
                 } else {
                     delegated_once = true; // satisfies the delegate nudge — don't push again
+                    delegate_calls += 1;
                     let sub_budget = CodingBudget {
-                        max_steps: 18,
+                        // Tighter than the parent — a delegated sub-agent attacks ONE focused sub-question,
+                        // so 12 steps is ample and keeps the (sequential) sub-team from ballooning the run.
+                        max_steps: 12,
                         per_call_timeout_s: budget.per_call_timeout_s,
                         cmd_timeout_s: budget.cmd_timeout_s,
                         cell_timeout_s: budget.cell_timeout_s,
@@ -1742,6 +1822,7 @@ pub async fn run_coding_agent_steered(
             "python" => arg_str(&v, "code").to_string(),
             "read_file" | "list_dir" | "write_file" | "edit" => arg_str(&v, "path").to_string(),
             "search" | "litsearch" | "search_skills" | "web_search" => arg_str(&v, "query").to_string(),
+            "multi_search" => v.get("queries").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" | ")).unwrap_or_default(),
             "web_fetch" => arg_str(&v, "url").to_string(),
             "delegate" => arg_str(&v, "task").to_string(),
             t if is_sci_tool(t) => arg_str(&v, sci_tool_arg(t)).to_string(),
