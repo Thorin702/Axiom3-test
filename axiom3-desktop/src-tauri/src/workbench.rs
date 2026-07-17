@@ -55,7 +55,13 @@ fn use_file_secrets() -> bool {
     match std::env::var("AXIOM3_KEYCHAIN").ok().as_deref().map(|s| s.trim().to_ascii_lowercase()) {
         Some(ref s) if s == "1" || s == "on" || s == "true" || s == "yes" => false,
         Some(ref s) if s == "0" || s == "off" || s == "false" || s == "no" => true,
-        _ => cfg!(debug_assertions),
+        // DEFAULT: local file store, NOT the OS keychain. An UNSIGNED rebuild has a new code signature
+        // each time, so macOS treats every update as a "different app" and re-prompts for EVERY keychain
+        // item (provider keys + connections + a db-key PER project → 10+ dialogs per update — unbearable
+        // for frequent test builds). The file store never prompts. This is safe now that the durable
+        // store is plain (SQLCipher removed; the db-key is ignored), so no data is at risk. When the app
+        // is properly code-signed + notarized for public release, set AXIOM3_KEYCHAIN=on to use the keychain.
+        _ => true,
     }
 }
 
