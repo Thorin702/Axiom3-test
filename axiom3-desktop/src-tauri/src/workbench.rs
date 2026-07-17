@@ -2973,6 +2973,16 @@ the agent MUST answer — its first job is to answer THAT question, never to wan
 'novel angle'. If the user asked a CONCRETE question (how / what / which / why / is-it-feasible), \
 answering it comes FIRST and novelty is only a bonus; only when the user explicitly asks to 'propose a \
 novel X' does novelty-positioning become the main line.\n\
+- STEP 0 — CLASSIFY THE REQUEST, then TAILOR (this is what keeps the RESULT matching the TOPIC; a mismatch \
+here is the #1 failure): (a) a CONCRETE / CLOSED request — compare X vs Y, is Z feasible, what causes W, \
+how to do V, SHOW/VISUALIZE the structure or data of U, summarize the evidence on T — the directive must \
+answer THAT exact question with the specific deliverable it implies, and MUST NOT bolt on novelty- \
+positioning, cross-domain transfer, or 'propose a novel mechanism': those would DRIFT the result away from \
+what the user actually asked. (b) an OPEN-ENDED DISCOVERY request — 'propose a novel hypothesis / mechanism \
+/ approach for …', 'find an unexplored angle' — ONLY then do novelty + cross-domain + competing-hypotheses \
+become the main line. When unsure, treat it as (a) and answer the literal question. The NOVELTY, \
+CROSS-DOMAIN, and (heavy) COMPETING-HYPOTHESES items below apply IN FULL only to (b); for (a) keep only: \
+breadth-first grounding, honest evidence, cross-checked numbers, and the matched executable deliverable.\n\
 Into the directive, bake the depth a good researcher brings:\n\
 - DELIVERABLE: state exactly what the final answer must contain, AND require it to include a CONCRETE, \
 EXECUTABLE plan matched to the question type — a decisive experiment design (materials, methods, key \

@@ -551,13 +551,13 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              ```slope {\"left\":..,\"right\":..,\"rows\":[{\"label\":..,\"from\":..,\"to\":..}]}; \
              ```dose {\"curves\":[{\"name\":..,\"points\":[[log10dose,resp]],\"ic50\"?:..,\"hill\"?:..}]}; \
              ```spectrum {\"kind\":\"ms|nmr|ir\",\"peaks\":[[x,intensity]],\"invertX\"?:false}; \
-             ```protein <4-char PDB id like 1CRN, or inline PDB text>  ← the FAST, RELIABLE way to SHOW a \
-             3-D protein/complex structure: renders an INTERACTIVE, rotatable 3-D viewer INSTANTLY, needs NO \
-             install, always works. Make this your DEFAULT for any 'show / display / visualize the 3-D \
-             structure of <PDB id>' request — just emit ```protein\\n<PDB id>\\n```. Reach for the heavy PyMOL \
-             `protein-structure-figure` skill (a conda install that can fail + eat the budget) ONLY when the \
-             task specifically needs a publication-grade ANNOTATED STATIC panel (a labeled active-site \
-             close-up, measured distances) — NOT for a plain structure display; \
+             ```protein <4-char PDB id like 1CRN, or inline PDB text>  ← renders an INTERACTIVE, rotatable \
+             3-D viewer INSTANTLY, no install. MATCH THE TOOL TO WHAT THE USER ASKED FOR (don't reflexively \
+             pick one): if they want to SEE / DISPLAY / VISUALIZE / EXPLORE a 3-D structure → ```protein (just \
+             emit ```protein\\n<PDB id>\\n```); if they specifically want a publication-grade ANNOTATED STATIC \
+             figure (a labeled active-site close-up, measured distances) → the PyMOL `protein-structure-figure` \
+             skill; if they want structural ANALYSIS/COMPUTATION (contacts, RMSD, pockets) → compute it, a \
+             figure may not even be needed. Read the user's actual intent first; \
              ```smiles <one VALID SMILES copied from PubChem/ChEMBL — NOT from memory; a malformed one \
              renders as '无法解析该 SMILES'; for drugs/inhibitors prefer the RDKit small-molecule-figure skill>; \
              ```rxn {\"reactants\":[SMILES],\"products\":[SMILES]}; \
@@ -942,6 +942,11 @@ pub async fn run_coding_agent_steered(
     let mut figure_nudges = 0u32;
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
+    // QUALITY-FIRST search budget. Dedup already SKIPS near-identical queries (they don't count), so this
+    // caps only DISTINCT productive searches. A deep-research topic (meta-analysis needing many trials)
+    // was being starved by a flat cap of 10 → forced early wrap-up → quality drop. Give research mode
+    // generous headroom; analysis mode (local, fewer steps) naturally does far fewer anyway.
+    let lit_cap: usize = if pause.delegate_encouraged() { 24 } else { 12 };
     let mut web_queries: Vec<String> = Vec::new(); // web_search queries so far — dedup + soft breadth nudge
     // Provenance: every retrieved source gets a stable [Sn] id + excerpt, so the report's [Sn] markers
     // are clickable and trace back to the original text. `src_n` is the running global counter.
@@ -1101,7 +1106,39 @@ pub async fn run_coding_agent_steered(
             }
             return CodingResult { status: "done".into(), summary: f.to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
-        let tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let mut tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        // ROBUSTNESS: models sometimes emit a tool call but FORGET the "tool" key (just the args) —
+        // which landed as `unknown tool ''` and trapped them in a repeat loop (the model can't guess
+        // what the harness wanted). Infer the intended tool from the args' distinctive signature so the
+        // call still runs. Order matters: check the most specific keys first.
+        if tool.is_empty() {
+            tool = if v.get("queries").is_some() {
+                "multi_search"
+            } else if v.get("url").is_some() {
+                "web_fetch"
+            } else if v.get("code").is_some() {
+                "python"
+            } else if v.get("cmd").is_some() {
+                "run"
+            } else if v.get("packages").is_some() {
+                "conda_install"
+            } else if v.get("task").is_some() {
+                "delegate"
+            } else if v.get("pattern").is_some() {
+                "glob"
+            } else if v.get("todos").is_some() {
+                "plan"
+            } else if v.get("path").is_some() {
+                if v.get("content").is_some() { "write_file" } else { "read_file" }
+            } else if v.get("query").is_some() {
+                "litsearch"
+            } else if v.get("name").is_some() {
+                "load_skill"
+            } else {
+                ""
+            }
+            .to_string();
+        }
         // FORCED INTAKE GATE: GLM (and weaker models) won't call ask_user on their own discretion even
         // when the prompt demands it — so an analysis run's clarifying intake never fired. Enforce it:
         // the FIRST action MUST be an ask_user intake card. Reject anything else and nudge (bounded),
@@ -1352,9 +1389,9 @@ pub async fn run_coding_agent_steered(
                 let is_dup = lit_queries.iter().any(|prev| query_overlap(prev, &q) >= 0.8);
                 let obs = if is_dup {
                     format!("[skip] 这条检索与之前某次高度重复,未执行。你已检索 {n_done} 次——够了。现在停止检索,基于已有文献:提出 2-3 个竞争假说、选出最强并说明新颖性、画机理图、给相关→因果→增益(gain-of-function)→阴性对照的分级验证,然后 {{\"final\":…}}. Duplicate query — not executed; STOP searching and produce the deliverable now.")
-                } else if n_done >= 10 {
+                } else if n_done >= lit_cap {
                     lit_queries.push(q.clone());
-                    format!("[stop] litsearch 预算已用尽({n_done} 次),现已暂停。立即用已检索到的文献:提出 2-3 个竞争假说、选最强、**用原生图块画机理图(通路/流程用 ```mermaid,带激活/抑制的关系网用 ```network,化学反应用 ```reaction;标签要具体、用用户语言)**、给分级验证方案,然后 {{\"final\":…}}. 不要再检索。litsearch budget spent — it is DISABLED; draw the mechanism figure as a NATIVE block (```mermaid / ```network / ```reaction), give the verification plan, and finish; do not search again.")
+                    format!("[stop] litsearch 已达 {n_done} 次,文献广度足够了——**别再发新的文献检索**。但不要因此牺牲质量就草草收尾:若还有关键数据缺口(某个亚组的逐试验 HR、某个具体数字),改用 **web_fetch 精确打开你已知的那几个试验/数据库页面**把缺口补齐;补齐后再综合。确认覆盖到用户原始诉求的每一问、关键数字有交叉核对,才 {{\"final\":…}}. litsearch cap reached — stop NEW literature queries, but DON'T sacrifice quality: fill any remaining data gaps via web_fetch on the specific known pages, cross-check the key numbers, then synthesize.")
                 } else {
                     let hits = match LitSearch::new().search(&q, 5).await {
                         Ok(works) if works.is_empty() => "(no matching works)".to_string(),
@@ -1406,7 +1443,7 @@ pub async fn run_coding_agent_steered(
                     if lit_queries.iter().any(|p| query_overlap(p, &q) >= 0.8) { continue; }
                     fresh.push(q);
                 }
-                let remaining = 10usize.saturating_sub(lit_queries.len());
+                let remaining = lit_cap.saturating_sub(lit_queries.len());
                 fresh.truncate(remaining.min(4)); // <=4 concurrent, and never past the 10-total litsearch cap
                 let obs = if fresh.is_empty() {
                     format!("[skip] 这些检索与已检索高度重复或预算已用尽({} 次)。停止检索,基于已有文献出可交付物。", lit_queries.len())
@@ -1828,7 +1865,15 @@ pub async fn run_coding_agent_steered(
                 };
                 (arg.chars().take(60).collect::<String>(), obs)
             }
-            other => (other.to_string(), format!("ERROR: unknown tool '{other}'")),
+            other => (
+                other.to_string(),
+                format!(
+                    "ERROR: 无法识别工具 '{other}' —— 多半是你漏了 \"tool\" 字段,或工具名拼错了。请重发一个**完整**的调用,\
+                     形如 {{\"tool\":\"litsearch\",\"query\":\"…\"}}。可用工具:litsearch / multi_search / web_search / \
+                     web_fetch / python / run / read_file / write_file / plan / load_skill / delegate,以及各原生图块\
+                     (```protein / ```mermaid / ```network …)。别再重发同样的错误调用。"
+                ),
+            ),
         };
         // Figure dedup: re-running a plot cell (common while tuning) would append duplicate PNGs to
         // the report — keep only figures we haven't already captured this run.
