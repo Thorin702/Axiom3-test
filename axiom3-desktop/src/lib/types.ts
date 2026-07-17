@@ -103,7 +103,7 @@ export type RunView = {
   id: string;
   taskKind: string;
   title: string;
-  status: "running" | "done" | "failed" | "cancelled";
+  status: "running" | "done" | "no_report" | "failed" | "cancelled";
   phase: string;
   phases: string[];
   agents: AgentView[];
@@ -120,7 +120,7 @@ export type RunView = {
 // A unit of work the platform runs. Today check_draft + workflow execute; the others
 // are declared so the workbench is task-oriented from the start.
 export type TaskType = "check_draft" | "workflow" | "ppt" | "code" | "research";
-export type TaskStatus = "running" | "done" | "failed" | "cancelled";
+export type TaskStatus = "running" | "done" | "no_report" | "failed" | "cancelled";
 // One sub-agent's rolled-up result from a workflow run (persisted so the per-agent output
 // is readable after reload, not just as an ephemeral 120-char rail summary). `model` is
 // kept so an artifact can state which model produced each part (provenance).

@@ -482,7 +482,9 @@ function App() {
   const savedSigRef = useRef<Record<string, string>>({});
   useEffect(() => {
     for (const t of tasks) {
-      if (t.status !== "done") continue;
+      // Persist BOTH clean successes and `no_report` runs (report failed but real figures/sources were
+      // produced) — so an hour of computed work is never lost, even when the final write-up didn't land.
+      if (t.status !== "done" && t.status !== "no_report") continue;
       if (!t.synthesis && !(t.versions?.length)) continue;
       // `recap` is produced AFTER the run finishes — it MUST be part of the signature. Without it the
       // backup written moments earlier (recap-less) was never refreshed, so the library showed a
@@ -963,7 +965,7 @@ function App() {
       ts.map((x) => {
         if (x.id !== sessionId) return x;
         if (!r) return { ...x, status: "failed" as const, error: "failed" };
-        const status = r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed";
+        const status = r.status === "done" ? "done" : r.status === "no_report" ? "no_report" : r.status === "cancelled" ? "cancelled" : "failed";
         // Keep the live-snapshotted steps if this run returned none (e.g. a cancel with no trace).
         const st = steps && steps.length ? steps : x.steps;
         const newVer = { synthesis: r.synthesis ?? undefined, review: r.review ?? undefined, steps: st, ts: Date.now(), goal: g };
@@ -975,7 +977,9 @@ function App() {
         return { ...x, status, synthesis: newVer.synthesis, review: newVer.review, steps: st };
       })
     );
-    if (r?.synthesis && r.status !== "cancelled") generateRecap(sessionId, g, r.synthesis);
+    // Recap summarizes a real report — skip it for cancelled runs AND for `no_report` (a failed
+    // synthesis has no report to summarize, and another model call would just waste more time).
+    if (r?.synthesis && r.status === "done") generateRecap(sessionId, g, r.synthesis);
   }
 
   // After a task produces a report, generate the chat-style wrap-up (what was done + key findings +
@@ -1086,7 +1090,7 @@ function App() {
       ts.map((x) => {
         if (x.id !== sessionId) return x;
         if (!r) return { ...x, status: "failed" as const, error: "failed" };
-        const status = r.status === "done" ? "done" : r.status === "cancelled" ? "cancelled" : "failed";
+        const status = r.status === "done" ? "done" : r.status === "no_report" ? "no_report" : r.status === "cancelled" ? "cancelled" : "failed";
         // Prefer the backend's full trace (it carries the figures); but if it came back empty
         // (e.g. a cancel that returned no trace), keep the steps we snapshotted live so a
         // cancelled run still shows how far it got instead of blanking out.
@@ -1099,7 +1103,9 @@ function App() {
         return { ...x, status, synthesis: r.synthesis, review: r.review ?? undefined, sources: r.sources, steps };
       })
     );
-    if (r?.synthesis && r.status !== "cancelled") generateRecap(sessionId, g, r.synthesis);
+    // Recap summarizes a real report — skip it for cancelled runs AND for `no_report` (a failed
+    // synthesis has no report to summarize, and another model call would just waste more time).
+    if (r?.synthesis && r.status === "done") generateRecap(sessionId, g, r.synthesis);
   }
 
   async function cancelCheck() {
@@ -1842,7 +1848,7 @@ function App() {
                           onDoubleClick={() => startRename(tk)}
                         >
                           <span className="ax-recent__title">
-                            <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber is-running" : "is-neutral"}`} />
+                            <span className={`ax-lamp ${tk.status === "done" ? "is-green" : tk.status === "running" ? "is-amber is-running" : tk.status === "no_report" ? "is-red" : "is-neutral"}`} />
                             {tk.forkedFrom && <span className="ax-fork-mark" title={lang === "zh" ? "由其他会话分叉" : "forked from another session"}>↳</span>}
                             <b>{tk.title}</b>
                             {tk.deep && <span className="ax-recent__deep" title={lang === "zh" ? "深度搜索(AB-MCTS)" : "deep search (AB-MCTS)"}>深</span>}

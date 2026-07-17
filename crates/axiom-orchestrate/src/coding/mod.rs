@@ -99,6 +99,17 @@ pub trait CodingModel: Send + Sync {
         user: &str,
         cancel: &Cancel,
     ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send;
+    /// Long-form completion for the make-or-break FINAL REPORT. A full report (long output + heavy
+    /// hidden reasoning) routinely needs far more wall-clock than a per-step call, so this variant
+    /// gets a generous timeout. Default delegates to `complete` (offline test models don't care).
+    fn complete_report(
+        &self,
+        system: &str,
+        user: &str,
+        cancel: &Cancel,
+    ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send {
+        self.complete(system, user, cancel)
+    }
 }
 
 /// Real model: one text completion per turn (history is flattened into `user` since the
@@ -108,18 +119,19 @@ pub struct ProviderModel {
     pub model: String,
     pub timeout_s: u64,
 }
-impl CodingModel for ProviderModel {
-    fn complete(
+impl ProviderModel {
+    /// Shared completion body, parameterized by the timeout so per-step calls stay tight while the
+    /// final report gets a generous budget.
+    fn run_timeout(
         &self,
         system: &str,
         user: &str,
-        _cancel: &Cancel,
+        timeout_s: u64,
     ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send {
         let provider_s = self.provider.clone();
         let model = self.model.clone();
         let system = system.to_string();
         let user = user.to_string();
-        let timeout_s = self.timeout_s;
         async move {
             let req = Request {
                 system: Some(system),
@@ -141,6 +153,26 @@ impl CodingModel for ProviderModel {
             })
             .await
         }
+    }
+}
+impl CodingModel for ProviderModel {
+    fn complete(
+        &self,
+        system: &str,
+        user: &str,
+        _cancel: &Cancel,
+    ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send {
+        self.run_timeout(system, user, self.timeout_s)
+    }
+    fn complete_report(
+        &self,
+        system: &str,
+        user: &str,
+        _cancel: &Cancel,
+    ) -> impl std::future::Future<Output = anyhow::Result<String>> + Send {
+        // The final report needs generous wall-clock — at LEAST 5 min — no matter how tight the
+        // per-step timeout is, so a long GLM-5.2 report isn't cut off and forced to the fallback.
+        self.run_timeout(system, user, self.timeout_s.max(300))
     }
 }
 
@@ -745,13 +777,13 @@ pub async fn delegate_tooled(
 /// the thinner fallback); on total failure builds a CLEAN report from the retrieved SOURCES — it never
 /// dumps the raw transcript (which holds internal steering / the GOAL header) into a user-facing report.
 async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str, sources: &[Source], cancel: &Cancel) -> String {
-    let wrap_ctx = compact_transcript(transcript, 22_000);
-    let wrap_user = format!(
-        "{wrap_ctx}\n\n[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统组织成报告(已生成的图会自动附上,不要再画)。**按固定五段**:①**直接回答**——开篇正面、简明回答用户最初问的那个问题(先给答案/判断/推荐,别跑偏成另一个新颖角度);②机制/证据分析——主要发现、竞争假说权衡、带 [Sn] 引用;③**可执行方案(必给)**——把分析落到用户能照着做的具体方案:机制/假说题给决定性实验方案(体系材料、方法与关键参数、读出指标、判定判据、对照、预期),选型/决策题给明确推荐+分步落地路径,可行性题给可行性判定+关键卡点+立即可做的下一步动作,how-to 题给操作规程;**具体到能照做、给参数与判据,别写「建议进一步验证」这类空话**;④关键风险与可证伪缺口;⑤参考文献。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。"
-    );
-    // The final synthesis is the make-or-break deliverable — retry so a transient blip doesn't force
-    // the fallback (backoff between tries; cancellation bails immediately).
-    for wait_ms in [0u64, 4000, 12000] {
+    let instr = "[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统组织成报告(已生成的图会自动附上,不要再画)。**按固定五段**:①**直接回答**——开篇正面、简明回答用户最初问的那个问题(先给答案/判断/推荐,别跑偏成另一个新颖角度);②机制/证据分析——主要发现、竞争假说权衡、带 [Sn] 引用;③**可执行方案(必给)**——把分析落到用户能照着做的具体方案:机制/假说题给决定性实验方案(体系材料、方法与关键参数、读出指标、判定判据、对照、预期),选型/决策题给明确推荐+分步落地路径,可行性题给可行性判定+关键卡点+立即可做的下一步动作,how-to 题给操作规程;**具体到能照做、给参数与判据,别写「建议进一步验证」这类空话**;④关键风险与可证伪缺口;⑤参考文献。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。";
+    // The final report is the make-or-break deliverable — a timeout here is the #1 reason a run that
+    // did all the work still shows "综述未能自动合成". So: (a) each attempt uses `complete_report`,
+    // which grants a generous (>=5 min) timeout — a long GLM-5.2 report over 90s no longer gets cut
+    // off; (b) attempts use a PROGRESSIVELY SMALLER context, so if the fullest prompt still times out,
+    // a compacter one generates faster and lands. Only after all of these do we fall back.
+    for (ctx_chars, wait_ms) in [(22_000usize, 0u64), (14_000, 3000), (8_000, 6000), (5_000, 6000)] {
         if wait_ms > 0 {
             for _ in 0..(wait_ms / 200) {
                 if cancel.is_cancelled() { break; }
@@ -759,7 +791,8 @@ async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str
             }
         }
         if cancel.is_cancelled() { break; }
-        if let Ok(r) = model.complete(sys, &wrap_user, cancel).await {
+        let wrap_user = format!("{}\n\n{instr}", compact_transcript(transcript, ctx_chars));
+        if let Ok(r) = model.complete_report(sys, &wrap_user, cancel).await {
             if r.trim().chars().count() > 80 {
                 return r.trim().to_string();
             }
@@ -770,13 +803,14 @@ async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str
 
 /// When the model can't synthesize the final report, build a clean, readable report from the retrieved
 /// sources (with clickable [Sn] markers) — NEVER a raw transcript dump. Figures are attached separately.
+/// Stable leading marker for a fallback (report-not-synthesized) deliverable. Kept in sync with
+/// [`is_fallback_report`], which detects it to mark the run `no_report`.
+const FALLBACK_BANNER: &str = "> ⚠️ **报告未自动生成** — 本次已完成检索与绘图,但最终文字报告合成未成功。**已算出的图和来源都已保存,不会丢失**(见下方 / 产物库)。点右下角【继续 / 重试】即可在已有材料基础上重新生成报告。\n\n";
 fn fallback_report_from_sources(sources: &[Source]) -> String {
     if sources.is_empty() {
-        return "本次研究已收集材料并生成了图,但最终文字报告的合成未能完成。已计算生成的图见下方。建议再运行一次以获得完整的文字综述。".to_string();
+        return format!("{FALLBACK_BANNER}下方为本次已生成的图。");
     }
-    let mut s = String::from(
-        "## 研究要点(基于已检索到的来源)\n\n> 说明:本次最终文字综述未能自动合成,以下按来源列出已获取的关键材料(角标可点击溯源);下方附有已计算生成的图。可再运行一次以得到完整的带引用综述。\n\n",
-    );
+    let mut s = format!("{FALLBACK_BANNER}## 已检索到的关键来源(角标可点击溯源)\n\n");
     for src in sources {
         let kind = match src.kind.as_str() { "paper" => "文献", "db" => "数据库", _ => "网页" };
         let head = if src.title.trim().is_empty() { src.url.clone() } else { src.title.clone() };
@@ -788,6 +822,14 @@ fn fallback_report_from_sources(sources: &[Source]) -> String {
     }
     s.push_str("\n**后续可深化**:再运行一次即可让模型把上述来源综合成完整、连贯、带引用的深度报告。");
     s
+}
+
+/// True when a summary is one of the "final report couldn't be synthesized" fallbacks. The run still
+/// gathered real figures + sources (kept), but there is NO narrative report — so the caller marks the
+/// run `no_report` instead of `done`, and the UI presents it as "报告未生成 · 可重新生成" rather than a
+/// clean deliverable (a user must never think an hour of work produced a complete report when it didn't).
+fn is_fallback_report(s: &str) -> bool {
+    s.trim_start().starts_with("> ⚠️ **报告未自动生成**")
 }
 
 /// Back-compat entry: run with no extra system steering (the `goal` is the whole task).
@@ -917,7 +959,8 @@ pub async fn run_coding_agent_steered(
                             let _ = &e; // error is captured in the transcript; the salvage speaks for itself
                             let artifacts = collect_artifacts(sandbox.root(), &start_files);
                             let summary = synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await;
-                            return CodingResult { status: "done".into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
+                            let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
+                            return CodingResult { status: status.into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
                         }
                         // Escalating backoff — a 429/rate-limit window can last tens of seconds, so
                         // the old ~6s total (attempt*5*200ms) never outlasts it and all retries fail
@@ -1725,7 +1768,8 @@ pub async fn run_coding_agent_steered(
     // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
     // figures (falls back to a transcript tail on failure). Same salvage the model-error path uses.
     let summary = synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await;
-    CodingResult { status: "done".into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
+    let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
+    CodingResult { status: status.into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
 
 /// Extract the first balanced top-level `{...}` object from a reply (tolerate fences /

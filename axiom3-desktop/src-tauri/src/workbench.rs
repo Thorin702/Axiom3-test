@@ -3631,16 +3631,16 @@ pub async fn coding_run(
     // Attach the figures the agent COMPUTED (base64 PNG) to the artifact as native
     // ```pyfig blocks, so the report shows results drawn from real data, not asserted.
     let mut synthesis = result.summary;
-    // RELIABILITY NET: if the in-agent synthesis FELL BACK (the author model couldn't write the final
-    // report even after retries — its salvage produced the sources-list placeholder), re-synthesize a
-    // proper cited report FROM THE RETRIEVED SOURCES (a fresh attempt on the run's model — SCNet
-    // GLM-5.2; DeepSeek fallback removed). [Sn] markers stay valid (they map to result.sources).
-    let synth_fell_back = synthesis.starts_with("## 研究要点(基于已检索到的来源)")
-        || synthesis.starts_with("本次研究已收集材料并生成了图");
-    if is_research && synth_fell_back && !result.sources.is_empty() {
+    // RELIABILITY NET (last chance): if the in-agent synthesis FELL BACK (its own 300s×shrink retries
+    // still couldn't write the report → the fallback banner), make a FRESH robust attempt to write a
+    // proper cited report FROM THE RETRIEVED SOURCES on the run's model. Retries with a progressively
+    // smaller source block + `complete_report`'s generous (>=5 min) timeout, so a big prompt that times
+    // out still lands on a compacter one. [Sn] markers stay valid (they map to result.sources).
+    const FALLBACK_PREFIX: &str = "> ⚠️ **报告未自动生成**";
+    if is_research && synthesis.starts_with(FALLBACK_PREFIX) && !result.sources.is_empty() {
         use axiom_orchestrate::coding::CodingModel;
         em.emit(RunEventBody::AgentSpawned { agent_id: "resynth".into(), role: "综合专家".into(), model: model_id.clone(), vendor: provider.clone(), phase: "executing".into() });
-        let m = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: 240 };
+        let m = ProviderModel { provider: provider.clone(), model: model_id.clone(), timeout_s: 360 };
         let mut src_block = String::new();
         for s in result.sources.iter().take(40) {
             let head = if s.title.trim().is_empty() { s.url.clone() } else { s.title.clone() };
@@ -3651,18 +3651,30 @@ pub async fn coding_run(
                 s.excerpt.chars().take(500).collect::<String>()
             ));
         }
-        let user = format!(
-            "研究课题:\n{}\n\n已检索到的来源(每条含 [Sn] 角标与摘录):\n{}\n\n现在据此写出完整的深度研究报告。",
-            goal.chars().take(800).collect::<String>(),
-            src_block.chars().take(9000).collect::<String>(),
-        );
-        if let Ok(t) = m.complete(REPORT_SYNTH_SYSTEM, &user, &Cancel::new()).await {
-            if t.trim().chars().count() > 200 {
-                synthesis = t.trim().to_string();
+        let mut fixed = false;
+        for src_cap in [9000usize, 5000, 3000] {
+            let user = format!(
+                "研究课题:\n{}\n\n已检索到的来源(每条含 [Sn] 角标与摘录):\n{}\n\n现在据此写出完整的深度研究报告。",
+                goal.chars().take(800).collect::<String>(),
+                src_block.chars().take(src_cap).collect::<String>(),
+            );
+            if let Ok(t) = m.complete_report(REPORT_SYNTH_SYSTEM, &user, &Cancel::new()).await {
+                if t.trim().chars().count() > 200 {
+                    synthesis = t.trim().to_string();
+                    fixed = true;
+                    break;
+                }
             }
         }
-        em.emit(RunEventBody::AgentFinished { agent_id: "resynth".into(), outcome: "ok".into(), tokens_in: 0, tokens_out: 0, error: None, summary: Some("综合报告已生成".into()) });
+        em.emit(RunEventBody::AgentFinished { agent_id: "resynth".into(), outcome: if fixed { "ok" } else { "err" }.into(), tokens_in: 0, tokens_out: 0, error: None, summary: Some(if fixed { "综合报告已生成" } else { "报告仍未生成,已保留图与来源" }.to_string()) });
     }
+    // Derive the FINAL status from the resulting report: cancelled/failed preserved; a report still
+    // leading with the fallback banner is `no_report` (figures/sources kept, no narrative); else `done`.
+    let final_status = match result.status.as_str() {
+        "cancelled" => "cancelled".to_string(),
+        "failed" => "failed".to_string(),
+        _ => if synthesis.starts_with(FALLBACK_PREFIX) { "no_report".to_string() } else { "done".to_string() },
+    };
     if !result.figures.is_empty() {
         synthesis.push_str("\n\n## 计算得到的图 · Computed figures\n");
         // Number each figure 图1/图2… IN CREATION ORDER so the report body's "如图N所示" references
@@ -3748,19 +3760,19 @@ pub async fn coding_run(
     // NOW the whole run (main agent + delegated experts + resynth + reviewer) is truly done.
     em.emit(RunEventBody::PhaseChanged { phase: "done".into(), index: 2, total: 3 });
     em.emit(RunEventBody::RunFinished {
-        status: result.status.clone(),
+        status: final_status.clone(),
         agents_total: 1,
-        agents_ok: if outcome == "ok" { 1 } else { 0 },
-        agents_err: if outcome == "err" { 1 } else { 0 },
+        agents_ok: if final_status == "done" { 1 } else { 0 },
+        agents_err: if final_status != "done" && final_status != "cancelled" { 1 } else { 0 },
         error: None,
     });
     // Privacy-safe telemetry: mode + status + duration only — never the topic or content.
     crate::telemetry::emit(&app, "task_done", serde_json::json!({
         "mode": if is_research { "研究" } else { "分析" },
-        "status": if result.status == "done" { "ok" } else { result.status.as_str() },
+        "status": if final_status == "done" { "ok" } else { final_status.as_str() },
         "dur": telem_start.elapsed().as_secs(),
     }));
-    Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace, review, sources: result.sources })
+    Ok(CodingRunResult { status: final_status, synthesis, steps: result.steps, trace, review, sources: result.sources })
 }
 
 /// Extract plain text from an uploaded document (pdf / docx / txt / md) so it can
