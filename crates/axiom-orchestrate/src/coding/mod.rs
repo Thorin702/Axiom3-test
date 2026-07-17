@@ -212,6 +212,32 @@ if not os.path.exists(MM):
     try: os.chmod(MM, 0o755)
     except OSError: pass
 _pkgs = __PKGS__
+# CACHE SHORT-CIRCUIT: if EVERY requested package is already in the bioenv, skip entirely. A re-install
+# re-loads conda-forge repodata (tens of seconds → minutes) even when there's nothing to do — this is
+# the "又在安装 / 正在加载 repodata" the user saw on a second structure task. `micromamba list` is a
+# fast LOCAL read (no network), so we check it first and mark the job done without touching the network.
+try:
+    if os.path.exists(MM):
+        _out = subprocess.run([MM, 'list', '-p', ENV], capture_output=True, text=True, timeout=60).stdout
+        _installed = set()
+        for _ln in _out.splitlines():
+            if _ln and not _ln.startswith('#'):
+                _tok = _ln.split()
+                if _tok:
+                    _installed.add(_tok[0].lower())
+        def _base(_p):
+            for _sep in ('==', '>=', '<=', '=', '>', '<', ' '):
+                _p = _p.split(_sep)[0]
+            return _p.strip().lower()
+        _names = [_base(_p) for _p in _pkgs if _base(_p)]
+        if _names and all(_n in _installed for _n in _names):
+            open(os.path.join('.axiom_jobs', '__ID__.status'), 'w').write('done')
+            print('[cached] 依赖已在本地环境中,跳过安装(直接可用):' + ', '.join(_names))
+            raise SystemExit(0)
+except SystemExit:
+    raise
+except Exception:
+    pass
 # `micromamba install -p ENV` creates the env if it's missing, so retrying across channel sets is
 # safe. Try the China (TUNA) mirror FIRST — conda-forge/bioconda direct are slow/blocked on mainland
 # networks (this is what made PyMOL installs error + poll forever) — then fall back to the official
@@ -525,7 +551,13 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              ```slope {\"left\":..,\"right\":..,\"rows\":[{\"label\":..,\"from\":..,\"to\":..}]}; \
              ```dose {\"curves\":[{\"name\":..,\"points\":[[log10dose,resp]],\"ic50\"?:..,\"hill\"?:..}]}; \
              ```spectrum {\"kind\":\"ms|nmr|ir\",\"peaks\":[[x,intensity]],\"invertX\"?:false}; \
-             ```protein <4-char PDB id like 1CRN, or inline PDB text>; \
+             ```protein <4-char PDB id like 1CRN, or inline PDB text>  ← the FAST, RELIABLE way to SHOW a \
+             3-D protein/complex structure: renders an INTERACTIVE, rotatable 3-D viewer INSTANTLY, needs NO \
+             install, always works. Make this your DEFAULT for any 'show / display / visualize the 3-D \
+             structure of <PDB id>' request — just emit ```protein\\n<PDB id>\\n```. Reach for the heavy PyMOL \
+             `protein-structure-figure` skill (a conda install that can fail + eat the budget) ONLY when the \
+             task specifically needs a publication-grade ANNOTATED STATIC panel (a labeled active-site \
+             close-up, measured distances) — NOT for a plain structure display; \
              ```smiles <one VALID SMILES copied from PubChem/ChEMBL — NOT from memory; a malformed one \
              renders as '无法解析该 SMILES'; for drugs/inhibitors prefer the RDKit small-molecule-figure skill>; \
              ```rxn {\"reactants\":[SMILES],\"products\":[SMILES]}; \
@@ -1059,6 +1091,8 @@ pub async fn run_coding_agent_steered(
                         "\n[system] 先别收尾。这个课题点名要出下面这种出版级图,但你还没加载对应的图形引擎技能,\
                          柱状图或内联 ```smiles 块替代不了它们:\n- {}\n请现在 {{\"tool\":\"load_skill\",\"name\":\"…\"}} \
                          加载对应技能并严格照卡出图(结构图/分子图/基因图各走各自的真引擎),出完再收尾。\
+                         **例外:若只是【展示】某个 PDB 的三维结构,直接输出 ```protein 块(交互式 3D,秒出、免安装)即可,\
+                         不必装 PyMOL;PyMOL 只留给带标注的出版级静态特写。** \
                          Load the missing figure-engine skill(s) and render the real publication figure before finishing.\n",
                         missing.join("\n- ")
                     ));

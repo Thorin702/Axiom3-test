@@ -34,7 +34,7 @@ import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, Database, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
   Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
-  MoreHorizontal, Pencil, Mic, Info, Pause, Play, LogOut, type LucideIcon,
+  MoreHorizontal, Pencil, Info, Pause, Play, LogOut, type LucideIcon,
 } from "lucide-react";
 
 // Composer modes (the icon-button popover, Claude-style). Each maps to backend behaviour:
@@ -434,9 +434,6 @@ function App() {
   // Artifact pane can expand to fill the window; topbar account menu.
   const [artifactExpanded, setArtifactExpanded] = useState(false);
   const [accountMenu, setAccountMenu] = useState(false);
-  // Voice dictation into the composer (Web Speech API, when the webview supports it).
-  const [listening, setListening] = useState(false);
-  const recognitionRef = useRef<any>(null);
   const [booting, setBooting] = useState(true);
   const [dropping, setDropping] = useState(false);
   const [lastSeenNotif, setLastSeenNotif] = useState(() => {
@@ -736,35 +733,6 @@ function App() {
     const title = renameValue.trim();
     if (title) setTasks((ts) => ts.map((x) => (x.id === id ? { ...x, title } : x)));
     setRenamingId(null);
-  }
-
-  // ── voice dictation into the composer (webkitSpeechRecognition when available) ──
-  const speechSupported = typeof window !== "undefined" &&
-    !!((window as any).webkitSpeechRecognition || (window as any).SpeechRecognition);
-  function toggleDictation() {
-    if (!speechSupported) return;
-    if (listening) {
-      recognitionRef.current?.stop();
-      return;
-    }
-    const Ctor = (window as any).webkitSpeechRecognition || (window as any).SpeechRecognition;
-    const rec = new Ctor();
-    rec.lang = lang === "zh" ? "zh-CN" : "en-US";
-    rec.interimResults = false;
-    rec.continuous = false;
-    rec.onresult = (ev: any) => {
-      const text = Array.from(ev.results).map((r: any) => r[0].transcript).join(" ").trim();
-      if (text) setSlash((s) => (s ? `${s} ${text}` : text));
-    };
-    rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
-    recognitionRef.current = rec;
-    setListening(true);
-    try {
-      rec.start();
-    } catch {
-      setListening(false);
-    }
   }
 
   // Start a fresh task: clear the composer and show the home greeting.
@@ -1377,23 +1345,8 @@ function App() {
                 <button className="ax-iconbtn" onClick={pickDataFiles} title={lang === "zh" ? "附加数据 / 文档" : "Attach data / docs"} aria-label="attach">
                   <Paperclip size={15} aria-hidden />
                 </button>
-                {/* session settings popover — between attach and voice, per the reference design */}
+                {/* session settings popover — sits next to attach (voice input removed per product spec) */}
                 <SessionSettings cfg={sessionCfg} onChange={setSessionCfg} lang={lang} skills={SKILLS} models={connectedModels} />
-                <button
-                  className={`ax-iconbtn ${listening ? "is-active" : ""}`}
-                  onClick={toggleDictation}
-                  disabled={!speechSupported}
-                  title={
-                    !speechSupported
-                      ? (lang === "zh" ? "此环境不支持语音输入" : "Voice input not available here")
-                      : listening
-                      ? (lang === "zh" ? "停止听写" : "Stop dictation")
-                      : (lang === "zh" ? "语音输入" : "Voice input")
-                  }
-                  aria-label={lang === "zh" ? "语音输入" : "Voice input"}
-                >
-                  <Mic size={15} aria-hidden />
-                </button>
               </span>
               {/* Mode picker: a compact icon button that expands to choose 自动/研究/分析
                   (Claude-style). The backend chooses thinking vs non-thinking per mode. */}
@@ -1890,7 +1843,6 @@ function App() {
         </div>
 
         <div className="ax-side-tools">
-          {!sidebarCollapsed && <p className="ax-nav__label">{lang === "zh" ? "工具" : "Tools"}</p>}
           {NAV.filter((n) => n.key !== "tasks").map((n) => (
             <button
               key={n.key}
