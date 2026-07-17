@@ -1531,3 +1531,16 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-login__btn:not(:disabled):hover { filter: brightness(1.06); }
 .ax-login__hint { margin-top: 4px; font-size: 11.5px; color: var(--ax-ink-faint); line-height: 1.55; text-align: center; }
 .ax-menu__item--danger { color: var(--ax-accent); }
+
+/* ── In-app announcement popup (server-published, shown once per new id) ── */
+.ax-notice-scrim { position: fixed; inset: 0; z-index: 9000; display: grid; place-items: center;
+  background: rgba(20, 14, 8, 0.34); backdrop-filter: blur(2px); padding: 24px; }
+.ax-notice { width: 380px; max-width: 100%; background: var(--ax-surface); border: 1px solid var(--ax-line);
+  border-radius: 16px; padding: 22px 24px; box-shadow: 0 30px 70px -34px rgba(60, 40, 20, 0.5);
+  border-top: 3px solid var(--ax-accent); }
+.ax-notice--warn { border-top-color: #C4632E; }
+.ax-notice__head { font-size: 14px; font-weight: 700; color: var(--ax-ink); margin-bottom: 10px; }
+.ax-notice__body { font-size: 14px; line-height: 1.65; color: var(--ax-ink-soft); white-space: pre-wrap; word-break: break-word; }
+.ax-notice__btn { margin-top: 18px; width: 100%; font-size: 14px; font-weight: 600; padding: 10px; border: none;
+  border-radius: 10px; background: var(--ax-accent); color: #fff; cursor: pointer; }
+.ax-notice__btn:hover { filter: brightness(1.06); }

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use tauri::Manager;
 
 /// The website / account server. IP for now; switch to `https://<域名>` after ICP 备案 + 证书.
-const AUTH_BASE: &str = "http://39.96.27.187";
+pub const AUTH_BASE: &str = "http://39.96.27.187";
 const HTTP_TIMEOUT_S: u64 = 8;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -42,6 +42,10 @@ fn auth_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 fn load_session(app: &tauri::AppHandle) -> Option<Session> {
     let p = auth_path(app)?;
     serde_json::from_str(&std::fs::read_to_string(p).ok()?).ok()
+}
+/// The signed-in account name, if any — used to attribute telemetry events.
+pub fn current_account(app: &tauri::AppHandle) -> Option<String> {
+    load_session(app).map(|s| s.account)
 }
 fn save_session(app: &tauri::AppHandle, s: &Session) {
     if let (Some(p), Ok(js)) = (auth_path(app), serde_json::to_string(s)) {

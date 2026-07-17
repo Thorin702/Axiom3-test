@@ -225,7 +225,7 @@ function App() {
       if (s.expiry && s.expiry < today()) { setAuth(null); setAuthMsg("账号使用期已到期,请联系管理员延期"); return; }
       const v = await call("account_validate", { ok: true, offline: true, account: s.account, expiry: s.expiry });
       if (!alive) return;
-      if (v.ok) setAuth({ account: v.account || s.account || "", expiry: v.expiry ?? s.expiry ?? null });
+      if (v.ok) { setAuth({ account: v.account || s.account || "", expiry: v.expiry ?? s.expiry ?? null }); invoke("telemetry", { event: "launch" }).catch(() => {}); }
       else { setAuth(null); setAuthMsg(v.error || "登录已失效,请重新登录"); }
     })();
     // Re-validate periodically: catches expiry crossing + single-device kick while the app is open.
@@ -244,6 +244,22 @@ function App() {
     setAuthMsg(null);
     setAuth(null);
   }
+  // ── In-app announcement popup (set from the admin backend) ──
+  const [notice, setNotice] = useState<{ id: number; text: string; level: string } | null>(null);
+  useEffect(() => {
+    if (!auth || auth === "checking") return;
+    invoke<{ id: number; text?: string; level?: string }>("fetch_notice")
+      .then((n) => {
+        const seen = Number(localStorage.getItem("axiom3.noticeSeen") || 0);
+        if (n && n.id && n.id > seen && n.text) setNotice({ id: n.id, text: n.text, level: n.level || "info" });
+      })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth]);
+  const dismissNotice = () => {
+    if (notice) localStorage.setItem("axiom3.noticeSeen", String(notice.id));
+    setNotice(null);
+  };
   // Models actually connected right now — the ONLY ones offered as reviewer-model options in settings.
   const [connectedModels, setConnectedModels] = useState<string[]>([]);
   useEffect(() => {
@@ -1662,7 +1678,7 @@ function App() {
 
   // ── Login gate: the workbench is not shown until an APPROVED, IN-DATE account is signed in ──
   if (auth === "checking") return <div className="ax-authgate" aria-busy />;
-  if (auth === null) return <Login lang={lang} msg={authMsg} onLogin={(a) => { setAuthMsg(null); setAuth(a); }} />;
+  if (auth === null) return <Login lang={lang} msg={authMsg} onLogin={(a) => { setAuthMsg(null); setAuth(a); invoke("telemetry", { event: "launch" }).catch(() => {}); }} />;
 
   // Human-readable validity label for the sidebar footer (with a "剩 N 天" nudge near expiry).
   const acctExpiry = (() => {
@@ -1675,6 +1691,15 @@ function App() {
   return (
     <>
       {booting && <Splash onDone={() => setBooting(false)} />}
+      {notice && (
+        <div className="ax-notice-scrim" onClick={dismissNotice}>
+          <div className={`ax-notice ax-notice--${notice.level}`} onClick={(e) => e.stopPropagation()}>
+            <div className="ax-notice__head">📢 {lang === "zh" ? "公告" : "Announcement"}</div>
+            <div className="ax-notice__body">{notice.text}</div>
+            <button className="ax-notice__btn" onClick={dismissNotice}>{lang === "zh" ? "知道了" : "Got it"}</button>
+          </div>
+        </div>
+      )}
       {!onboarded && <OnboardingWizard lang={lang} onDone={() => setOnboarded(true)} />}
       {settingsOpen && <SettingsModal lang={lang} onLang={setLang} initialCat={settingsCat} onClose={() => setSettingsOpen(false)} />}
       {paletteOpen && (

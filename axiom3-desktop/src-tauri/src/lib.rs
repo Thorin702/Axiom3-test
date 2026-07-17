@@ -1,5 +1,6 @@
 mod auth;
 mod deliverables;
+mod telemetry;
 mod workbench;
 
 use workbench::AppState;
@@ -132,6 +133,8 @@ pub fn run() {
             auth::account_session,
             auth::account_validate,
             auth::account_logout,
+            telemetry::telemetry,
+            telemetry::fetch_notice,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

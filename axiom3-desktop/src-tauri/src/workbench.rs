@@ -3072,6 +3072,7 @@ pub async fn coding_run(
     // but with no budget pressure and a literature/web-first, deep-cited-report steer.
     let is_research = research.unwrap_or(false);
     let is_analyze = analyze.unwrap_or(false) || is_research;
+    let telem_start = std::time::Instant::now();
     // Resolve provider/connection + model, mode-aware: research/analysis prefer a thinking model.
     let (provider, model_id) = resolve_model(&app, provider, model, false, if is_research { "research" } else if is_analyze { "analysis" } else { "auto" })?;
     // Workspace isolation. RESEARCH always runs in a PRIVATE per-run scratch dir — never the
@@ -3616,6 +3617,12 @@ pub async fn coding_run(
         agents_err: if outcome == "err" { 1 } else { 0 },
         error: None,
     });
+    // Privacy-safe telemetry: mode + status + duration only — never the topic or content.
+    crate::telemetry::emit(&app, "task_done", serde_json::json!({
+        "mode": if is_research { "研究" } else { "分析" },
+        "status": if result.status == "done" { "ok" } else { result.status.as_str() },
+        "dur": telem_start.elapsed().as_secs(),
+    }));
     Ok(CodingRunResult { status: result.status, synthesis, steps: result.steps, trace, review, sources: result.sources })
 }
 
