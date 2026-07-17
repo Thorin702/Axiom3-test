@@ -384,7 +384,9 @@ function App() {
   const [settingsCat, setSettingsCat] = useState<string | undefined>(undefined);
   const [nav, setNav] = useState<NavKey>("tasks");
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [railOpen, setRailOpen] = useState(localStorage.getItem("axiom3.rail") === "1");
+  // The right "产物" rail starts COLLAPSED on every launch (per product spec: after login the workbench
+  // is clean); it auto-opens only when a topic finishes and has produced content (the effect below).
+  const [railOpen, setRailOpen] = useState(false);
   // Left sidebar can collapse to a slim icon rail (like Claude). Persisted.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(localStorage.getItem("axiom3.sidebarCollapsed") === "1");
   // Draggable panel widths (persisted). Double-click a handle resets to the default.
@@ -814,8 +816,6 @@ function App() {
       setActiveId(tk.id);
       setNav("tasks");
       setView("thread");
-      setRailOpen(true);
-      localStorage.setItem("axiom3.rail", "1");
     } catch {
       /* missing/corrupt file — ignore */
     }
@@ -912,8 +912,6 @@ function App() {
     setView("thread");
     setCmd(null);
     setSlash("");
-    setRailOpen(true);
-    localStorage.setItem("axiom3.rail", "1");
     const r = await run<{
       status: string;
       synthesis: string | null;
@@ -1040,8 +1038,6 @@ function App() {
     setView("thread");
     setCmd(null);
     setSlash("");
-    setRailOpen(true);
-    localStorage.setItem("axiom3.rail", "1");
     const r = await run<{ status: string; synthesis: string; review?: string; sources?: CiteSource[]; trace?: AgentStepView[] }>(() =>
       invoke("coding_run", { goal: g, runid, workspace: codeWs || "", writable: codeWritable, analyze: doAnalyze, attachments: codeAttachments, model: taskModel || undefined, skill: pendingSkill || sessionCfg.specialist || undefined, prior: prior || undefined, compute: sessionCfg.compute, research, review: sessionCfg.autoReview, continued: !!appendTo })
     );
@@ -1132,14 +1128,19 @@ function App() {
     (!!activeTask.synthesis ||
       (activeTask.versions?.some((v) => v.synthesis) ?? false) ||
       (activeTask.steps?.length ?? 0) > 0);
-  // Auto-open the right column when an artifact becomes available.
+  // Auto-open the right "产物" rail ONLY when a topic FINISHES and has produced content — never during
+  // the run, and never on login for an already-done task (the rail starts collapsed each launch). We
+  // key on the running→finished transition per task id, so it fires on a FRESH completion only.
+  const railPrevStatusRef = useRef<Record<string, string>>({});
   useEffect(() => {
-    if (showArtifactPane && !railOpen) {
+    if (!activeTask) return;
+    const prev = railPrevStatusRef.current[activeTask.id];
+    railPrevStatusRef.current[activeTask.id] = activeTask.status;
+    if (prev === "running" && activeTask.status !== "running" && showArtifactPane && !railOpen) {
       setRailOpen(true);
-      localStorage.setItem("axiom3.rail", "1");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showArtifactPane, activeId]);
+  }, [activeTask?.id, activeTask?.status, showArtifactPane]);
 
   const paletteItems: PaletteItem[] = [
     ...NAV.map((n) => ({ key: n.key, label: lang === "zh" ? n.zh : n.en, kind: "nav" as const })),
