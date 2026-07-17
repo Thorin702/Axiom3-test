@@ -948,6 +948,7 @@ pub async fn run_coding_agent_steered(
     let (mut loaded_struct, mut loaded_mol, mut loaded_gene) = (false, false, false);
     let mut figure_nudges = 0u32;
     let mut reflected = false; // whether the ONE-time self-critique gate has fired before finalizing
+    let mut last_compact_len = 0usize; // transcript length at the last context-compaction (avoid re-compacting every step)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
     // QUALITY-FIRST search budget. Dedup already SKIPS near-identical queries (they don't count), so this
@@ -983,9 +984,36 @@ pub async fn run_coding_agent_steered(
         } else {
             ""
         };
-        // Compact the context so input tokens don't grow ~quadratically over a long run (the
-        // full transcript was re-sent verbatim every turn — the bloat that timed out flagship 03).
-        // Keep the GOAL header + the most recent steps; elide the middle.
+        // CONTEXT COMPACTION (keep running, don't lose the middle). Once the raw transcript grows large,
+        // SUMMARIZE its old middle into a durable state block via one model call — instead of letting
+        // compact_transcript() silently TRUNCATE it away (which made the agent forget mid-run findings +
+        // re-search). Keeps the goal + a state summary (conclusions / sources [Sn] / open sub-questions)
+        // + recent steps verbatim, so memory is retained while input tokens stay bounded (also faster).
+        // Rare (only past ~40k chars and after ~14k of new growth); fail-safe (leaves the transcript as-is
+        // on any error — compact_transcript below still bounds the per-call prompt).
+        let tlen = transcript.chars().count();
+        if tlen > 40_000 && tlen.saturating_sub(last_compact_len) > 14_000 && !cancel.is_cancelled() {
+            let chars: Vec<char> = transcript.chars().collect();
+            let head_n = 1600usize.min(chars.len());
+            let tail_n = 9000usize.min(chars.len().saturating_sub(head_n));
+            let mid_end = chars.len().saturating_sub(tail_n);
+            if mid_end > head_n + 4000 {
+                let head: String = chars[..head_n].iter().collect();
+                let middle: String = chars[head_n..mid_end].iter().collect();
+                let tail: String = chars[mid_end..].iter().collect();
+                let sum_sys = "把下面这段研究过程的中间记录压缩成一段【状态摘要】,只保留后续推理必须记住的东西:已确认的关键发现与数字(带 [Sn] 角标)、已检索到的重要来源、已生成的图、尚未解决的子问题、已做的关键决定。丢弃冗长的工具原始输出与来回寒暄。用紧凑要点,**务必保留 [Sn] 角标编号不变**。只输出状态摘要本身。";
+                if let Ok(summary) = model.complete(sum_sys, &middle, cancel).await {
+                    if summary.trim().chars().count() > 40 {
+                        transcript = format!(
+                            "{head}\n\n[已压缩的中间状态 · 保留结论/来源/未决项]\n{}\n\n[最近步骤]\n{tail}",
+                            summary.trim()
+                        );
+                    }
+                }
+            }
+            last_compact_len = transcript.chars().count();
+        }
+        // Final safety net: bound the per-call prompt regardless (keep GOAL + recent; elide any residual middle).
         let ctx = compact_transcript(&transcript, 26_000);
         let user = format!(
             "{ctx}\n[进度] 第 {n} 步{warn}\n先用1-2句话说出你此刻的思考(你要做什么、为什么、上一步的结果说明了什么),再给出你的 JSON 动作 · First write 1-2 sentences of your thinking in the user's language, THEN your JSON action:"

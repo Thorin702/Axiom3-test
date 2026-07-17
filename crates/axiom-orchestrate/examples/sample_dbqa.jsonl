@@ -1,0 +1,4 @@
+{"id":"db1","question":"What is the approved HGNC gene symbol for the protein with UniProt accession P01116?","choices":["KRAS","HRAS","NRAS","BRAF"],"answer":"KRAS"}
+{"id":"db2","question":"According to Open Targets, which disease has the HIGHEST association score with the gene EGFR?","choices":["Alzheimer disease","non-small cell lung carcinoma","type 2 diabetes","rheumatoid arthritis"],"answer":"non-small cell lung carcinoma"}
+{"id":"db3","question":"In gnomAD (GRCh38), the global allele frequency of variant 1-55051215-G-A is best described as:","choices":["common (>5%)","low-frequency (1-5%)","rare (0.1-1%)","ultra-rare (<0.01%)"],"answer":"ultra-rare (<0.01%)"}
+{"id":"db4","question":"What is the molecular formula of aspirin, per PubChem?","choices":["C8H8O3","C9H8O4","C7H6O3","C10H10O4"],"answer":"C9H8O4"}
