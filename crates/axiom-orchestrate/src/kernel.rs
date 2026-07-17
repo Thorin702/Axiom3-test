@@ -47,6 +47,40 @@ def _ax_has_data(fig):
         return False
     except Exception:
         return True   # fail-open: on any inspection error, KEEP the figure (never lose a real one)
+def _ax_trim(_png):
+    # Crop a LARGE blank band from the top/bottom of a captured figure. bbox_inches='tight' already
+    # removes outer margins, but an over-tall axes (y-limits with empty rows) or a stray low artist
+    # leaves a big blank band INSIDE the figure that tight can't touch — the "超长图 + 下方全是空白"
+    # case. We measure per-row ink: a row with only the axes spines / dashed reference line (a few px)
+    # counts as blank; a real data/label/title row does not. Only the CONTIGUOUS top & bottom blank
+    # runs are trimmed (never interior), a generous margin is kept, and we bail unless the band is big —
+    # so no data, label, or marker near an edge is ever clipped. Fail-open: return input on any error.
+    try:
+        import numpy as _np, matplotlib.image as _mi
+        _a = _mi.imread(io.BytesIO(_png), format='png')
+        if _a.ndim != 3 or _a.shape[2] < 3:
+            return _png
+        H, W = _a.shape[0], _a.shape[1]
+        _ink = (_a[:, :, :3] < 0.90).mean(axis=(1, 2))   # per-row fraction of non-white pixels, shape (H,)
+        _blank = _ink < 0.012                            # spine/reference-line-only (or empty) rows
+        _b = H
+        while _b > 0 and _blank[_b - 1]:
+            _b -= 1
+        _t = 0
+        while _t < H and _blank[_t]:
+            _t += 1
+        _pad = max(10, int(round(H * 0.01)))
+        _t = max(0, _t - _pad)
+        _b = min(H, _b + _pad)
+        removed = _t + (H - _b)
+        if removed < max(24, 0.05 * H):                  # only bother with a MEANINGFUL blank band
+            return _png
+        if _b - _t < 60:                                 # never collapse the image
+            return _png
+        _o = io.BytesIO(); _mi.imsave(_o, _a[_t:_b, :, :], format='png', dpi=110)
+        return _o.getvalue()
+    except Exception:
+        return _png
 try:
     import matplotlib
     matplotlib.use('Agg')
@@ -67,7 +101,7 @@ try:
             _r = _mfig.Figure._ax_orig(self, *a, **k)
             try:
                 _bb = io.BytesIO(); _mfig.Figure._ax_orig(self, _bb, format='png', dpi=110, bbox_inches='tight')
-                _AX_SAVED.append((id(self), base64.b64encode(_bb.getvalue()).decode(), _ax_has_data(self)))
+                _AX_SAVED.append((id(self), base64.b64encode(_ax_trim(_bb.getvalue())).decode(), _ax_has_data(self)))
             except Exception:
                 pass
             return _r
@@ -110,7 +144,7 @@ def run(code):
                     if not _ax_has_data(f): _blank += 1; continue   # drop a blank open figure
                     b = io.BytesIO()
                     (_orig or _mfig.Figure.savefig)(f, b, format='png', dpi=110, bbox_inches='tight')
-                    _d = base64.b64encode(b.getvalue()).decode()
+                    _d = base64.b64encode(_ax_trim(b.getvalue())).decode()
                     if _d not in seen: figs.append(_d); seen.add(_d)
                 plt.close('all')
                 if _blank:
