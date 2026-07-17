@@ -36,7 +36,7 @@ async fn main() {
     let (provider, model_id) = if std::env::var("ZHIPU_API_KEY").is_ok() {
         ("zhipu".to_string(), "glm-5.2".to_string())
     } else if std::env::var("SCNET_API_KEY").is_ok() {
-        ("scnet".to_string(), "glm-5.2".to_string())
+        ("scnet".to_string(), "GLM-5.2".to_string())
     } else {
         ("deepseek".to_string(), "deepseek-v4-flash".to_string())
     };
