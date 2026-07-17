@@ -1,7 +1,7 @@
 {
   "name": "axiom3-desktop",
   "private": true,
-  "version": "1.43.8",
+  "version": "1.43.9",
   "type": "module",
   "scripts": {
     "dev": "vite",

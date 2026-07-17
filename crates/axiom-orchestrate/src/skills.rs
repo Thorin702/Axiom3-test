@@ -248,6 +248,10 @@ const BUILTINS: &[Builtin] = &[
             PROTEIN / STRUCTURE: `scidb.uniprot('P01116')` (function + features + PDB xrefs), `scidb.pdb('6OIM')` (method + resolution + citation), `scidb.pdb_search(query)`, `scidb.alphafold('P01116')` (PREDICTED model — label it as such, colour by pLDDT).\n\
             CHEMISTRY: `scidb.pubchem(name='sotorasib')` (MW/formula/SMILES/InChIKey/XLogP/TPSA — computed, label calc.), `scidb.chembl(query='osimertinib')`, `scidb.chembl_activity(target_chembl_id=...)` (REAL measured IC50/Ki — cite the assay, do not invent potencies).\n\
             PATHWAYS: `scidb.kegg('hsa04010')`, `scidb.reactome(query)`, `scidb.string_db(['KRAS','BRAF','MAP2K1'])` (PPI edges → feed a ```network figure).\n\
+            DRUG TARGETS / DISEASE: `scidb.opentargets('EGFR')` — Open Targets gene→disease association scores (0–1, evidence-integrated); the backbone for target validation + drug repurposing (which diseases is this target linked to, how strongly).\n\
+            CLINICAL VARIANTS / GENETICS: `scidb.clinvar('BRCA1 pathogenic')` (clinical significance + condition + review status), `scidb.gnomad('1-55051215-G-A')` (population allele frequency — a COMMON variant argues AGAINST pathogenicity), `scidb.gwas_catalog('TCF7L2')` (published GWAS SNPs for a gene).\n\
+            CLINICAL TRIALS: `scidb.clinical_trials('EGFR NSCLC osimertinib')` (ClinicalTrials.gov — NCT id, phase, status, interventions).\n\
+            SEQUENCE SEARCH: `scidb.blast(sequence, program='blastp', database='swissprot')` (NCBI BLAST homology search; SLOW — submits + polls, may return a RID to retry).\n\
             RIGOR: prefer a real database record over a remembered fact; when you state a number or claim from one of these, cite its source_url/accession as [Sn]. A structure you fetched (PDB) is experimental; an AlphaFold model is predicted — never blur the two.",
     },
 ];

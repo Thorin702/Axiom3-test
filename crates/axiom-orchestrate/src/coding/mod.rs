@@ -452,6 +452,10 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              {\"tool\":\"web_fetch\",\"url\":\"<https URL>\"}   (READ one public URL as text — an article, \
              a database record page, a documentation page you found via web_search. Returns the page's \
              cleaned text. Only public http(s) URLs.)\n\
+             {\"tool\":\"multi_fetch\",\"urls\":[\"<url1>\",\"<url2>\",\"<url3>\"]}   (PREFERRED when you have \
+             SEVERAL URLs to read — fetches them ALL AT ONCE (concurrently) in ONE step, far faster than \
+             web_fetch one-by-one. Give 2-6 URLs you already have from web_search / a database result. Use \
+             single web_fetch only when the next URL depends on what the last page said.)\n\
              ── WHICH TOOL WHEN (pick the RIGHT one each step) ──\n\
              • Peer-reviewed papers / citations → litsearch.  • Anything else on the web (databases, \
              datasets, docs, preprints, orgs) you need to FIND → web_search.  • READ a specific page you \
@@ -1552,6 +1556,55 @@ pub async fn run_coding_agent_steered(
                 };
                 (url, obs)
             }
+            "multi_fetch" => {
+                // Concurrent read of SEVERAL known URLs AT ONCE (external HTTP — safe to parallelize; 429
+                // only hits model calls). Collapses N sequential web_fetch steps + N model round-trips into
+                // ONE — a big wall-clock win when you have a list of pages/trial records to read. Give the
+                // URLs you ALREADY have (from web_search / a database result).
+                let mut seen = std::collections::HashSet::new();
+                let urls: Vec<String> = v
+                    .get("urls")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.trim().to_string())).filter(|s| s.starts_with("http")).collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|u| seen.insert(u.clone()))
+                    .take(6)
+                    .collect();
+                let obs = if urls.is_empty() {
+                    "ERROR: multi_fetch 需要 `urls`: [\"https://…\", …](你已经拿到的 URL 列表)".to_string()
+                } else {
+                    let mut set = tokio::task::JoinSet::new();
+                    for (i, u) in urls.iter().cloned().enumerate() {
+                        set.spawn(async move {
+                            let r = WebClient::new().fetch(&u).await;
+                            (i, u, r)
+                        });
+                    }
+                    let mut done = Vec::new();
+                    while let Some(res) = set.join_next().await {
+                        if let Ok(t) = res {
+                            done.push(t);
+                        }
+                    }
+                    done.sort_by_key(|(i, _, _)| *i);
+                    let mut out = String::new();
+                    for (_, u, res) in done {
+                        match res {
+                            Ok(t) if t.trim().is_empty() => out.push_str(&format!("\n### {u}\n(无可读文本)\n")),
+                            Ok(t) => {
+                                src_n += 1;
+                                let title = t.lines().find(|l| !l.trim().is_empty()).unwrap_or(&u).chars().take(120).collect::<String>();
+                                sources.push(Source { id: src_n, kind: "web".into(), title, url: u.clone(), excerpt: t.chars().take(4000).collect() });
+                                out.push_str(&format!("\n### [S{}] {}\n{}\n", src_n, u, t.chars().take(3000).collect::<String>()));
+                            }
+                            Err(e) => out.push_str(&format!("\n### {u}\nERROR: {e}\n")),
+                        }
+                    }
+                    out
+                };
+                (format!("并发读取 {} 个页面", urls.len()), obs)
+            }
             "delegate" if !pause.delegate_allowed() => {
                 // Not deep-research (or already inside a sub-agent) — no delegation; do it yourself.
                 ("delegate".to_string(), "[此处不开子智能体委派 —— 请自己完成这个子任务]".to_string())
@@ -1903,6 +1956,7 @@ pub async fn run_coding_agent_steered(
             "search" | "litsearch" | "search_skills" | "web_search" => arg_str(&v, "query").to_string(),
             "multi_search" => v.get("queries").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" | ")).unwrap_or_default(),
             "web_fetch" => arg_str(&v, "url").to_string(),
+            "multi_fetch" => v.get("urls").and_then(|x| x.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" | ")).unwrap_or_default(),
             "delegate" => arg_str(&v, "task").to_string(),
             t if is_sci_tool(t) => arg_str(&v, sci_tool_arg(t)).to_string(),
             "load_skill" => arg_str(&v, "name").to_string(),

@@ -38,6 +38,7 @@ __all__ = [
     "entrez_search", "entrez_fetch", "entrez_summary", "gene", "geo", "ensembl",
     "uniprot", "uniprot_search", "pdb", "pdb_search", "alphafold",
     "pubchem", "chembl", "chembl_activity", "kegg", "reactome", "string_db",
+    "opentargets", "clinvar", "gnomad", "gwas_catalog", "clinical_trials", "blast",
 ]
 
 _UA = "Axiom3-scidb/1.0 (scientific research; https://axiom3.local)"
@@ -493,6 +494,189 @@ def string_db(identifiers, species=9606, required_score=400):
              "source_db": "STRING"} for e in j] if isinstance(j, list) else j
 
 
+# ──────────────── drug targets / clinical / variants (P0 expansion) ────────────────
+def opentargets(query=None, ensembl_id=None, limit=10):
+    """Open Targets Platform — gene→disease associations for drug-target discovery / repurposing.
+    Pass a gene SYMBOL (query, e.g. 'EGFR') or an Ensembl gene id (ensembl_id). Returns the target's
+    top associated diseases with an evidence-integrated association score (0–1). Cite the source_url."""
+    api = "https://api.platform.opentargets.org/api/v4/graphql"
+
+    def _gql(q):
+        return _http(api, data=_json.dumps({"query": q}), headers={"Content-Type": "application/json"}, cache=True)
+    tid = ensembl_id
+    if not tid and query:
+        s = _gql('{search(queryString:"%s",entityNames:["target"]){hits{id name}}}' % str(query).replace('"', ""))
+        if isinstance(s, dict) and s.get("error"):
+            return s
+        hits = (((s or {}).get("data") or {}).get("search") or {}).get("hits") or []
+        if not hits:
+            return {"error": "no Open Targets target for '%s'" % query, "source_db": "OpenTargets"}
+        tid = hits[0].get("id")
+    if not tid:
+        return {"error": "opentargets needs query (gene symbol) or ensembl_id", "source_db": "OpenTargets"}
+    q = ('{target(ensemblId:"%s"){approvedSymbol approvedName '
+         'associatedDiseases(page:{index:0,size:%d}){count rows{score disease{id name}}}}}' % (tid, int(limit)))
+    j = _gql(q)
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    t = (((j or {}).get("data") or {}).get("target")) or {}
+    if not t:
+        return {"error": "no Open Targets data for %s" % tid, "source_db": "OpenTargets"}
+    ad = (t.get("associatedDiseases") or {})
+    diseases = [{"disease": (r.get("disease") or {}).get("name"), "efo_id": (r.get("disease") or {}).get("id"),
+                 "score": round(r.get("score", 0.0), 4)} for r in (ad.get("rows") or [])]
+    return {"ensembl_id": tid, "symbol": t.get("approvedSymbol"), "name": t.get("approvedName"),
+            "disease_count": ad.get("count"), "associated_diseases": diseases,
+            "url": "https://platform.opentargets.org/target/%s" % tid, "source_db": "OpenTargets"}
+
+
+def clinvar(query, retmax=10):
+    """ClinVar — clinical significance of genetic variants. Query e.g. 'BRCA1 pathogenic', 'EGFR T790M',
+    an HGVS name, or an rsID. Returns variants with clinical significance + gene + condition + review status."""
+    es = entrez_search("clinvar", query, retmax)
+    if isinstance(es, dict) and es.get("error"):
+        return es
+    ids = (es or {}).get("idlist") or []
+    if not ids:
+        return {"variants": [], "note": "no ClinVar records for '%s'" % query, "source_db": "ClinVar"}
+    su = entrez_summary("clinvar", ",".join(ids))
+    if isinstance(su, dict) and su.get("error"):
+        return su
+    res = ((su or {}).get("result") or {})
+    out = []
+    for uid in res.get("uids", []) or []:
+        r = res.get(uid, {}) or {}
+        germ = r.get("germline_classification") or {}
+        sig = germ.get("description") or ((r.get("clinical_significance") or {}) or {}).get("description")
+        conds = ";".join(t.get("trait_name", "") for t in (germ.get("trait_set") or [])) or \
+            ";".join(t.get("trait_name", "") for ts in (r.get("trait_set") or []) for t in [ts])
+        out.append({"uid": uid, "title": r.get("title"),
+                    "clinical_significance": sig, "review_status": germ.get("review_status"),
+                    "gene": ";".join(g.get("symbol", "") for g in (r.get("genes") or [])),
+                    "conditions": conds,
+                    "url": "https://www.ncbi.nlm.nih.gov/clinvar/variation/%s/" % uid, "source_db": "ClinVar"})
+    return {"variants": out, "source_db": "ClinVar"}
+
+
+def gnomad(variant_id, dataset="gnomad_r4"):
+    """gnomAD population allele frequencies. variant_id in GRCh38 'chrom-pos-ref-alt' form (e.g.
+    '1-55051215-G-A'). Returns global + per-population allele frequency — use it to judge whether a
+    variant is rare enough to be plausibly pathogenic (a common variant argues AGAINST pathogenicity)."""
+    q = ('query V($id:String!,$ds:DatasetId!){variant(variantId:$id,dataset:$ds){variant_id rsids '
+         'genome{ac an af homozygote_count populations{id ac an}} exome{ac an af}}}')
+    j = _http("https://gnomad.broadinstitute.org/api",
+              data=_json.dumps({"query": q, "variables": {"id": variant_id, "ds": dataset}}),
+              headers={"Content-Type": "application/json"}, cache=True)
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    v = (((j or {}).get("data") or {}).get("variant"))
+    if not v:
+        return {"error": "no gnomAD record for %s (need GRCh38 chrom-pos-ref-alt)" % variant_id, "source_db": "gnomAD"}
+    g = v.get("genome") or {}
+    pops = [{"pop": p.get("id"), "af": (p.get("ac") / p.get("an")) if p.get("an") else None,
+             "ac": p.get("ac"), "an": p.get("an")} for p in (g.get("populations") or []) if "_" not in (p.get("id") or "_")]
+    return {"variant_id": v.get("variant_id"), "rsids": v.get("rsids"),
+            "genome_af": g.get("af"), "genome_ac": g.get("ac"), "genome_an": g.get("an"),
+            "homozygotes": g.get("homozygote_count"), "exome_af": (v.get("exome") or {}).get("af"),
+            "populations": pops,
+            "url": "https://gnomad.broadinstitute.org/variant/%s?dataset=%s" % (variant_id, dataset), "source_db": "gnomAD"}
+
+
+def gwas_catalog(gene, limit=15):
+    """GWAS Catalog — published genome-wide association SNPs mapped to a GENE (e.g. 'TCF7L2', 'EGFR').
+    Returns the gene's GWAS-associated SNPs (rsID, functional class, chromosome/position). A hit means
+    that variant reached genome-wide significance for some trait in a published GWAS."""
+    j = _http("https://www.ebi.ac.uk/gwas/rest/api/singleNucleotidePolymorphisms/search/findByGene",
+              {"geneName": str(gene)})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    snps = ((j.get("_embedded") or {}) or {}).get("singleNucleotidePolymorphisms") or []
+    out = []
+    for s in snps[: int(limit)]:
+        loc = (s.get("locations") or [{}])[0] if s.get("locations") else {}
+        out.append({"rsid": s.get("rsId"), "functional_class": s.get("functionalClass"),
+                    "chromosome": loc.get("chromosomeName"), "position": loc.get("chromosomePosition"),
+                    "url": "https://www.ebi.ac.uk/gwas/variants/%s" % s.get("rsId"), "source_db": "GWAS Catalog"})
+    return {"gene": gene, "snp_count": len(snps), "snps": out, "source_db": "GWAS Catalog"}
+
+
+def clinical_trials(query, limit=10):
+    """ClinicalTrials.gov (API v2) — registered clinical trials. Query a condition, drug, or intervention
+    (e.g. 'EGFR NSCLC osimertinib'). Returns trials: NCT id, title, phase, status, conditions, interventions."""
+    j = _http("https://clinicaltrials.gov/api/v2/studies",
+              {"query.term": str(query), "pageSize": int(limit), "format": "json"})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    out = []
+    for s in (j.get("studies") or []):
+        p = s.get("protocolSection") or {}
+        idm = p.get("identificationModule") or {}
+        st = p.get("statusModule") or {}
+        dm = p.get("designModule") or {}
+        cm = p.get("conditionsModule") or {}
+        im = p.get("armsInterventionsModule") or {}
+        nct = idm.get("nctId")
+        out.append({"nct_id": nct, "title": idm.get("briefTitle"),
+                    "phase": ";".join(dm.get("phases") or []), "status": st.get("overallStatus"),
+                    "conditions": cm.get("conditions") or [],
+                    "interventions": [i.get("name") for i in (im.get("interventions") or [])],
+                    "url": "https://clinicaltrials.gov/study/%s" % nct if nct else None, "source_db": "ClinicalTrials.gov"})
+    return {"trials": out, "source_db": "ClinicalTrials.gov"}
+
+
+def blast(sequence, program="blastp", database="swissprot", hitlist_size=10, max_wait=90):
+    """NCBI BLAST sequence-similarity search. sequence = a protein or nucleotide sequence (raw or FASTA).
+    program = blastp | blastn | blastx | tblastn. database = swissprot | nr | nt | refseq_protein.
+    Submits + polls (BLAST is SLOW — waits up to max_wait s, then returns the RID so you can retry).
+    Returns top hits (accession, description, %identity, e-value)."""
+    import re as _re
+    base = "https://blast.ncbi.nlm.nih.gov/Blast.cgi"
+    seq = str(sequence).strip()
+    put = _http(base, is_json=False, cache=False,
+                data=_uparse.urlencode({"CMD": "Put", "PROGRAM": program, "DATABASE": database,
+                                        "QUERY": seq, "HITLIST_SIZE": int(hitlist_size)}),
+                headers={"Content-Type": "application/x-www-form-urlencoded"})
+    if isinstance(put, dict) and put.get("error"):
+        return put
+    m = _re.search(r"RID = (\S+)", put or "")
+    if not m:
+        return {"error": "BLAST submit failed (no RID)", "source_db": "BLAST"}
+    rid = m.group(1)
+    waited = 0
+    ready = False
+    while waited < int(max_wait):
+        _time.sleep(10)
+        waited += 10
+        stat = _http(base, {"CMD": "Get", "FORMAT_OBJECT": "SearchInfo", "RID": rid}, is_json=False, cache=False)
+        if isinstance(stat, str) and "Status=READY" in stat:
+            ready = True
+            break
+        if isinstance(stat, str) and "Status=FAILED" in stat:
+            return {"error": "BLAST search failed", "rid": rid, "source_db": "BLAST"}
+    if not ready:
+        return {"status": "running", "rid": rid,
+                "note": "BLAST %ss 内未完成;稍后 scidb.blast(...) 会命中缓存或用 CMD=Get&RID=%s 再取" % (max_wait, rid),
+                "source_db": "BLAST"}
+    res = _http(base, {"CMD": "Get", "FORMAT_TYPE": "JSON2_S", "RID": rid}, is_json=True, cache=False)
+    if isinstance(res, dict) and res.get("error"):
+        return res
+    try:
+        search = res["BlastOutput2"][0]["report"]["results"]["search"]
+        hits = []
+        for h in (search.get("hits") or [])[: int(hitlist_size)]:
+            desc = (h.get("description") or [{}])[0]
+            hs = (h.get("hsps") or [{}])[0]
+            ident = hs.get("identity")
+            alen = hs.get("align_len")
+            hits.append({"accession": desc.get("accession"), "title": desc.get("title"),
+                         "evalue": hs.get("evalue"),
+                         "percent_identity": round(100.0 * ident / alen, 1) if ident and alen else None,
+                         "bit_score": hs.get("bit_score"), "source_db": "BLAST(%s)" % database})
+        return {"program": program, "database": database, "rid": rid, "hits": hits, "source_db": "BLAST"}
+    except Exception as e:  # noqa
+        return {"error": "BLAST result parse failed: %s" % e, "rid": rid, "source_db": "BLAST"}
+
+
 # ────────────────────────────── catalog ──────────────────────────────
 _CATALOG = {
     "literature": ["lit_search(query, source=europepmc|crossref|semanticscholar|pubmed)", "pubmed(query)", "crossref(query|doi)", "semantic_scholar(query)"],
@@ -500,6 +684,10 @@ _CATALOG = {
     "protein / structure": ["uniprot(acc)", "uniprot_search(query)", "pdb(pdb_id)", "pdb_search(query)", "alphafold(uniprot_acc)"],
     "chemistry": ["pubchem(name|cid|smiles|inchikey)", "chembl(query|chembl_id)", "chembl_activity(target_chembl_id|molecule_chembl_id)"],
     "pathways / interactions": ["kegg(entry)", "reactome(query)", "string_db(identifiers, species)"],
+    "drug targets / disease": ["opentargets(query=gene | ensembl_id)  # target→disease assoc scores (repurposing)"],
+    "clinical variants / genetics": ["clinvar(query)  # variant clinical significance", "gnomad(variant_id)  # population allele freq", "gwas_catalog(gene)  # GWAS SNPs for a gene"],
+    "clinical trials": ["clinical_trials(query)  # ClinicalTrials.gov v2"],
+    "sequence search": ["blast(sequence, program, database)  # NCBI BLAST (slow, submit+poll)"],
 }
 
 
