@@ -254,6 +254,59 @@ const BUILTINS: &[Builtin] = &[
             SEQUENCE SEARCH: `scidb.blast(sequence, program='blastp', database='swissprot')` (NCBI BLAST homology search; SLOW — submits + polls, may return a RID to retry).\n\
             RIGOR: prefer a real database record over a remembered fact; when you state a number or claim from one of these, cite its source_url/accession as [Sn]. A structure you fetched (PDB) is experimental; an AlphaFold model is predicted — never blur the two.",
     },
+    Builtin {
+        name: "statistical-rigor",
+        keywords: "statistics statistical rigor p-value significance effect size confidence interval multiple testing correction bonferroni fdr correlation causation confounding power sample size overfitting cross validation baseline test choice normality 统计 显著性 效应量 置信区间 多重检验 相关 因果 混杂 样本量",
+        summary: "How to do statistics honestly: effect size + CI over bare p, correct for multiple testing, never confuse correlation with causation, name confounders, report n.",
+        card: "# Statistical rigor (methodology — read before you report any number)\n\
+            This is a KNOW-HOW card: apply it whenever the deliverable makes a quantitative or comparative claim. The goal is claims that survive review.\n\
+            1. EFFECT SIZE + CI, not a bare p-value. Report the magnitude (difference / ratio / correlation) WITH a 95% CI; a p alone is uninterpretable. 'Significant' without an effect size is meaningless; a tiny p on a trivial effect is not a finding.\n\
+            2. MULTIPLE TESTING. If you tested many hypotheses/genes/features, correct (Bonferroni for a few, Benjamini–Hochberg FDR for many) and SAY which. An uncorrected 'top hit' from a wide scan is a hypothesis, not a result.\n\
+            3. CORRELATION ≠ CAUSATION. State it plainly. Before any causal language, name the plausible CONFOUNDERS and what would be needed to establish causation (intervention, natural experiment / Mendelian randomization, dose-response, temporality). Human-genetics LOF evidence (gnomAD) is a natural experiment worth citing.\n\
+            4. THE RIGHT TEST + ASSUMPTIONS. Match the test to the data (paired vs unpaired, normal vs rank-based, count vs continuous); check the assumptions you rely on; prefer a nonparametric test when normality is doubtful. For models, hold out data / cross-validate — never report training-set performance as the result.\n\
+            5. REPORT N + UNCERTAINTY everywhere; a percentage from n=3 is not a rate. Distinguish SD (spread) from SEM/CI (precision). Never p-hack (don't cherry-pick the test/subgroup that crossed 0.05).\n\
+            HONESTY: if the data can't support a claim, say so and state what evidence would. An overclaim is worse than a hedged truth.",
+    },
+    Builtin {
+        name: "variant-interpretation",
+        keywords: "variant interpretation acmg pathogenic benign vus clinvar gnomad allele frequency missense loss of function splice in silico revel cadd sift polyphen conservation segregation classification clinical significance 变异 致病 良性 意义不明 临床意义 等位基因频率 错义 功能缺失",
+        summary: "ACMG-style variant interpretation: combine ClinVar + gnomAD frequency + in-silico + effect type; a common variant argues AGAINST pathogenicity.",
+        card: "# Variant interpretation (ACMG-flavoured methodology + the databases to use)\n\
+            USE THIS for any 'is variant X pathogenic / what does it mean' task. Combine independent lines of evidence — never call pathogenicity from one signal.\n\
+            EVIDENCE TO PULL (with scidb):\n\
+            - `scidb.clinvar('GENE c.HGVS')` — the EXISTING clinical assertions + review status. A 2+ star 'Pathogenic' from an expert panel is strong; a lone 'VUS' is not an answer.\n\
+            - `scidb.gnomad('chrom-pos-ref-alt')` — POPULATION FREQUENCY. This is the single most decisive filter: a variant common in a healthy population (e.g. AF > 1% for a rare-disease gene) is almost certainly BENIGN — a strong stand-alone argument AGAINST pathogenicity (ACMG BA1/BS1). Rarity (absent/ultra-rare) is supporting-for, not proof.\n\
+            - EFFECT TYPE: a loss-of-function (nonsense/frameshift/canonical splice) in a gene where LOF is the known mechanism is strong (PVS1). A missense needs more.\n\
+            - IN-SILICO (REVEL/CADD/SIFT/PolyPhen, conservation) is SUPPORTING only — never decisive.\n\
+            SYNTHESIS: integrate the lines (frequency + clinical assertion + effect type + in-silico + any segregation) into a calibrated call — Pathogenic / Likely / VUS / Likely Benign / Benign — and NAME which criteria fired. Be honest: most novel missense variants are legitimately VUS; say so rather than forcing a call. Cite every datum [Sn].",
+    },
+    Builtin {
+        name: "target-validation",
+        keywords: "drug target validation druggability tractability open targets human genetics loss of function gnomad genetic evidence disease association safety on-target liability precedent repurposing mechanism of action tractable pocket 靶点验证 成药性 药物靶点 人类遗传学 疾病关联 重定位",
+        summary: "How to judge a drug target: human-genetics evidence (OpenTargets + gnomAD LOF), tractability, clinical precedent, and safety liabilities — not just a plausible story.",
+        card: "# Target validation / druggability (methodology + databases)\n\
+            USE THIS for 'is GENE a good drug target for DISEASE / drug-repurposing' tasks. A plausible pathway story is NOT validation; weigh independent evidence classes and be honest about each.\n\
+            1. GENETIC EVIDENCE (the strongest, cheapest signal): `scidb.opentargets('GENE')` — the evidence-integrated gene→disease association score + which data types drive it. Then the HUMAN-GENETICS natural experiment: do LOF carriers (`scidb.gnomad`, and LOF-intolerance) or GWAS hits (`scidb.gwas_catalog`) show the expected protective/causal direction? A target with concordant human genetics (PCSK9 is the archetype) is far better de-risked than one supported only by cell/mouse data.\n\
+            2. TRACTABILITY: is it druggable? (enzyme/GPCR/ion-channel with a pocket vs a flat protein-protein interface; antibody-accessible if extracellular; oligonucleotide/degrader options). State the modality that fits.\n\
+            3. CLINICAL PRECEDENT: `scidb.clinical_trials('TARGET / drug')` + `scidb.chembl` — has this target (or pathway) been drugged? phase reached? outcomes? A prior clinical failure is important evidence, not to be ignored.\n\
+            4. SAFETY / ON-TARGET LIABILITY: what does normal biology predict if you inhibit it everywhere? (essential gene → toxicity; LOF-intolerant in gnomAD → caution). Name the key risk.\n\
+            VERDICT: give a calibrated druggability judgement (strong / plausible / weak) with the decisive evidence and the biggest open risk — not a cheerleading summary. Cite every claim [Sn].",
+    },
+    Builtin {
+        name: "bioinformatics-cli",
+        keywords: "samtools bcftools plink vcftools bedtools bwa minimap2 gatk blast blastn makeblastdb mafft iqtree bowtie salmon fastqc seqkit rscript r bioconductor deseq2 edger limma sequencing alignment variant calling vcf bam fastq genotype ld gwas 测序 比对 变异检测 生信 命令行工具",
+        summary: "Run R + command-line bioinformatics tools (samtools/bcftools/PLINK/BLAST+/bedtools/bwa/Rscript…): conda_install them, then call from the kernel via subprocess.",
+        card: "# R + CLI bioinformatics tools (install + run from the kernel)\n\
+            USE THIS for sequencing / variant / alignment / population-genetics / statistical-genomics tasks that need a real CLI tool or an R/Bioconductor package (things Python libraries don't cover).\n\
+            1. INSTALL via conda_install (bioconda) — a DETACHED job; poll with job_status until DONE. It's cached (a re-run of an already-installed package skips instantly). Examples:\n\
+               {\"tool\":\"conda_install\",\"packages\":[\"samtools\",\"bcftools\",\"bedtools\",\"plink\",\"blast\"]}\n\
+               {\"tool\":\"conda_install\",\"packages\":[\"r-base\",\"bioconductor-deseq2\"]}   (R + a Bioconductor pkg)\n\
+            2. RUN from the PYTHON KERNEL by subprocess (NOT the `run` shell tool — its allowlist doesn't carry these; a python subprocess has no allowlist). The bioenv bin is on the kernel PATH after the job finishes, so call the binary by name and CAPTURE its output:\n\
+               `import subprocess; r = subprocess.run(['samtools','flagstat','aln.bam'], capture_output=True, text=True); print(r.stdout, r.stderr)`\n\
+               `subprocess.run(['plink','--bfile','data','--assoc','--out','res'], capture_output=True, text=True)`\n\
+            3. R specifically: write the R to a file (or `-e`) and run via Rscript — `subprocess.run(['Rscript','-e','library(DESeq2); ...'], capture_output=True, text=True)`; then read the CSV/figure R produced back into python (pandas / imshow) so the result lands in the report.\n\
+            RIGOR: real inputs only (a downloaded/generated FASTA/BAM/VCF, or a public dataset by accession) — never a fabricated alignment/genotype table. Show the tool's actual stdout as evidence; if a tool errors, surface it and fix, don't invent the numbers it would have produced.",
+    },
 ];
 
 /// `~/.axiom3/skills` — the user-authored skill directory (created on first use). Same root the

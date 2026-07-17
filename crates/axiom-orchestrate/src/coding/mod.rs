@@ -288,7 +288,10 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
          THEN, on a new line, give EXACTLY ONE JSON action object — one of:\n\
          {\"tool\":\"plan\",\"todos\":[\"[ ] first step\",\"[ ] second step\"]}   (for a multi-step \
          task, list 3-7 TODOs; RE-SEND the whole list each time you update it, marking finished items \
-         [x], so the plan stays current)\n\
+         [x], so the plan stays current. LOCK THE CONTRACT FIRST: make TODO #1 restate the user's \
+         ORIGINAL question in one line AND name the SPECIFIC deliverables it demands — the exact answer/ \
+         verdict, and which figures — so you never drift into a tangential angle. Your final report is \
+         checked against this contract before it's accepted.)\n\
          {\"tool\":\"read_file\",\"path\":\"<relative path>\"}   (or {\"paths\":[\"a\",\"b\"]} to read several in ONE step)\n\
          {\"tool\":\"list_dir\",\"path\":\"<relative path>\"}\n\
          {\"tool\":\"glob\",\"pattern\":\"<glob, e.g. src/**/*.rs>\"}   (find files by name/pattern)\n\
@@ -944,6 +947,7 @@ pub async fn run_coding_agent_steered(
     let (needs_struct, needs_mol, needs_gene) = figure_needs(goal);
     let (mut loaded_struct, mut loaded_mol, mut loaded_gene) = (false, false, false);
     let mut figure_nudges = 0u32;
+    let mut reflected = false; // whether the ONE-time self-critique gate has fired before finalizing
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
     // QUALITY-FIRST search budget. Dedup already SKIPS near-identical queries (they don't count), so this
@@ -1107,6 +1111,27 @@ pub async fn run_coding_agent_steered(
                     ));
                     continue;
                 }
+            }
+            // SELF-CRITIQUE GATE (quality > budget cutoff): before accepting the FINAL report, make the
+            // agent critique its own draft ONCE against the ORIGINAL question + an evidence checklist.
+            // This is the "verify before done" pattern (grok /goal, biomni self_critic) — it catches
+            // drift (答非所问), unsupported claims, and figures-not-from-data WITHOUT a heavy extra model,
+            // and it's the quality net that replaces a hard budget cutoff. Bounded to one pass. RESEARCH
+            // mode only (deep reports, where drift/quality is the risk) — analysis mode stays fast; a
+            // sub-agent (delegate not encouraged) never reflects. Skipped for a tiny run (nothing to check).
+            if !reflected && pause.delegate_encouraged() && n >= 3 {
+                reflected = true;
+                transcript.push_str(&format!(
+                    "\n[system] 收尾前做一次自检(只此一次,别拖延)。对照你正要提交的报告逐条核对,不达标的先补齐再 {{\"final\":…}};都达标就直接 final:\n\
+                     1) 答的是不是用户【原题】「{}」?开篇第一段有没有正面、直接回答它(而不是跑偏到别的角度)?\n\
+                     2) 每条关键结论/数字是不是都有真实 [Sn] 来源支撑?有没有编造或凭记忆?没来源的先补检索或删掉。\n\
+                     3) 图是不是都来自真实检索/计算的数据(不是示意图)?课题点名要的图都出了吗?\n\
+                     4) 有没有该用而没用的数据库(靶点→opentargets、变异→clinvar/gnomad、试验→clinical_trials、GWAS→gwas_catalog)?\n\
+                     5) 有没有明显缺口/自相矛盾?诚实标注局限,别硬撑。\n\
+                     哪几条不达标就补哪几条,补完再 final。Self-critique against the ORIGINAL question + evidence; fix gaps; THEN finalize.\n",
+                    goal.chars().take(220).collect::<String>()
+                ));
+                continue;
             }
             return CodingResult { status: "done".into(), summary: f.to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }

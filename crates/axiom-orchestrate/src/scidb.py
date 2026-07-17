@@ -38,7 +38,7 @@ __all__ = [
     "entrez_search", "entrez_fetch", "entrez_summary", "gene", "geo", "ensembl",
     "uniprot", "uniprot_search", "pdb", "pdb_search", "alphafold",
     "pubchem", "chembl", "chembl_activity", "kegg", "reactome", "string_db",
-    "opentargets", "clinvar", "gnomad", "gwas_catalog", "clinical_trials", "blast",
+    "opentargets", "clinvar", "gnomad", "gwas_catalog", "clinical_trials", "blast", "rest",
 ]
 
 _UA = "Axiom3-scidb/1.0 (scientific research; https://axiom3.local)"
@@ -677,6 +677,18 @@ def blast(sequence, program="blastp", database="swissprot", hitlist_size=10, max
         return {"error": "BLAST result parse failed: %s" % e, "rid": rid, "source_db": "BLAST"}
 
 
+def rest(url, params=None, headers=None, is_json=True):
+    """Generic provenance-tracked fetch for ANY public REST database/API that scidb has no dedicated
+    function for (e.g. a niche registry, a species-specific resource). Reuses the same polite throttle +
+    24h cache + retries as every other scidb call. Returns {'source_url', 'data'} — cite source_url as
+    [Sn]. Only public read-only http(s) endpoints; do NOT put credentials/tokens in the URL."""
+    r = _http(url, params=params, headers=headers, is_json=is_json)
+    if isinstance(r, dict) and r.get("error"):
+        return r
+    src = url + (("?" + _uparse.urlencode(params)) if params else "")
+    return {"source_url": src, "data": r}
+
+
 # ────────────────────────────── catalog ──────────────────────────────
 _CATALOG = {
     "literature": ["lit_search(query, source=europepmc|crossref|semanticscholar|pubmed)", "pubmed(query)", "crossref(query|doi)", "semantic_scholar(query)"],
@@ -688,6 +700,7 @@ _CATALOG = {
     "clinical variants / genetics": ["clinvar(query)  # variant clinical significance", "gnomad(variant_id)  # population allele freq", "gwas_catalog(gene)  # GWAS SNPs for a gene"],
     "clinical trials": ["clinical_trials(query)  # ClinicalTrials.gov v2"],
     "sequence search": ["blast(sequence, program, database)  # NCBI BLAST (slow, submit+poll)"],
+    "generic": ["rest(url, params)  # any other public REST DB, provenance-tracked → {source_url, data}"],
 }
 
 
