@@ -92,7 +92,7 @@ export function AgentSteps({ steps, lang }: { steps: AgentStepView[]; lang: Lang
     <div className="ax-chain">
       {items.map((it, i) =>
         it.kind === "narr"
-          ? <p key={i} className="ax-chain__narr">{it.text}</p>
+          ? <p key={i} className="ax-chain__narr">{stripStatusGlyphs(it.text)}</p>
           : it.kind === "group"
             ? <GroupRow key={i} steps={it.steps} lang={lang} />
             : <SoloRow key={i} step={it.step} lang={lang} />
@@ -102,22 +102,35 @@ export function AgentSteps({ steps, lang }: { steps: AgentStepView[]; lang: Lang
 }
 
 // A calm, uniform step marker: the thinking chain shows the agent's PROCESS, so every step gets the
-// same green check — no alarming per-step red ✗ (genuine run failures surface at the run/task level).
+// same MUTED GRAY check — no colored status badge at all (no green ✓, no red ✗); genuine run failures
+// surface at the run/task level, not as alarming per-step icons.
 function StatusIcon() {
   return (
-    <span className="ax-chain__ic is-ok">
-      <Check size={9} aria-hidden />
+    <span className="ax-chain__ic">
+      <Check size={11} aria-hidden />
     </span>
   );
+}
+
+// Models sometimes pepper their narration/titles with colored status glyphs (✓ ✗ ❌ ✅ …) to mark
+// tried/failed sub-steps. Those render as loud green/red marks in the chain, which we don't want —
+// strip them so the process reads as one calm gray train of thought.
+function stripStatusGlyphs(s: string): string {
+  return s
+    .replace(/[✓✔✅☑✗✘✕✖❌❎]️?/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+([,，。;；:：])/g, "$1")
+    .trim();
 }
 
 // Some models emit raw `<tool_call>…` tags that leak into a step's title. Strip the wrapper, and if a
 // step is nothing but such a tag (no real output), it's a parse artifact — drop it from the chain.
 function cleanTitle(step: AgentStepView): string {
-  const t = (step.title || "")
-    .replace(/<\/?\s*tool_call[^>]*>/gi, "")
-    .replace(/^\s*<\|?\s*tool[_a-z]*\|?>?/i, "")
-    .trim();
+  const t = stripStatusGlyphs(
+    (step.title || "")
+      .replace(/<\/?\s*tool_call[^>]*>/gi, "")
+      .replace(/^\s*<\|?\s*tool[_a-z]*\|?>?/i, "")
+  );
   return t || step.role || "";
 }
 function isToolTagArtifact(step: AgentStepView): boolean {
