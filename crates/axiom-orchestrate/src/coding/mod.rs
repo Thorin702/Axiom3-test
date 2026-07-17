@@ -279,6 +279,13 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              `mpl.rcParams['font.sans-serif']=['PingFang SC','Heiti TC','Arial Unicode MS','DejaVu Sans']; \
              mpl.rcParams['axes.unicode_minus']=False` — then verify no missing-glyph boxes; only if no CJK \
              font is available fall back to English on the figure. \
+             NO BLANK FIGURES — self-check + redraw: a fetch or a curve-fit can return NOTHING, and an \
+             axes with no curve/scatter/bars ships as an empty, scaffold-only figure (this has happened: \
+             blank dose-response grids). BEFORE plotting, confirm the data is non-empty; if you plot from \
+             empty data the kernel DROPS the figure and prints `[axiom] ⚠ 丢弃了 …空图` — do NOT ignore that: \
+             fix the data (re-fetch / correct the query / recompute the fit) and REDRAW. If a specific group \
+             truly has no data, annotate that panel `无数据 / no data` instead of leaving it blank, and \
+             `plt.close()` any half-built or failed figure before drawing the final one. \
              STRUCTURE figures (a PROTEIN / enzyme / complex / active site / mutation / binding pocket / \
              fold): NEVER hand-draw these in matplotlib — matplotlib physically cannot render a cartoon \
              ribbon or ray-trace, and the attempt always looks amateurish. Instead `load_skill` \

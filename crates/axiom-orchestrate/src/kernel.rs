@@ -30,7 +30,23 @@ try:
     _socket.setdefaulttimeout(120)
 except Exception:
     pass
-_AX_SAVED = []   # (id(fig), base64 png) for every figure the current cell explicitly savefig()'d
+_AX_SAVED = []   # (id(fig), base64 png, has_data) for every figure the current cell explicitly savefig()'d
+def _ax_has_data(fig):
+    # A figure is "blank" if NO axes holds real data — a >=3-point curve, a scatter/collection, an
+    # image, bars, or an errorbar/bar container. 2-point reference lines (axhline/axvline) and bare
+    # grids/labels/titles do NOT count, so an all-scaffold-no-curve panel (empty data / failed fit,
+    # like the blank dose-response grids users saw) is caught and dropped.
+    try:
+        for ax in fig.get_axes():
+            for ln in ax.get_lines():
+                xd = ln.get_xdata()
+                if xd is not None and len(xd) >= 3:
+                    return True
+            if ax.collections or ax.images or ax.patches or getattr(ax, 'containers', None):
+                return True
+        return False
+    except Exception:
+        return True   # fail-open: on any inspection error, KEEP the figure (never lose a real one)
 try:
     import matplotlib
     matplotlib.use('Agg')
@@ -51,7 +67,7 @@ try:
             _r = _mfig.Figure._ax_orig(self, *a, **k)
             try:
                 _bb = io.BytesIO(); _mfig.Figure._ax_orig(self, _bb, format='png', dpi=110, bbox_inches='tight')
-                _AX_SAVED.append((id(self), base64.b64encode(_bb.getvalue()).decode()))
+                _AX_SAVED.append((id(self), base64.b64encode(_bb.getvalue()).decode(), _ax_has_data(self)))
             except Exception:
                 pass
             return _r
@@ -78,22 +94,28 @@ def run(code):
             try:
                 import matplotlib.pyplot as plt
                 import matplotlib.figure as _mfig
-                seen = set()   # dedup by PNG bytes: a figure both saved AND left open renders identically
+                seen = set(); _blank = 0   # dedup by PNG bytes; count dropped blank (no-data) figures
                 # 1) figures the code explicitly saved (survive plt.close())
                 saved_ids = set()
-                for _fid, _d in _AX_SAVED:
+                for _fid, _d, _hd in _AX_SAVED:
+                    saved_ids.add(_fid)
                     if _d in seen: continue
-                    figs.append(_d); seen.add(_d); saved_ids.add(_fid)
+                    if not _hd: _blank += 1; continue   # scaffold-only / empty-data figure → drop it
+                    figs.append(_d); seen.add(_d)
                 # 2) any still-open figure that was never saved (e.g. just left open / plt.show())
                 _orig = getattr(_mfig.Figure, '_ax_orig', None)
                 for n in plt.get_fignums():
                     f = plt.figure(n)
                     if id(f) in saved_ids: continue
+                    if not _ax_has_data(f): _blank += 1; continue   # drop a blank open figure
                     b = io.BytesIO()
                     (_orig or _mfig.Figure.savefig)(f, b, format='png', dpi=110, bbox_inches='tight')
                     _d = base64.b64encode(b.getvalue()).decode()
                     if _d not in seen: figs.append(_d); seen.add(_d)
                 plt.close('all')
+                if _blank:
+                    # surfaced in the cell's stdout → the agent SELF-CHECKS and redraws (fault tolerance)
+                    print("\n[axiom] ⚠ 丢弃了 %d 张空图（坐标轴内没有任何数据曲线/散点/柱）。多半是取到的数据为空或拟合失败——请先确认数据非空再重画；某分组确实无数据就明确标注'无数据'，不要输出空白子图。" % _blank)
             except Exception:
                 pass
     except Exception:

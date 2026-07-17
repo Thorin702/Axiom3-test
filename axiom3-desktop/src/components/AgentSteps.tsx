@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Check, X, ChevronRight } from "lucide-react";
+import { Check, ChevronRight } from "lucide-react";
 import type { AgentStepView } from "../lib/types";
 import type { Lang } from "../i18n";
 import { ArtifactBody } from "./artifact/ArtifactBody";
@@ -87,7 +87,7 @@ function figureMeta(step: AgentStepView, zh: boolean): string | null {
 }
 
 export function AgentSteps({ steps, lang }: { steps: AgentStepView[]; lang: Lang }) {
-  const items = group(steps);
+  const items = group(steps.filter((s) => !isToolTagArtifact(s)));
   return (
     <div className="ax-chain">
       {items.map((it, i) =>
@@ -101,22 +101,38 @@ export function AgentSteps({ steps, lang }: { steps: AgentStepView[]; lang: Lang
   );
 }
 
-function StatusIcon({ failed }: { failed: boolean }) {
+// A calm, uniform step marker: the thinking chain shows the agent's PROCESS, so every step gets the
+// same green check — no alarming per-step red ✗ (genuine run failures surface at the run/task level).
+function StatusIcon() {
   return (
-    <span className={`ax-chain__ic ${failed ? "is-err" : "is-ok"}`}>
-      {failed ? <X size={9} aria-hidden /> : <Check size={9} aria-hidden />}
+    <span className="ax-chain__ic is-ok">
+      <Check size={9} aria-hidden />
     </span>
   );
+}
+
+// Some models emit raw `<tool_call>…` tags that leak into a step's title. Strip the wrapper, and if a
+// step is nothing but such a tag (no real output), it's a parse artifact — drop it from the chain.
+function cleanTitle(step: AgentStepView): string {
+  const t = (step.title || "")
+    .replace(/<\/?\s*tool_call[^>]*>/gi, "")
+    .replace(/^\s*<\|?\s*tool[_a-z]*\|?>?/i, "")
+    .trim();
+  return t || step.role || "";
+}
+function isToolTagArtifact(step: AgentStepView): boolean {
+  const t = (step.title || "").trim();
+  const looksLikeTag = /^<\/?\s*tool_call/i.test(t) || /^<\|?\s*tool/i.test(t);
+  return looksLikeTag && !(step.output || "").trim();
 }
 
 function GroupRow({ steps, lang }: { steps: AgentStepView[]; lang: Lang }) {
   const [open, setOpen] = useState(false);
   const zh = lang === "zh";
-  const failed = steps.some((s) => s.status === "failed" || s.status === "err");
   return (
     <div className="ax-chain__step">
       <button className={`ax-chain__card is-group ${open ? "is-open" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <StatusIcon failed={failed} />
+        <StatusIcon />
         <span className="ax-chain__title">{summarize(steps, zh)}</span>
         <span className="ax-chain__count">{steps.length} {zh ? "步" : steps.length === 1 ? "step" : "steps"}</span>
         <ChevronRight size={13} className={`ax-chain__chev ${open ? "is-open" : ""}`} aria-hidden />
@@ -132,10 +148,9 @@ function GroupRow({ steps, lang }: { steps: AgentStepView[]; lang: Lang }) {
 
 function SoloRow({ step, lang, nested }: { step: AgentStepView; lang: Lang; nested?: boolean }) {
   const zh = lang === "zh";
-  const title = step.title || step.role;
+  const title = cleanTitle(step);
   const body = (step.output || "").trim();
   const hasBody = body.length > 0;
-  const failed = step.status === "failed" || step.status === "err";
   const isPy = step.role === "python";
   // Parse a python step up-front so its computed FIGURES can render ALWAYS (a real-time plot is the
   // point of the thinking chain), while the code+output stay behind the collapsible toggle.
@@ -155,7 +170,7 @@ function SoloRow({ step, lang, nested }: { step: AgentStepView; lang: Lang; nest
         onClick={() => hasBody && setOpen((o) => !o)}
         aria-expanded={hasBody ? open : undefined}
       >
-        <StatusIcon failed={failed} />
+        <StatusIcon />
         <span className="ax-chain__title">{title}</span>
         {meta && <span className="ax-chain__count">{meta}</span>}
         {hasBody && <ChevronRight size={13} className={`ax-chain__chev ${open ? "is-open" : ""}`} aria-hidden />}

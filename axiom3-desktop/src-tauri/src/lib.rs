@@ -1,3 +1,4 @@
+mod auth;
 mod deliverables;
 mod workbench;
 
@@ -127,6 +128,10 @@ pub fn run() {
             deliverables::deliverable_load,
             deliverables::deliverable_delete,
             deliverables::deliverable_rename,
+            auth::account_login,
+            auth::account_session,
+            auth::account_validate,
+            auth::account_logout,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

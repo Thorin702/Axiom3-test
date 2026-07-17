@@ -10,6 +10,7 @@ import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
 import { ReviewerPanel } from "./components/ReviewerPanel";
+import { Login, type Auth } from "./components/Login";
 import { AgentSteps } from "./components/AgentSteps";
 import { ThreadActivity } from "./components/ThreadActivity";
 import { RoundHistory } from "./components/RoundHistory";
@@ -33,7 +34,7 @@ import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, Database, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
   Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
-  MoreHorizontal, Pencil, Mic, Info, Pause, Play, type LucideIcon,
+  MoreHorizontal, Pencil, Mic, Info, Pause, Play, LogOut, type LucideIcon,
 } from "lucide-react";
 
 // Composer modes (the icon-button popover, Claude-style). Each maps to backend behaviour:
@@ -206,6 +207,43 @@ function App() {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [appVer, setAppVer] = useState(""); // app version from tauri.conf (single source), shown in the sidebar
   useEffect(() => { getVersion().then(setAppVer).catch(() => {}); }, []);
+  // ── Account login + license-expiry gate ──────────────────────────────────────────────────
+  // `auth` = the signed-in account (with its validity date) | null (show login) | "checking".
+  const [auth, setAuth] = useState<Auth | null | "checking">("checking");
+  const [authMsg, setAuthMsg] = useState<string | null>(null); // reason shown on the login screen
+  useEffect(() => {
+    let alive = true;
+    type AuthResp = { ok: boolean; account?: string; expiry?: string; error?: string; offline?: boolean };
+    const today = () => new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local
+    const call = (cmd: string, fallback: AuthResp) => invoke<AuthResp>(cmd).catch((): AuthResp => fallback);
+    // On launch: read the stored session fast, then confirm with the server.
+    (async () => {
+      const s = await call("account_session", { ok: false });
+      if (!alive) return;
+      if (!s.ok) { setAuth(null); return; }
+      // local expiry guard (also covers offline)
+      if (s.expiry && s.expiry < today()) { setAuth(null); setAuthMsg("账号使用期已到期,请联系管理员延期"); return; }
+      const v = await call("account_validate", { ok: true, offline: true, account: s.account, expiry: s.expiry });
+      if (!alive) return;
+      if (v.ok) setAuth({ account: v.account || s.account || "", expiry: v.expiry ?? s.expiry ?? null });
+      else { setAuth(null); setAuthMsg(v.error || "登录已失效,请重新登录"); }
+    })();
+    // Re-validate periodically: catches expiry crossing + single-device kick while the app is open.
+    const iv = setInterval(async () => {
+      const v = await call("account_validate", { ok: true, offline: true });
+      if (!alive) return;
+      if (!v.ok) { setAuth(null); setAuthMsg(v.error || "登录已失效,请重新登录"); return; }
+      if (v.expiry && v.expiry < today()) { setAuth(null); setAuthMsg("账号使用期已到期,请联系管理员延期"); return; }
+      if (v.account) setAuth((cur) => (cur && cur !== "checking" ? { account: v.account || cur.account, expiry: v.expiry ?? cur.expiry } : cur));
+    }, 10 * 60 * 1000);
+    return () => { alive = false; clearInterval(iv); };
+  }, []);
+  async function doLogout() {
+    await invoke("account_logout").catch(() => {});
+    setAccountMenu(false);
+    setAuthMsg(null);
+    setAuth(null);
+  }
   // Models actually connected right now — the ONLY ones offered as reviewer-model options in settings.
   const [connectedModels, setConnectedModels] = useState<string[]>([]);
   useEffect(() => {
@@ -1621,6 +1659,18 @@ function App() {
     );
   }
 
+  // ── Login gate: the workbench is not shown until an APPROVED, IN-DATE account is signed in ──
+  if (auth === "checking") return <div className="ax-authgate" aria-busy />;
+  if (auth === null) return <Login lang={lang} msg={authMsg} onLogin={(a) => { setAuthMsg(null); setAuth(a); }} />;
+
+  // Human-readable validity label for the sidebar footer (with a "剩 N 天" nudge near expiry).
+  const acctExpiry = (() => {
+    if (!auth.expiry) return lang === "zh" ? "长期有效" : "No expiry";
+    const days = Math.ceil((new Date(auth.expiry + "T23:59:59").getTime() - Date.now()) / 86400000);
+    const base = (lang === "zh" ? "使用期至 " : "Valid to ") + auth.expiry;
+    return days >= 0 && days <= 7 ? base + (lang === "zh" ? ` · 剩 ${days} 天` : ` · ${days}d left`) : base;
+  })();
+
   return (
     <>
       {booting && <Splash onDone={() => setBooting(false)} />}
@@ -1804,11 +1854,11 @@ function App() {
         <div className="ax-side-foot">
           <div className="ax-acct ax-acct--foot">
             <button className={`ax-acct__btn ${accountMenu ? "is-active" : ""}`} onClick={() => setAccountMenu((o) => !o)} aria-haspopup="menu" aria-expanded={accountMenu}>
-              <span className="ax-acct__avatar">A</span>
+              <span className="ax-acct__avatar">{auth.account.charAt(0).toUpperCase() || "A"}</span>
               {!sidebarCollapsed && (
                 <span className="ax-acct__label">
-                  <b>{lang === "zh" ? "本地版" : "Local"}</b>
-                  <span>{(lang === "zh" ? "本机数据" : "on-device")}{appVer && ` · v${appVer}`}</span>
+                  <b>{auth.account}</b>
+                  <span>{acctExpiry}</span>
                 </span>
               )}
             </button>
@@ -1825,9 +1875,12 @@ function App() {
                   <button className="ax-menu__item" role="menuitem" onClick={() => { setSettingsCat("about"); setSettingsOpen(true); setAccountMenu(false); }}>
                     <Info size={14} aria-hidden /> {lang === "zh" ? "帮助与关于" : "Help & about"}
                   </button>
+                  <button className="ax-menu__item ax-menu__item--danger" role="menuitem" onClick={doLogout}>
+                    <LogOut size={14} aria-hidden /> {lang === "zh" ? "退出登录" : "Sign out"}
+                  </button>
                   <div className="ax-menu__foot">
-                    <span className="ax-acct__avatar ax-acct__avatar--sm">A</span>
-                    {lang === "zh" ? "本地版 · 本机数据" : "Local · on-device"}
+                    <span className="ax-acct__avatar ax-acct__avatar--sm">{auth.account.charAt(0).toUpperCase() || "A"}</span>
+                    {auth.account}{appVer && ` · v${appVer}`}
                   </div>
                 </div>
               </>
