@@ -319,8 +319,23 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
         );
     }
     if has_kernel {
+        // scidb is ALWAYS on the kernel PYTHONPATH — but the model won't use it unless the BASE prompt
+        // says so; without this, agents hand-rolled a database's GraphQL/REST and burned many turns
+        // fighting its schema (observed on Open Targets). Surface it up front with the hard rule.
         s.push_str(
-            "\n{\"tool\":\"python\",\"code\":\"<python source>\"}   (a PERSISTENT Python kernel: \
+            "\n── PRE-INSTALLED DATABASE TOOLKIT (`import scidb`) — USE IT, don't hand-roll DB APIs ──\n\
+             A `scidb` module is already on the kernel path (no pip needed). Every call returns a REAL \
+             record with a source_url to cite [Sn]; on failure it returns {'error':…} (surface it, never \
+             fabricate). **RULE: if scidb has a function for a database, CALL IT — do NOT hand-write that \
+             database's GraphQL/REST/urllib yourself (you will waste many turns fighting its schema).** \
+             Functions: scidb.lit_search / pubmed / crossref (literature); scidb.uniprot / pdb / pdb_search / \
+             alphafold (protein/structure); scidb.pubchem / chembl / chembl_activity (chemistry); scidb.gene / \
+             ensembl / geo / entrez_search (genomics); scidb.kegg / reactome / string_db (pathways); \
+             scidb.opentargets(gene) (target→disease scores); scidb.clinvar / gnomad(variant_id) / \
+             gwas_catalog(gene) (clinical variants/genetics); scidb.clinical_trials(query); scidb.blast(seq); \
+             and scidb.rest(url, params) for ANY other public REST DB (provenance-tracked). Run \
+             `scidb.catalog()` once to see them all. Prefer a real scidb record over a remembered fact.\n\
+             {\"tool\":\"python\",\"code\":\"<python source>\"}   (a PERSISTENT Python kernel: \
              variables/dataframes/models stay in memory across python calls, so build up an analysis \
              step by step. stdout and the last expression's value come back to you; any matplotlib \
              figure you create is CAPTURED into the report — do `import matplotlib.pyplot as plt` and \
