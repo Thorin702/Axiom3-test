@@ -2978,6 +2978,48 @@ const RESEARCH_MODE_DIRECTIVE: &str = "【深度研究模式 · 无预算限制�
  · **结论不过度绝对、且与自列局限自洽**:除非有直接证据,避免「最优/唯一/充要/根本不兼容/完全空白/一定」这类绝对措辞,降级为「循证等级最高/主要/核心」;不要一边称某策略「最优」一边又列它的硬伤。并写明一句显式**创新点**:「本文相对现有工作的新增在于 X」。\n\
  · **结尾附「参考文献」小节**:把正文用到的 [Sn] 汇成清单,每条给题名 / DOI / 链接,便于回溯;确保正文出现的每个 [Sn] 都在清单里、清单里的每条也确在正文被引用过。";
 
+// ── 产出物落库 helpers ── Persist a finished deliverable into the user's project folder.
+/// Minimal standard-base64 decoder (no crate dep) — used to turn ```pyfig base64 PNGs back into
+/// real .png files in the user's folder. Skips whitespace and '=' padding.
+fn b64_val(c: u8) -> Option<u8> {
+    match c {
+        b'A'..=b'Z' => Some(c - b'A'),
+        b'a'..=b'z' => Some(c - b'a' + 26),
+        b'0'..=b'9' => Some(c - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+fn b64_decode(s: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    let (mut buf, mut bits) = (0u32, 0u32);
+    for &c in s.as_bytes() {
+        let v = match b64_val(c) {
+            Some(v) => v,
+            None => continue,
+        };
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    out
+}
+/// A filesystem-safe, ≤40-char folder name derived from the research goal.
+fn deliverable_folder_title(goal: &str) -> String {
+    let cleaned: String = goal
+        .trim()
+        .chars()
+        .take(40)
+        .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\n' | '\r' | '\t') { ' ' } else { c })
+        .collect();
+    let t = cleaned.trim().trim_matches('.').trim();
+    if t.is_empty() { "未命名课题".to_string() } else { t.to_string() }
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)] // Tauri command args bind 1:1 to JS invoke keys
 pub async fn coding_run(
@@ -3039,6 +3081,15 @@ pub async fn coding_run(
     // manifest (real cross-topic contamination observed: a KRAS report listing NDM-1's zinc PDBs).
     // Folder-less analysis likewise gets a per-run scratch. Only analysis over a user-CHOSEN
     // folder keeps that folder (that IS the data being analysed).
+    // The user's chosen PROJECT FOLDER (passed as `workspace`) is their persistent data + output
+    // dir. Capture it BEFORE the scratch rebind: compute still runs in an isolated per-run scratch
+    // (below, to avoid cross-run pollution), but we READ the user's data from this folder and WRITE
+    // the finished deliverable back into it — so choosing a project directory actually means
+    // "my data goes in, my 产出物 comes out here".
+    let user_project_dir: Option<std::path::PathBuf> = {
+        let w = workspace.trim();
+        if w.is_empty() { None } else { std::path::Path::new(w).canonicalize().ok().filter(|p| p.is_dir()) }
+    };
     let workspace = if is_research || (workspace.trim().is_empty() && is_analyze) {
         let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let dir = base.join("analysis").join(safe_run_component(&runid));
@@ -3081,6 +3132,50 @@ pub async fn coding_run(
                 data_note.push_str(&format!(
                     "\n⚠ NOTE: these attached files FAILED to copy and are NOT available — do not assume them: {}.",
                     copy_failed.join("; ")
+                ));
+            }
+        }
+        // #3 READ-A-FOLDER: let the agent read the user's project-folder data DIRECTLY by absolute
+        // path (the compute cwd is a separate scratch). List the folder's data files so it knows
+        // what is there and can analyse it without the user attaching each file one by one.
+        if let Some(pdir) = user_project_dir.as_ref() {
+            let mut files: Vec<String> = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(pdir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if !p.is_file() {
+                        continue;
+                    }
+                    let name = match p.file_name().and_then(|n| n.to_str()) {
+                        Some(n) => n.to_string(),
+                        None => continue,
+                    };
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_ascii_lowercase();
+                    if matches!(
+                        ext.as_str(),
+                        "csv" | "tsv" | "tab" | "txt" | "md" | "json" | "xlsx" | "xls" | "parquet"
+                            | "fasta" | "fa" | "fastq" | "pdb" | "cif" | "npy" | "npz" | "dat" | "gz"
+                    ) {
+                        files.push(name);
+                    }
+                    if files.len() >= 60 {
+                        break;
+                    }
+                }
+            }
+            if !files.is_empty() {
+                files.sort();
+                data_note.push_str(&format!(
+                    "\n\nThe user's PROJECT DATA FOLDER is `{}` — you MAY read its files DIRECTLY by \
+                     absolute path with the python tool (e.g. `import pandas as pd; df = pd.read_csv(r'{}/{}')`). \
+                     Data files present: {}.",
+                    pdir.display(),
+                    pdir.display(),
+                    files.first().cloned().unwrap_or_default(),
+                    files.join(", ")
                 ));
             }
         }
@@ -3453,6 +3548,46 @@ pub async fn coding_run(
                 format!("{} B", a.bytes)
             };
             synthesis.push_str(&format!("- `{}` — {sz}\n", a.path));
+        }
+    }
+    // #1 产出物落库: write the finished deliverable into the user's PROJECT FOLDER (separate from the
+    // throwaway compute scratch). Best-effort — a write failure NEVER fails the run.
+    if let Some(pdir) = user_project_dir.as_ref() {
+        let out = pdir.join("Axiom3产出").join(deliverable_folder_title(&goal));
+        if std::fs::create_dir_all(&out).is_ok() {
+            let _ = std::fs::write(out.join("报告.md"), &synthesis);
+            // extract ```pyfig base64 PNGs → figures/图N.png (real image files for papers/slides)
+            let mut body = synthesis.as_str();
+            let mut n = 0usize;
+            while let Some(i) = body.find("```pyfig") {
+                let after = &body[i + "```pyfig".len()..];
+                let nl = match after.find('\n') {
+                    Some(p) => p,
+                    None => break,
+                };
+                let bs = &after[nl + 1..];
+                let end = match bs.find("```") {
+                    Some(p) => p,
+                    None => break,
+                };
+                let bytes = b64_decode(bs[..end].trim());
+                if bytes.len() > 100 {
+                    let fdir = out.join("figures");
+                    let _ = std::fs::create_dir_all(&fdir);
+                    n += 1;
+                    let _ = std::fs::write(fdir.join(format!("图{n}.png")), bytes);
+                }
+                body = &bs[end + 3..];
+            }
+            // sources list
+            if !result.sources.is_empty() {
+                let mut sb = String::from("# 来源 Sources\n\n");
+                for s in &result.sources {
+                    let head = if s.title.trim().is_empty() { s.url.clone() } else { s.title.clone() };
+                    sb.push_str(&format!("- [S{}] ({}) {} — {}\n", s.id, s.kind, head, s.url));
+                }
+                let _ = std::fs::write(out.join("来源.md"), sb);
+            }
         }
     }
     // DEEP RESEARCH: an independent reviewer flags gaps / overclaims / unsupported claims — but ONLY

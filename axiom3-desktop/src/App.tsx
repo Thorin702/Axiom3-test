@@ -935,12 +935,22 @@ function App() {
     if (typeof dir === "string") setCodeWs(dir);
   }
   async function pickDataFiles() {
-    const sel = await open({
-      multiple: true,
-      filters: [{ name: lang === "zh" ? "数据 / 文档" : "Data / docs", extensions: ["csv", "tsv", "json", "txt", "md", "xlsx", "xls", "parquet", "npy", "npz", "pdf", "docx"] }],
-    });
-    const paths = Array.isArray(sel) ? sel : typeof sel === "string" ? [sel] : [];
-    if (paths.length) setCodeAttachments((a) => [...new Set([...a, ...paths])]);
+    // Wrapped so a dialog error surfaces instead of looking like a dead button. `filters` is a HINT
+    // only (Data/docs listed first); the user can still switch the picker to "All files" for any type.
+    try {
+      const sel = await open({
+        multiple: true,
+        filters: [
+          { name: lang === "zh" ? "数据 / 文档" : "Data / docs", extensions: ["csv", "tsv", "json", "txt", "md", "xlsx", "xls", "parquet", "npy", "npz", "pdf", "docx", "fasta", "fa", "pdb", "cif"] },
+          { name: lang === "zh" ? "所有文件" : "All files", extensions: ["*"] },
+        ],
+      });
+      const paths = Array.isArray(sel) ? sel : typeof sel === "string" ? [sel] : [];
+      if (paths.length) setCodeAttachments((a) => [...new Set([...a, ...paths])]);
+    } catch (e) {
+      console.error("attach picker failed", e);
+      alert((lang === "zh" ? "打开文件选择器失败:" : "Could not open the file picker: ") + String(e));
+    }
   }
   // `appendTo` = a follow-up in the SAME analysis session → continue the research (prior findings
   // fed back in) and append the result as a new version (v2, v3 …), for multi-round deep research.
