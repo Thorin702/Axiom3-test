@@ -38,7 +38,8 @@ __all__ = [
     "entrez_search", "entrez_fetch", "entrez_summary", "gene", "geo", "ensembl",
     "uniprot", "uniprot_search", "pdb", "pdb_search", "alphafold",
     "pubchem", "chembl", "chembl_activity", "kegg", "reactome", "string_db",
-    "opentargets", "clinvar", "gnomad", "gwas_catalog", "clinical_trials", "blast", "rest",
+    "opentargets", "clinvar", "gnomad", "gwas_catalog", "clinical_trials", "blast",
+    "interpro", "protein_atlas", "rest",
 ]
 
 _UA = "Axiom3-scidb/1.0 (scientific research; https://axiom3.local)"
@@ -677,6 +678,38 @@ def blast(sequence, program="blastp", database="swissprot", hitlist_size=10, max
         return {"error": "BLAST result parse failed: %s" % e, "rid": rid, "source_db": "BLAST"}
 
 
+def interpro(uniprot_acc):
+    """InterPro protein DOMAIN architecture for a UniProt accession (e.g. 'P01116') — the canonical
+    domains / families / sites (Pfam, PROSITE, SMART … integrated). Use it to describe a protein's
+    functional modules, beyond UniProt's own feature list."""
+    j = _http("https://www.ebi.ac.uk/interpro/api/entry/interpro/protein/uniprot/%s" % uniprot_acc)
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    out = []
+    for e in j.get("results", []) or []:
+        md = e.get("metadata", {}) or {}
+        out.append({"accession": md.get("accession"), "type": md.get("type"), "name": md.get("name"),
+                    "url": "https://www.ebi.ac.uk/interpro/entry/interpro/%s/" % md.get("accession"), "source_db": "InterPro"})
+    return {"uniprot": uniprot_acc, "entries": out, "source_db": "InterPro"}
+
+
+def protein_atlas(ensembl_id):
+    """Human Protein Atlas expression + localization for an ENSEMBL GENE id (e.g. 'ENSG00000133703';
+    resolve a symbol→Ensembl via scidb.ensembl or scidb.opentargets). Returns RNA tissue specificity,
+    subcellular location, and biological-process annotation — where a protein is expressed/localized
+    (biomarker / target context)."""
+    j = _http("https://www.proteinatlas.org/%s.json" % ensembl_id)
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    if not isinstance(j, dict):
+        return {"error": "unexpected HPA response", "source_db": "HPA"}
+    return {"gene": j.get("Gene"), "ensembl": ensembl_id,
+            "rna_tissue_specificity": j.get("RNA tissue specificity"),
+            "subcellular_location": j.get("Subcellular location"),
+            "biological_process": j.get("Biological process"),
+            "url": "https://www.proteinatlas.org/%s" % ensembl_id, "source_db": "Human Protein Atlas"}
+
+
 def rest(url, params=None, headers=None, is_json=True):
     """Generic provenance-tracked fetch for ANY public REST database/API that scidb has no dedicated
     function for (e.g. a niche registry, a species-specific resource). Reuses the same polite throttle +
@@ -693,7 +726,7 @@ def rest(url, params=None, headers=None, is_json=True):
 _CATALOG = {
     "literature": ["lit_search(query, source=europepmc|crossref|semanticscholar|pubmed)", "pubmed(query)", "crossref(query|doi)", "semantic_scholar(query)"],
     "genomics (NCBI Entrez ~40 dbs)": ["entrez_search(db, term)", "entrez_fetch(db, ids, rettype)", "entrez_summary(db, ids)", "gene(symbol, organism)", "geo(query)", "ensembl(symbol_or_id, species)"],
-    "protein / structure": ["uniprot(acc)", "uniprot_search(query)", "pdb(pdb_id)", "pdb_search(query)", "alphafold(uniprot_acc)"],
+    "protein / structure": ["uniprot(acc)", "uniprot_search(query)", "pdb(pdb_id)", "pdb_search(query)", "alphafold(uniprot_acc)", "interpro(uniprot_acc)  # domains", "protein_atlas(ensembl_id)  # expression/localization"],
     "chemistry": ["pubchem(name|cid|smiles|inchikey)", "chembl(query|chembl_id)", "chembl_activity(target_chembl_id|molecule_chembl_id)"],
     "pathways / interactions": ["kegg(entry)", "reactome(query)", "string_db(identifiers, species)"],
     "drug targets / disease": ["opentargets(query=gene | ensembl_id)  # target→disease assoc scores (repurposing)"],

@@ -329,7 +329,7 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              fabricate). **RULE: if scidb has a function for a database, CALL IT — do NOT hand-write that \
              database's GraphQL/REST/urllib yourself (you will waste many turns fighting its schema).** \
              Functions: scidb.lit_search / pubmed / crossref (literature); scidb.uniprot / pdb / pdb_search / \
-             alphafold (protein/structure); scidb.pubchem / chembl / chembl_activity (chemistry); scidb.gene / \
+             alphafold / interpro(domains) / protein_atlas(expression) (protein/structure); scidb.pubchem / chembl / chembl_activity (chemistry); scidb.gene / \
              ensembl / geo / entrez_search (genomics); scidb.kegg / reactome / string_db (pathways); \
              scidb.opentargets(gene) (target→disease scores); scidb.clinvar / gnomad(variant_id) / \
              gwas_catalog(gene) (clinical variants/genetics); scidb.clinical_trials(query); scidb.blast(seq); \
@@ -963,6 +963,7 @@ pub async fn run_coding_agent_steered(
     let (mut loaded_struct, mut loaded_mol, mut loaded_gene) = (false, false, false);
     let mut figure_nudges = 0u32;
     let mut reflected = false; // whether the ONE-time self-critique gate has fired before finalizing
+    let mut cite_nudged = false; // whether the ONE-time "you gathered sources but cited none" gate has fired
     let mut last_compact_len = 0usize; // transcript length at the last context-compaction (avoid re-compacting every step)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
@@ -1154,6 +1155,17 @@ pub async fn run_coding_agent_steered(
                     ));
                     continue;
                 }
+            }
+            // CITATION GATE: the run gathered real sources but the report cites NONE of them ([Sn]=0).
+            // Push once to thread the markers in — a report making claims with zero clickable provenance
+            // defeats the product's core promise (observed: an 84-source PCSK9 report with 0 [Sn]).
+            if sources.len() >= 5 && !f.contains("[S") && !cite_nudged {
+                cite_nudged = true;
+                transcript.push_str(&format!(
+                    "\n[system] 你已检索到 {} 条来源,但报告正文里一个 [Sn] 角标都没有 —— 关键结论/数字必须挂上对应来源的 [Sn](如 [S3]、[S12],用你实际检索到的 sources 的真实编号),否则读者无法溯源,这违背本产品最核心的承诺。请给正文的关键论断补上 [Sn] 角标,补完再 {{\"final\":…}}。You gathered sources but cited none — add [Sn] markers to the key claims before finalizing.\n",
+                    sources.len()
+                ));
+                continue;
             }
             // SELF-CRITIQUE GATE (quality > budget cutoff): before accepting the FINAL report, make the
             // agent critique its own draft ONCE against the ORIGINAL question + an evidence checklist.
