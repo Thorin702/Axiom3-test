@@ -440,23 +440,42 @@ def _chembl_mol(m):
     }
 
 
-def chembl_activity(target_chembl_id=None, molecule_chembl_id=None, limit=50):
-    """ChEMBL measured bioactivities (IC50/Ki/EC50) for a target or a molecule — REAL assay values, cite them."""
-    params = {"format": "json", "limit": int(limit)}
+def chembl_activity(target_chembl_id=None, molecule_chembl_id=None, activity_type=None, limit=200):
+    """ChEMBL measured bioactivities (IC50/Ki/EC50…) for a TARGET and/or MOLECULE(S) — REAL assay values.
+    - molecule_chembl_id: a single id OR a LIST of ids (get several compounds' potencies in ONE call).
+    - activity_type: filter to e.g. 'IC50' / 'Ki' (RECOMMENDED — you get comparable potencies, not noise).
+    - PAGINATES up to `limit` (default 200; ChEMBL caps 1000/page). Cite the assay; never invent potencies."""
+    base = "https://www.ebi.ac.uk/chembl/api/data/activity"
+    if not target_chembl_id and not molecule_chembl_id:
+        return {"error": "need target_chembl_id or molecule_chembl_id (a single id or a list)"}
+    params = {"format": "json", "limit": min(int(limit), 1000)}
     if target_chembl_id:
         params["target_chembl_id"] = target_chembl_id
     if molecule_chembl_id:
-        params["molecule_chembl_id"] = molecule_chembl_id
-    if len(params) == 2:
-        return {"error": "need target_chembl_id or molecule_chembl_id"}
-    j = _http("https://www.ebi.ac.uk/chembl/api/data/activity", params)
-    if isinstance(j, dict) and j.get("error"):
-        return j
-    return [{"molecule_chembl_id": a.get("molecule_chembl_id"), "target_chembl_id": a.get("target_chembl_id"),
-             "type": a.get("standard_type"), "relation": a.get("standard_relation"),
-             "value": a.get("standard_value"), "units": a.get("standard_units"),
-             "assay": a.get("assay_description"), "doc_doi": a.get("document_journal"),
-             "source_db": "ChEMBL"} for a in j.get("activities", []) or []]
+        if isinstance(molecule_chembl_id, (list, tuple)):
+            params["molecule_chembl_id__in"] = ",".join(str(m) for m in molecule_chembl_id)
+        else:
+            params["molecule_chembl_id"] = molecule_chembl_id
+    if activity_type:
+        params["standard_type"] = activity_type
+    out = []
+    url, p = base, params
+    while url and len(out) < int(limit):
+        j = _http(url, p)
+        p = None  # the 'next' URL already carries the query params
+        if isinstance(j, dict) and j.get("error"):
+            return out if out else j
+        for a in j.get("activities", []) or []:
+            out.append({"molecule_chembl_id": a.get("molecule_chembl_id"), "target_chembl_id": a.get("target_chembl_id"),
+                        "type": a.get("standard_type"), "relation": a.get("standard_relation"),
+                        "value": a.get("standard_value"), "units": a.get("standard_units"),
+                        "assay": a.get("assay_description"), "doc_doi": a.get("document_journal"),
+                        "source_db": "ChEMBL"})
+            if len(out) >= int(limit):
+                break
+        nxt = ((j.get("page_meta") or {}) or {}).get("next")
+        url = ("https://www.ebi.ac.uk" + nxt) if nxt else None
+    return out
 
 
 # ────────────────────────────── pathways / interactions ──────────────────────────────

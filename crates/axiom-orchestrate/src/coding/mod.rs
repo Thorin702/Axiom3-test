@@ -1094,7 +1094,16 @@ pub async fn run_coding_agent_steered(
                     );
                     continue;
                 }
-                return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
+                // SALVAGE: don't ship an EMPTY report. If the model gave up with a blank/trivial reply but
+                // the run actually gathered material (>=3 steps of data), synthesize a report from the
+                // transcript instead of returning nothing ("无产物内容"). This turned an empty analysis run
+                // (agent absorbed in data-gathering, never wrote the report) into a real deliverable.
+                let summary = if reply.trim().is_empty() && n >= 3 {
+                    synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await
+                } else {
+                    reply.trim().to_string()
+                };
+                return CodingResult { status: "done".into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
         };
         // Weaker models routinely emit a valid-INTENT tool call whose JSON is technically
@@ -1117,10 +1126,27 @@ pub async fn run_coding_agent_steered(
                     ));
                     continue;
                 }
-                return CodingResult { status: "done".into(), summary: reply.trim().to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
+                // SALVAGE: don't ship an EMPTY report. If the model gave up with a blank/trivial reply but
+                // the run actually gathered material (>=3 steps of data), synthesize a report from the
+                // transcript instead of returning nothing ("无产物内容"). This turned an empty analysis run
+                // (agent absorbed in data-gathering, never wrote the report) into a real deliverable.
+                let summary = if reply.trim().is_empty() && n >= 3 {
+                    synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await
+                } else {
+                    reply.trim().to_string()
+                };
+                return CodingResult { status: "done".into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
         };
         if let Some(f) = v.get("final").and_then(|x| x.as_str()) {
+            // EMPTY-FINAL SALVAGE: an empty/trivial "final" would ship as "无产物内容". If the run gathered
+            // real material (>=3 steps), synthesize a proper report from the transcript instead of accepting
+            // the blank finish (usually the model fumbling the write, not "nothing to say").
+            let f: String = if f.trim().is_empty() && n >= 3 {
+                synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await
+            } else {
+                f.to_string()
+            };
             // In write mode, don't accept "done" until the agent has actually RUN a
             // build/test command at least once — nudge it once, like Codex verifying.
             if sandbox.mode() == SandboxMode::ReadWrite && !ran_command && !nudged {
