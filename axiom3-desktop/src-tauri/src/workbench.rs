@@ -787,6 +787,10 @@ pub struct AppState {
     /// The live Python notebook kernel (started lazily on first cell). `Arc` so a cell can
     /// execute on a blocking thread without holding the state lock.
     kernel: Mutex<Option<Arc<PyKernel>>>,
+    /// Set by the `force_quit` command AFTER the user confirms closing while a run is live, so the
+    /// window-close / exit guard (lib.rs) stops preventing the close and the process actually exits.
+    /// Without it the guard would re-prevent the programmatic close and the app could never quit.
+    force_quit: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -865,9 +869,19 @@ impl AppState {
     }
     /// True while ANY work (a check OR an orchestration run) reads provider keys from
     /// the process env. Used to refuse mutating keys mid-work — a live `set_var` would
-    /// data-race those concurrent reads.
-    fn is_busy(&self) -> bool {
+    /// data-race those concurrent reads. Also the predicate the window-close/exit guard
+    /// (lib.rs) uses to decide whether closing would kill a live run.
+    pub fn is_busy(&self) -> bool {
         self.is_checking() || !self.runs.lock().unwrap_or_else(|p| p.into_inner()).is_empty()
+    }
+    /// Arm the force-quit flag (the user confirmed closing while a run is live). The close/exit
+    /// guard then lets the process exit instead of re-preventing it. One-way for the session.
+    pub fn arm_force_quit(&self) {
+        self.force_quit.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+    /// True once the user has confirmed a force-close — the guard must NOT prevent the close.
+    pub fn force_quit_armed(&self) -> bool {
+        self.force_quit.load(std::sync::atomic::Ordering::SeqCst)
     }
     /// Reserve a run id in the registry. `None` if that id is already live. The guard
     /// removes ONLY its own entry on drop (every exit path), so runs can't leak.
@@ -2912,6 +2926,23 @@ pub fn cancel_run(state: tauri::State<'_, AppState>, runid: String) {
     state.cancel_run(&runid);
 }
 
+/// True while any run OR draft check is in flight. The frontend uses this to decide whether a
+/// window-close would interrupt live work (drives the "关闭会中断" confirm).
+#[tauri::command]
+pub fn run_active(state: tauri::State<'_, AppState>) -> bool {
+    state.is_busy()
+}
+
+/// The user confirmed closing while a run is live. Arm the force-quit flag so the close/exit guard
+/// (lib.rs) stops preventing the close, then actually exit. Runs die with the process (in-process
+/// tasks) — that's the interruption the user just accepted. `exit(0)` unwinds cleanly enough that the
+/// window-state plugin still saves geometry on the way out.
+#[tauri::command]
+pub fn force_quit(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
+    state.arm_force_quit();
+    app.exit(0);
+}
+
 /// Pause a run (coding: waits between turns). Resume with `resume_run`.
 #[tauri::command]
 pub fn pause_run(state: tauri::State<'_, AppState>, runid: String) {
@@ -3228,6 +3259,14 @@ pub async fn coding_run(
     let telem_start = std::time::Instant::now();
     // Resolve provider/connection + model, mode-aware: research/analysis prefer a thinking model.
     let (provider, model_id) = resolve_model(&app, provider, model, false, if is_research { "research" } else if is_analyze { "analysis" } else { "auto" })?;
+    // Telemetry: task launched (content-free) — the denominator for completion/failure rates + the
+    // mode/model/compute mix. Fields are all bounded enums; never the topic.
+    crate::telemetry::track(&app, crate::telemetry::Ev::TaskStarted {
+        mode: if is_research { crate::telemetry::Mode::Research } else if is_analyze { crate::telemetry::Mode::Analysis } else { crate::telemetry::Mode::Code },
+        compute: if compute.as_deref() == Some("cloud") { crate::telemetry::Compute::Cloud } else { crate::telemetry::Compute::Local },
+        model_family: crate::telemetry::ModelFamily::from_model_id(&model_id),
+        has_attachments: attachments.as_ref().map(|a| !a.is_empty()).unwrap_or(false),
+    });
     // Workspace isolation. RESEARCH always runs in a PRIVATE per-run scratch dir — never the
     // user's shared default project folder. Research is literature/web-first and only needs a
     // throwaway compute scratch; if it shared the persistent projectDir, one run's fetched PDBs
@@ -3782,12 +3821,24 @@ pub async fn coding_run(
         agents_err: if final_status != "done" && final_status != "cancelled" { 1 } else { 0 },
         error: None,
     });
-    // Privacy-safe telemetry: mode + status + duration only — never the topic or content.
-    crate::telemetry::emit(&app, "task_done", serde_json::json!({
-        "mode": if is_research { "研究" } else { "分析" },
-        "status": if final_status == "done" { "ok" } else { final_status.as_str() },
-        "dur": telem_start.elapsed().as_secs(),
-    }));
+    // Privacy-safe telemetry: bounded interaction metadata only — never the topic/content (telemetry::Ev
+    // has no free-text field). These are exactly the health signals that flag a regression automatically.
+    crate::telemetry::track(&app, crate::telemetry::Ev::TaskFinished {
+        mode: if is_research { crate::telemetry::Mode::Research } else { crate::telemetry::Mode::Analysis },
+        status: crate::telemetry::TaskStatus::from_run_status(&final_status),
+        dur_s: telem_start.elapsed().as_secs(),
+        steps: result.steps as u32,
+        figures: result.figures.len() as u32,
+        sources: result.sources.len() as u32,
+        // Count [Sn] source markers only (digit-anchored) — NOT any "[S…" substring, so
+        // report prose like [START]/[SI]/[Section 2]/[Supplementary] doesn't inflate the metric.
+        citations: synthesis
+            .match_indices("[S")
+            .filter(|(i, _)| synthesis.as_bytes().get(i + 2).is_some_and(u8::is_ascii_digit))
+            .count() as u32,
+        salvage: final_status == "no_report",
+        review: review.as_ref().map(|r| !r.trim().is_empty()).unwrap_or(false),
+    });
     Ok(CodingRunResult { status: final_status, synthesis, steps: result.steps, trace, review, sources: result.sources })
 }
 

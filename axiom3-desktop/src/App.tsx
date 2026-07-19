@@ -140,6 +140,35 @@ function stripStepFig(s: AgentStepView): AgentStepView {
   if (!s.output?.includes("```pyfig")) return s;
   return { ...s, output: s.output.replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "") };
 }
+
+// Build a compact "already accomplished" brief from an INTERRUPTED task's persisted steps, so a
+// 「继续执行」 CONTINUES from stored progress instead of restarting from zero. An interrupted run has no
+// completed `synthesis`, but its step trace was mirrored to storage (~every 1.5s) — that IS the 存留 to
+// resume from. Strips base64 figure payloads (useless as text, would blow up the payload) and stale
+// [Sn] markers (they index the prior round's sources), caps length keeping the LATEST progress. The
+// backend wraps this in its "You are CONTINUING … do NOT redo it" scaffold (workbench.rs coding_run).
+function resumeContextFromTask(tk: Task): string | undefined {
+  const steps: AgentStepView[] =
+    (tk.steps && tk.steps.length ? tk.steps : tk.versions?.[tk.versions.length - 1]?.steps) ?? [];
+  if (!steps.length) return undefined;
+  const parts: string[] = [];
+  for (const s of steps) {
+    const head = (s.title || s.role || "").trim();
+    let body = (s.output || s.reasoning || "")
+      .replace(/```pyfig[\s\S]*?```/g, "[图]") // drop base64 figure blocks
+      .replace(/data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]+/gi, "[图]")
+      .replace(/\[S\d+\]/g, "") // stale [Sn] index the PRIOR round's sources, not the new run's
+      .trim();
+    if (body.length > 500) body = body.slice(0, 500) + "…";
+    const line = head ? (body ? `【${head}】\n${body}` : `【${head}】`) : body;
+    if (line) parts.push(line);
+  }
+  if (!parts.length) return undefined;
+  let brief = parts.join("\n\n");
+  const CAP = 7600; // keep header+brief under the backend's take(8000) so the newest progress isn't head-cut
+  if (brief.length > CAP) brief = "…(前略)\n\n" + brief.slice(brief.length - CAP); // keep the LATEST progress
+  return `（上一次执行被中断，以下是中断前已完成的思考链与工具结果。请在此基础上继续，切勿从头重做已完成的检索/分析/绘图，直接补齐缺口并产出最终交付物。）\n\n${brief}`;
+}
 // The marker `stripFigPayload` leaves in place of a base64 figure in the localStorage copy. After a
 // restart the task list is rebuilt from that lean copy, so a task whose synthesis contains this mark
 // has lost its images — they must be re-hydrated from the durable on-disk deliverables store.
@@ -195,6 +224,7 @@ function App() {
   // scratch dir while the composer still displayed the project path).
   const [codeWs, setCodeWs] = useState<string | null>(() => localStorage.getItem("axiom3.projectDir"));
   const [newSessionOpen, setNewSessionOpen] = useState(false); // the "pick a project directory" dialog
+  const [closeGuard, setCloseGuard] = useState(false); // "关闭会中断运行中的任务" confirm (fired by the backend close/exit guard)
   const [pickingDir, setPickingDir] = useState<string | null>(null); // dir chosen inside that dialog
   const projectName = (dir: string | null) => (dir ? dir.split(/[/\\]/).filter(Boolean).pop() || dir : "");
   const [codeWritable, setCodeWritable] = useState(false);
@@ -382,6 +412,26 @@ function App() {
       return changed ? next : ts;
     });
   }, [liveRuns]);
+
+  // DURABLE PROGRESS JOURNAL (读写盘): the end-of-run deliverable_save only fires on done/no_report, so
+  // before this a HARD kill mid-run left NOTHING on disk — only the quota-bound localStorage mirror
+  // (which can be trimmed away). Throttled ~8s, write a LEAN, figure-stripped snapshot of each RUNNING
+  // task to the durable on-disk store, so a crash leaves a resumable record openTask/继续执行 can read
+  // back. Status stays "running"; the backend anti-demotion guard refuses to let this stub clobber a
+  // finished record, and a real finish overwrites it. Disk (not localStorage) → costs no quota;
+  // leanTaskForStorage strips every base64 pyfig payload so the IO stays tiny.
+  const journalRef = useRef(0);
+  useEffect(() => {
+    if (!tasks.some((t) => t.status === "running")) return;
+    const now = Date.now();
+    if (now - journalRef.current < 8000) return;
+    journalRef.current = now;
+    for (const t of tasks) {
+      if (t.status !== "running" || !(t.steps?.length)) continue; // nothing to journal yet
+      invoke("deliverable_save", { id: t.id, json: JSON.stringify(leanTaskForStorage(t)) }).catch(() => {});
+    }
+  }, [tasks]);
+
   const [notableOnly, setNotableOnly] = useState(true);
   const [reviewed, setReviewed] = useState<Record<string, boolean>>(() => {
     try {
@@ -640,6 +690,24 @@ function App() {
     };
   }, []);
 
+  // The backend close/exit guard vetoed a window close or Cmd+Q because a run is live — surface the
+  // "关闭会中断" confirm. Confirm → force_quit (arms the bypass + exits); Cancel → stay, run keeps going.
+  useEffect(() => {
+    const uns = [
+      listen("close-blocked", () => setCloseGuard(true)),
+      listen("exit-blocked", () => setCloseGuard(true)),
+    ];
+    return () => {
+      uns.forEach((u) => u.then((f) => f()));
+    };
+  }, []);
+
+  // Sync the telemetry opt-out to the backend at boot — the Rust side defaults ON, so a saved opt-out
+  // (or an on-prem build) must be applied before any event could fire.
+  useEffect(() => {
+    invoke("set_telemetry", { on: localStorage.getItem("axiom3.telemetry") !== "off" }).catch(() => {});
+  }, []);
+
   function note(line: string) {
     setToast(line);
     window.clearTimeout(noteTimer.current);
@@ -710,14 +778,45 @@ function App() {
     // task is opened — the same source the 产出物库 reads. No-op if figures aren't stripped or the
     // task never produced a deliverable on disk.
     const tk = tasks.find((x) => x.id === id);
-    if (tk && taskFiguresStripped(tk)) {
-      try {
-        const json = await invoke<string>("deliverable_load", { id });
-        const full: Task = { ...JSON.parse(json), recapPending: false };
-        setTasks((ts) => ts.map((x) => (x.id === id ? full : x)));
-      } catch {
-        /* not on disk (e.g. a run that produced no deliverable) — keep the lean copy */
-      }
+    if (!tk) return;
+    // Re-hydrate from the durable disk store when (a) figures were stripped for the localStorage cache
+    // (restore the real images), OR (b) the run was INTERRUPTED — the on-disk progress journal may hold
+    // MORE of the thinking chain than the quota-bound (possibly-trimmed) localStorage copy, which is
+    // what 继续执行/resumeContextFromTask reads to continue instead of restarting.
+    const interrupted = tk.status === "cancelled" || tk.status === "failed";
+    if (!taskFiguresStripped(tk) && !interrupted) return;
+    try {
+      const disk: Task = JSON.parse(await invoke<string>("deliverable_load", { id }));
+      setTasks((ts) =>
+        ts.map((x) => {
+          if (x.id !== id) return x;
+          const richerOnDisk = (disk.steps?.length ?? 0) >= (x.steps?.length ?? 0);
+          // ANTI-DEMOTION (mirrors backend deliverables.rs guard): normally disk holds the full
+          // figure-bearing finished report, so we take it wholesale. But if the app was hard-killed
+          // in the sub-second window before the finished report round-tripped to disk, disk holds only
+          // the status:"running" JOURNAL stub (empty/lean synthesis) while the local copy is a finished
+          // report. Taking disk wholesale there would WIPE the report text. So keep the local report
+          // fields whenever disk is just a running stub (or has no report) and local is finished.
+          const localFinished = x.status === "done" || x.status === "no_report";
+          const localHasReport = !!(x.synthesis && x.synthesis.trim());
+          const diskHasReport = !!(disk.synthesis && disk.synthesis.trim());
+          const keepLocalReport = (disk.status === "running" || !diskHasReport) && localFinished && localHasReport;
+          // Take disk's figure-bearing report wholesale (unless anti-demotion kept the local one), keep
+          // whichever step trace is richer, and NEVER let the disk journal's stale "running" status
+          // resurrect a normalized (cancelled) run.
+          return {
+            ...disk,
+            status: x.status,
+            liveRunId: x.liveRunId,
+            synthesis: keepLocalReport ? x.synthesis : disk.synthesis,
+            versions: keepLocalReport ? x.versions : disk.versions,
+            steps: richerOnDisk ? disk.steps : x.steps,
+            recapPending: false,
+          };
+        })
+      );
+    } catch {
+      /* not on disk (e.g. a run that produced no deliverable) — keep the lean copy */
     }
   }
 
@@ -894,7 +993,10 @@ function App() {
     const runid = `run-${crypto.randomUUID()}`;
     const sessionId = appendTo ?? runid;
     const title = g.slice(0, 42) + (g.length > 42 ? "…" : "");
-    const priorSynth = appendTo ? tasks.find((x) => x.id === appendTo)?.synthesis : undefined; // continue prior research
+    const priorWfTask = appendTo ? tasks.find((x) => x.id === appendTo) : undefined;
+    // Continue prior research; if the round was INTERRUPTED (no synthesis), resume from its mirrored
+    // step trace instead of restarting from scratch — same fix as runCoding's 「继续执行」.
+    const priorSynth = priorWfTask?.synthesis || (priorWfTask ? resumeContextFromTask(priorWfTask) : undefined);
     if (appendTo) {
       // Point the live chain at THIS run (a fresh runid ≠ the session id). ARCHIVE the finished round
       // (its own goal + steps) FIRST, then clear `steps` so the stale log isn't shown as the live
@@ -902,10 +1004,14 @@ function App() {
       setTasks((ts) =>
         ts.map((x) => {
           if (x.id !== appendTo) return x;
-          const hasRound = !!(x.synthesis || (x.steps?.length ?? 0) > 0);
+          // Archive a round as its own version ONLY if it produced a REPORT. An interrupted round has
+          // steps but no synthesis — archiving it as v0 leaves a bogus report-less version card, and
+          // its steps are already digested into `prior` (resumeContextFromTask), so the continuation
+          // isn't a new "version", it's the same round resumed.
+          const hasReport = !!x.synthesis;
           const archived =
             x.versions ??
-            (hasRound
+            (hasReport
               ? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }]
               : []);
           return { ...x, status: "running", liveRunId: runid, steps: undefined, versions: archived };
@@ -1013,14 +1119,21 @@ function App() {
     // Prior round's findings → carried into the run so the agent continues the investigation. STRIP the
     // figure appendix first: a report ends with base64 ```pyfig``` blocks + a files list, which are
     // useless as text context and would blow up the prior-findings payload (the agent can't read base64).
-    const priorRaw = appendTo ? tasks.find((x) => x.id === appendTo)?.synthesis : undefined;
-    const prior = priorRaw
+    const priorTask = appendTo ? tasks.find((x) => x.id === appendTo) : undefined;
+    const priorRaw = priorTask?.synthesis;
+    let prior = priorRaw
       ? priorRaw
           .replace(/```pyfig[^\n]*\n[\s\S]*?```/g, "") // drop base64 figure payloads
           .split(/\n#{1,3}\s*(?:计算得到的图|产物文件|Computed figures|Files produced)/)[0] // drop the appendix
           .replace(/\[S\d+\]/g, "") // drop stale [Sn] — they index the PRIOR round's sources, not the new run's
           .trim()
       : undefined;
+    // RESUME an INTERRUPTED run: it has no completed synthesis, but its step trace was mirrored to
+    // storage — feed that back so the agent continues from stored progress instead of from scratch
+    // (the "继续执行" bug: prior was synthesis-only, so an interrupted run always restarted at step 0).
+    if ((!prior || !prior.length) && priorTask) {
+      prior = resumeContextFromTask(priorTask);
+    }
     if (appendTo) {
       // A follow-up ROUND on the same session. CRITICAL: ARCHIVE the round that just finished — with
       // ITS OWN goal + execution steps — BEFORE clearing steps / retargeting the goal. The old code
@@ -1030,10 +1143,14 @@ function App() {
       setTasks((ts) =>
         ts.map((x) => {
           if (x.id !== appendTo) return x;
-          const hasRound = !!(x.synthesis || (x.steps?.length ?? 0) > 0);
+          // Archive a round as its own version ONLY if it produced a REPORT. An interrupted round has
+          // steps but no synthesis — archiving it as v0 leaves a bogus report-less version card, and
+          // its steps are already digested into `prior` (resumeContextFromTask), so the continuation
+          // isn't a new "version", it's the same round resumed.
+          const hasReport = !!x.synthesis;
           const archived =
             x.versions ??
-            (hasRound
+            (hasReport
               ? [{ synthesis: x.synthesis, review: x.review, steps: x.steps, ts: x.ts, goal: x.goal ?? "" }]
               : []);
           return { ...x, status: "running", liveRunId: runid, steps: undefined, goal: g, recap: undefined, recapPending: false, versions: archived };
@@ -1708,6 +1825,26 @@ function App() {
               <button className="ax-btn" onClick={closeNewSession}>{lang === "zh" ? "取消" : "Cancel"}</button>
               <button className="ax-btn ax-btn--primary" onClick={confirmNewSession} disabled={!pickingDir}>
                 {lang === "zh" ? "开始" : "Start"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {closeGuard && (
+        <div className="ax-set-overlay" onClick={() => setCloseGuard(false)}>
+          <div className="ax-newsess" onClick={(e) => e.stopPropagation()}>
+            <p className="ax-newsess__title">{lang === "zh" ? "有任务正在运行" : "A task is running"}</p>
+            <p className="ax-newsess__hint">
+              {lang === "zh"
+                ? "现在关闭会中断正在运行的研究,已进行的进度会丢失。确定要关闭吗?(也可以先让它跑完,或点右下角暂停/取消。)"
+                : "Closing now interrupts the running research and its progress will be lost. Close anyway? (You can also let it finish, or pause/cancel it first.)"}
+            </p>
+            <div className="ax-newsess__actions">
+              <button className="ax-btn ax-btn--primary" onClick={() => setCloseGuard(false)}>
+                {lang === "zh" ? "继续运行" : "Keep running"}
+              </button>
+              <button className="ax-btn" onClick={() => { setCloseGuard(false); invoke("force_quit").catch(() => {}); }}>
+                {lang === "zh" ? "仍然关闭" : "Close anyway"}
               </button>
             </div>
           </div>

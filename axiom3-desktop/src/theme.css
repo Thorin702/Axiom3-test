@@ -313,6 +313,10 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   padding: 16px 14px;
   border-right: var(--ax-hair) solid var(--ax-line);
   background: var(--ax-surface-2);
+  /* Bound to the 100vh grid row so the session list (.ax-side-scroll, flex:1 overflow-y:auto) scrolls
+     inside it and the tools/account footer stay pinned. Without min-height:0 the grid item defaults to
+     min-height:auto, grows past the viewport with many sessions, and clips the footer out of the app. */
+  min-height: 0; height: 100%; overflow: hidden;
 }
 .ax-brand { font-family: var(--ax-serif); font-size: 21px; color: var(--ax-ink); }
 .ax-brand small { display: block; margin-top: 3px; font-family: var(--ax-sans); font-size: 11px; color: var(--ax-ink-faint); line-height: 1.4; }
@@ -946,6 +950,10 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   font-size: 13.5px; font-weight: 500; }
 .ax-side-new:hover { background: var(--ax-surface); border-color: var(--ax-ink-faint); }
 .ax-side-scroll { flex: 1; overflow-y: auto; margin: 0 -6px; padding: 2px 6px; display: flex; flex-direction: column; gap: 1px; min-height: 0; }
+/* Pin every NON-scrolling sidebar child at its full height so only .ax-side-scroll gives up space when
+   the session list is long. Without this, flex-shrink squeezes the tools/account footer off the bottom
+   (observed: "thorin · 使用期至…" clipped) even though the list itself scrolls. */
+.ax-side-top, .ax-side-new, .ax-side-tools, .ax-side-foot { flex: none; }
 .ax-recent { display: flex; align-items: center; border-radius: 8px; }
 .ax-recent:hover { background: var(--ax-surface); }
 .ax-recent.is-active { background: var(--ax-surface); box-shadow: inset 0 0 0 0.5px var(--ax-line); }
@@ -1455,6 +1463,15 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 /* ── artifact pane: expand to fill the window ─────────────────────── */
 .ax-artpane.is-expanded { position: fixed; inset: 0; z-index: 45; width: 100vw; max-width: 100vw;
   border-left: none; box-shadow: 0 0 0 1px var(--ax-line); }
+/* Fullscreen READING COLUMN: shrink the content to ~2/3 width (margin ≈ 1/6 on each side), so a
+   maximized report isn't a tiring full-width wall of text. Only the body narrows — the toolbar and
+   tabs stay full-width. The 16.5vw margin dominates on normal/large windows (the intended 2/3 look);
+   a cap keeps a narrow/resized window from over-margining into a cramped column — the padding never
+   shrinks the column below ~680px, and floors at 16px on very small windows. */
+.ax-artpane.is-expanded .ax-artpane__body {
+  padding-left: max(16px, min(16.5vw, (100vw - 680px) / 2));
+  padding-right: max(16px, min(16.5vw, (100vw - 680px) / 2));
+}
 
 /* ── 产出物库 + 概览看板 ───────────────────────────────────────────────── */
 .ax-panel { padding: 22px 26px; max-width: 1000px; }

@@ -27,7 +27,13 @@ const TABS: { key: Tab; zh: string; en: string; icon: typeof Quote }[] = [
 export function ArtifactInspector({ lang, task }: { lang: Lang; task: Task }) {
   const zh = lang === "zh";
   const [open, setOpen] = useState(false);
-  const [tab, setTab] = useState<Tab>("evidence");
+  // 证据/护盾 come ONLY from a /校对 draft-check (they read task.result). A research/code/analysis
+  // artifact has no result, so those tabs are permanently empty and just read as "还没有证据" — hide
+  // them there and show only the provenance/integrity record. A checked draft keeps all four.
+  const hasCheckData = !!task.result;
+  const tabs = TABS.filter((t) => hasCheckData || (t.key !== "evidence" && t.key !== "shield"));
+  const [tab, setTab] = useState<Tab>(hasCheckData ? "evidence" : "provenance");
+  const activeTab = tabs.some((t) => t.key === tab) ? tab : tabs[0].key;
 
   return (
     <section className="ax-inspect">
@@ -40,14 +46,14 @@ export function ArtifactInspector({ lang, task }: { lang: Lang; task: Task }) {
       {open && (
         <>
           <div className="ax-inspect__tabs" role="tablist">
-            {TABS.map((t) => {
+            {tabs.map((t) => {
               const Icon = t.icon;
               return (
                 <button
                   key={t.key}
                   role="tab"
-                  aria-selected={tab === t.key}
-                  className={`ax-inspect__tab ${tab === t.key ? "is-on" : ""}`}
+                  aria-selected={activeTab === t.key}
+                  className={`ax-inspect__tab ${activeTab === t.key ? "is-on" : ""}`}
                   onClick={() => setTab(t.key)}
                 >
                   <Icon size={12} aria-hidden /> {zh ? t.zh : t.en}
@@ -57,11 +63,11 @@ export function ArtifactInspector({ lang, task }: { lang: Lang; task: Task }) {
           </div>
           <div className="ax-inspect__body">
             {/* scoped to THIS session's artifact */}
-            {tab === "evidence" && <EvidenceView lang={lang} tasks={[task]} />}
-            {tab === "shield" && <ShieldView lang={lang} tasks={[task]} />}
+            {activeTab === "evidence" && <EvidenceView lang={lang} tasks={[task]} />}
+            {activeTab === "shield" && <ShieldView lang={lang} tasks={[task]} />}
             {/* workspace-level facts about the record this artifact was written into */}
-            {tab === "provenance" && <ProvenanceView lang={lang} />}
-            {tab === "integrity" && <IntegrityView lang={lang} />}
+            {activeTab === "provenance" && <ProvenanceView lang={lang} />}
+            {activeTab === "integrity" && <IntegrityView lang={lang} />}
           </div>
         </>
       )}

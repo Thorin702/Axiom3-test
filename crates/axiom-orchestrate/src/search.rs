@@ -391,7 +391,11 @@ pub async fn search_core<G: Generator, S: Scorer>(
     if run.steps.is_empty() {
         run.synthesis = Some("(no candidate produced)".into());
     } else if run.steps.len() == 1 || cancelled {
-        run.synthesis = run.steps[0].output.clone();
+        // GUARD: a single/cancelled raw model candidate must not ship the agent's thinking/tool-call echo
+        // as the deliverable — swap for the honest banner if it leaked one.
+        run.synthesis = run.steps[0].output.clone().map(|o| {
+            if crate::coding::has_journal_markers(&o) { crate::coding::fallback_report_from_sources(&[]) } else { o }
+        });
     } else {
         // fold the top candidates into one result (reuses the verify+synthesize seam).
         let critique = synthesize::critique(goal, &run.steps, &opts.provider, &opts.model, cancel).await;

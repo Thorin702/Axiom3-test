@@ -8,6 +8,12 @@ import { Lang, t } from "../i18n";
 type Conn = { label: string; base_url: string; model: string; primary: boolean; has_key: boolean };
 type Theme = "light" | "dark" | "system";
 
+// Same GLM-5.2 providers the onboarding wizard offers — paste a key, no manual URL/model needed.
+const GLM_PROVIDERS: { fam: string; zh: string; en: string }[] = [
+  { fam: "zhipu", zh: "智谱 GLM-5.2", en: "Zhipu GLM-5.2" },
+  { fam: "scnet", zh: "SCNet 超算互联网", en: "SCNet" },
+];
+
 /** Apply a theme to the document root (and persist). Exported so App can apply on load. */
 export function applyTheme(theme: Theme) {
   document.documentElement.dataset.theme = theme;
@@ -32,6 +38,7 @@ export function Settings({ lang, onLang, initialCat, onClose }: { lang: Lang; on
   const [cat, setCat] = useState<Cat>((CATS.some((c) => c.key === initialCat) ? initialCat : "general") as Cat);
   const [theme, setTheme] = useState<Theme>((localStorage.getItem("axiom3.theme") as Theme) || "system");
   const [lit, setLit] = useState(localStorage.getItem("axiom3.lit") !== "off");
+  const [telem, setTelem] = useState(localStorage.getItem("axiom3.telemetry") !== "off");
   const [fleetMax, setFleetMax] = useState(localStorage.getItem("axiom3.fleetmax") || "");
   const [version, setVersion] = useState("");
   // Model connections (#4): base URL + API key + model per row — reaches any OpenAI-compatible API.
@@ -39,19 +46,51 @@ export function Settings({ lang, onLang, initialCat, onClose }: { lang: Lang; on
   const [form, setForm] = useState({ label: "", base_url: "", api_key: "", model: "" });
   const [connNote, setConnNote] = useState("");
   const [connBusy, setConnBusy] = useState(false);
+  // Onboarding-style GLM-5.2 key flow (same as OnboardingWizard's providers step).
+  const [provs, setProvs] = useState<{ family: string; connected: boolean }[]>([]);
+  const [provSel, setProvSel] = useState("zhipu");
+  const [keyInput, setKeyInput] = useState("");
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyNote, setKeyNote] = useState("");
   const zh = lang === "zh";
 
   const refreshConns = useCallback(() => {
     invoke<Conn[]>("list_connections").then(setConns).catch(() => {});
   }, []);
+  const refreshProvs = useCallback(() => {
+    invoke<{ family: string; connected: boolean }[]>("provider_status").then(setProvs).catch(() => {});
+  }, []);
   useEffect(() => {
     refreshConns();
+    refreshProvs();
     invoke<string>("axiom_core_version").then(setVersion).catch(() => {});
-  }, [refreshConns]);
+  }, [refreshConns, refreshProvs]);
+
+  async function saveKey() {
+    const key = keyInput.trim();
+    if (!key) return;
+    setKeyBusy(true);
+    setKeyNote("");
+    try {
+      await invoke("set_provider_key", { provider: provSel, key });
+      setKeyInput("");
+      setKeyNote(zh ? "已连接 ✓" : "Connected ✓");
+      refreshProvs();
+    } catch (e) {
+      setKeyNote(zh ? `连接失败:${e}` : `Failed: ${e}`);
+    } finally {
+      setKeyBusy(false);
+    }
+  }
 
   function chooseTheme(th: Theme) {
     setTheme(th);
     applyTheme(th);
+  }
+  function setTelemetry(on: boolean) {
+    setTelem(on);
+    localStorage.setItem("axiom3.telemetry", on ? "on" : "off");
+    invoke("set_telemetry", { on }).catch(() => {});
   }
   function setLiterature(on: boolean) {
     setLit(on);
@@ -170,52 +209,97 @@ export function Settings({ lang, onLang, initialCat, onClose }: { lang: Lang; on
               </>
             )}
 
-            {/* ── 模型连接 (wired): base URL + API key + model, 通吃 OpenAI-兼容端点 ── */}
+            {/* ── 模型连接:和引导界面一致的 GLM-5.2 provider + 粘贴Key 流程 ── */}
             {cat === "providers" && (
               <div className="ax-set-group">
                 <p className="ax-set-group__label">{zh ? "模型连接" : "Model connections"}</p>
-                <p className="ax-hint" style={{ marginTop: -4, marginBottom: 8 }}>
-                  {zh ? "填「调用地址 / APIKey / 型号」即可接任意 OpenAI-兼容模型(DeepSeek/Qwen/OpenAI/Together/Groq/OpenRouter/本地 vLLM·Ollama…)。建议至少连两个,供跨模型核查。" : "Add any OpenAI-compatible model with base URL / API key / model name. Connect at least two for cross-model checks."}
+                <p className="ax-hint" style={{ marginTop: -4, marginBottom: 10 }}>
+                  {zh ? "填入你的 GLM-5.2 API Key(自备)。智谱或超算互联网 SCNet 任一即可。" : "Paste your own GLM-5.2 API key. Either Zhipu or SCNet works."}
                 </p>
-                {conns.length === 0 && <p className="ax-hint" style={{ marginBottom: 8 }}>{zh ? "还没有连接。" : "No connections yet."}</p>}
-                {conns.map((c) => (
-                  <div className="ax-prov-row" key={c.label}>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-                      <Plug size={14} aria-hidden style={{ flex: "none", opacity: 0.7 }} />
-                      <span style={{ minWidth: 0 }}>
-                        <b>{c.label}</b> {c.primary && <span className="ax-badge" style={{ marginLeft: 4 }}>{zh ? "主" : "primary"}</span>}
-                        {!c.has_key && <span className="ax-badge" style={{ marginLeft: 4 }}>{zh ? "缺密钥" : "no key"}</span>}
-                        <br /><span className="ax-hint">{c.model} · {c.base_url}</span>
+                {GLM_PROVIDERS.map((p) => {
+                  const on = provs.find((x) => x.family === p.fam)?.connected;
+                  return (
+                    <button key={p.fam} className={`ax-wiz-opt ${provSel === p.fam ? "sel" : ""}`} onClick={() => setProvSel(p.fam)}>
+                      <span style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%" }}>
+                        <span>{zh ? p.zh : p.en}</span>
+                        {on && (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: "var(--ax-accent)", fontSize: 12 }}>
+                            <span className="ax-lamp is-green" /> {zh ? "已连接" : "connected"}
+                          </span>
+                        )}
                       </span>
-                    </span>
-                    <span style={{ display: "inline-flex", gap: 4, flex: "none" }}>
-                      {!c.primary && (
-                        <button className="ax-iconbtn" onClick={() => makePrimary(c)} title={zh ? "设为主连接" : "Make primary"} aria-label="primary">
-                          <Star size={15} aria-hidden />
-                        </button>
-                      )}
-                      <button className="ax-iconbtn" onClick={() => delConn(c.label)} title={zh ? "删除" : "Delete"} aria-label="delete">
-                        <Trash2 size={15} aria-hidden />
-                      </button>
-                    </span>
-                  </div>
-                ))}
-                <div className="ax-set-row" style={{ display: "block", marginTop: 10 }}>
-                  <p className="ax-set-group__label" style={{ marginBottom: 6 }}>{zh ? "添加连接" : "Add a connection"}</p>
-                  <div style={{ display: "grid", gap: 6 }}>
-                    <input className="ax-input" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.currentTarget.value }))} placeholder={zh ? "连接名(如 deepseek-主)" : "name (e.g. deepseek-main)"} />
-                    <input className="ax-input" value={form.base_url} onChange={(e) => setForm((f) => ({ ...f, base_url: e.currentTarget.value }))} placeholder={zh ? "调用地址 https://api.deepseek.com/v1" : "base URL https://api.deepseek.com/v1"} />
-                    <input className="ax-input" type="password" value={form.api_key} onChange={(e) => setForm((f) => ({ ...f, api_key: e.currentTarget.value }))} placeholder="API Key" />
-                    <input className="ax-input" value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.currentTarget.value }))} placeholder={zh ? "模型型号(如 deepseek-chat)" : "model (e.g. deepseek-chat)"} />
-                  </div>
-                  <div className="ax-toolrow" style={{ marginTop: 8, gap: 8 }}>
-                    <button className="ax-btn" onClick={testConn} disabled={connBusy}>{connBusy ? (zh ? "测试中…" : "Testing…") : (zh ? "测试连接" : "Test")}</button>
-                    <button className="ax-btn" onClick={() => saveConn(false)}>{zh ? "保存" : "Save"}</button>
-                    <button className="ax-btn" onClick={() => saveConn(true)}>{zh ? "保存并设为主" : "Save as primary"}</button>
-                  </div>
-                  {connNote && <p className="ax-hint" style={{ marginTop: 6 }}>{connNote}</p>}
+                    </button>
+                  );
+                })}
+                <div className="ax-toolrow" style={{ marginTop: 8, gap: 8 }}>
+                  <input
+                    className="ax-input"
+                    type="password"
+                    value={keyInput}
+                    onChange={(e) => setKeyInput(e.currentTarget.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") saveKey(); }}
+                    placeholder={`${zh ? (provSel === "scnet" ? "SCNet 超算互联网" : "智谱 GLM-5.2") : (provSel === "scnet" ? "SCNet" : "Zhipu GLM-5.2")} · ${zh ? "粘贴 API Key…" : "Paste API key…"}`}
+                    style={{ flex: 1, minWidth: 180 }}
+                  />
+                  <button className="ax-btn" onClick={saveKey} disabled={keyBusy || !keyInput.trim()}>
+                    {keyBusy ? (zh ? "连接中…" : "Connecting…") : (zh ? "连接" : "Connect")}
+                  </button>
                 </div>
-                <p className="ax-hint" style={{ marginTop: 8 }}>{zh ? "密钥存于系统凭据库或本地仅属主可读的密钥文件;绝不写入日志、产物或代码库。" : "Keys are held in your OS credential store or a local owner-only file; never in logs, artifacts, or the repo."}</p>
+                <p className="ax-hint" style={{ marginTop: 8, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <span className={`ax-lamp ${provs.some((x) => x.connected) ? "is-green" : "is-neutral"}`} />
+                  {keyNote || (provs.some((x) => x.connected) ? (zh ? "GLM-5.2 已就绪" : "GLM-5.2 ready") : (zh ? "填入任一 GLM-5.2 Key 即可继续" : "Paste either GLM-5.2 key to continue"))}
+                </p>
+
+                {/* 高级:自定义 OpenAI-兼容连接(保留原能力,默认折叠)*/}
+                <details className="ax-set-adv" style={{ marginTop: 16 }}>
+                  <summary style={{ cursor: "pointer", fontSize: 13, opacity: 0.75, userSelect: "none" }}>
+                    {zh ? "高级:自定义 OpenAI-兼容连接(DeepSeek / Qwen / OpenRouter / 本地 vLLM·Ollama…)" : "Advanced: custom OpenAI-compatible connection"}
+                  </summary>
+                  <div style={{ marginTop: 10 }}>
+                    <p className="ax-hint" style={{ marginTop: -2, marginBottom: 8 }}>
+                      {zh ? "填「调用地址 / APIKey / 型号」即可接任意 OpenAI-兼容模型,供跨模型核查。" : "Add any OpenAI-compatible model with base URL / API key / model name, for cross-model checks."}
+                    </p>
+                    {conns.length === 0 && <p className="ax-hint" style={{ marginBottom: 8 }}>{zh ? "还没有自定义连接。" : "No custom connections yet."}</p>}
+                    {conns.map((c) => (
+                      <div className="ax-prov-row" key={c.label}>
+                        <span style={{ display: "inline-flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                          <Plug size={14} aria-hidden style={{ flex: "none", opacity: 0.7 }} />
+                          <span style={{ minWidth: 0 }}>
+                            <b>{c.label}</b> {c.primary && <span className="ax-badge" style={{ marginLeft: 4 }}>{zh ? "主" : "primary"}</span>}
+                            {!c.has_key && <span className="ax-badge" style={{ marginLeft: 4 }}>{zh ? "缺密钥" : "no key"}</span>}
+                            <br /><span className="ax-hint">{c.model} · {c.base_url}</span>
+                          </span>
+                        </span>
+                        <span style={{ display: "inline-flex", gap: 4, flex: "none" }}>
+                          {!c.primary && (
+                            <button className="ax-iconbtn" onClick={() => makePrimary(c)} title={zh ? "设为主连接" : "Make primary"} aria-label="primary">
+                              <Star size={15} aria-hidden />
+                            </button>
+                          )}
+                          <button className="ax-iconbtn" onClick={() => delConn(c.label)} title={zh ? "删除" : "Delete"} aria-label="delete">
+                            <Trash2 size={15} aria-hidden />
+                          </button>
+                        </span>
+                      </div>
+                    ))}
+                    <div className="ax-set-row" style={{ display: "block", marginTop: 10 }}>
+                      <p className="ax-set-group__label" style={{ marginBottom: 6 }}>{zh ? "添加连接" : "Add a connection"}</p>
+                      <div style={{ display: "grid", gap: 6 }}>
+                        <input className="ax-input" value={form.label} onChange={(e) => setForm((f) => ({ ...f, label: e.currentTarget.value }))} placeholder={zh ? "连接名(如 deepseek-主)" : "name (e.g. deepseek-main)"} />
+                        <input className="ax-input" value={form.base_url} onChange={(e) => setForm((f) => ({ ...f, base_url: e.currentTarget.value }))} placeholder={zh ? "调用地址 https://api.deepseek.com/v1" : "base URL https://api.deepseek.com/v1"} />
+                        <input className="ax-input" type="password" value={form.api_key} onChange={(e) => setForm((f) => ({ ...f, api_key: e.currentTarget.value }))} placeholder="API Key" />
+                        <input className="ax-input" value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.currentTarget.value }))} placeholder={zh ? "模型型号(如 deepseek-chat)" : "model (e.g. deepseek-chat)"} />
+                      </div>
+                      <div className="ax-toolrow" style={{ marginTop: 8, gap: 8 }}>
+                        <button className="ax-btn" onClick={testConn} disabled={connBusy}>{connBusy ? (zh ? "测试中…" : "Testing…") : (zh ? "测试连接" : "Test")}</button>
+                        <button className="ax-btn" onClick={() => saveConn(false)}>{zh ? "保存" : "Save"}</button>
+                        <button className="ax-btn" onClick={() => saveConn(true)}>{zh ? "保存并设为主" : "Save as primary"}</button>
+                      </div>
+                      {connNote && <p className="ax-hint" style={{ marginTop: 6 }}>{connNote}</p>}
+                    </div>
+                  </div>
+                </details>
+                <p className="ax-hint" style={{ marginTop: 10 }}>{zh ? "密钥存于系统凭据库或本地仅属主可读的密钥文件;绝不写入日志、产物或代码库。" : "Keys are held in your OS credential store or a local owner-only file; never in logs, artifacts, or the repo."}</p>
               </div>
             )}
 
@@ -230,6 +314,10 @@ export function Settings({ lang, onLang, initialCat, onClose }: { lang: Lang; on
                 <div className="ax-set-row">
                   <span>{t(lang, "set_fleetmax")}</span>
                   <input className="ax-input" value={fleetMax} onChange={(e) => saveFleetMax(e.currentTarget.value.replace(/[^0-9]/g, ""))} placeholder="24" style={{ width: 80 }} inputMode="numeric" />
+                </div>
+                <div className="ax-set-row">
+                  <span>{zh ? "匿名使用遥测" : "Anonymous usage telemetry"}<br /><span className="ax-hint">{zh ? "只回传交互元数据(模式/状态/耗时/是否出图等),帮我们发现卡顿与失败。绝不上传课题、数据或报告内容。" : "Sends only interaction metadata (mode/status/duration/…) so we can spot failures. Never your topics, data, or reports."}</span></span>
+                  <button className={`ax-toggle ${telem ? "on" : ""}`} onClick={() => setTelemetry(!telem)}>{t(lang, telem ? "on" : "off")}</button>
                 </div>
               </div>
             )}

@@ -295,7 +295,14 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
          {\"tool\":\"read_file\",\"path\":\"<relative path>\"}   (or {\"paths\":[\"a\",\"b\"]} to read several in ONE step)\n\
          {\"tool\":\"list_dir\",\"path\":\"<relative path>\"}\n\
          {\"tool\":\"glob\",\"pattern\":\"<glob, e.g. src/**/*.rs>\"}   (find files by name/pattern)\n\
-         {\"tool\":\"search\",\"query\":\"<text to grep for>\"}\n",
+         {\"tool\":\"search\",\"query\":\"<text to grep for>\"}\n\
+         ── 如何收尾(最终报告 · 重要)──\n\
+         当且仅当任务真正完成时,**不要**把报告包进 JSON。请这样收尾:先单独一行写:\n\
+         ===AXIOM3_FINAL===\n\
+         紧接着直接写出**完整的报告正文(裸 Markdown)**——正常换行、正常标点、正常引号,**不转义、不放进 JSON 字符串**。\
+         标记行之后的全部内容都会被当作最终报告。(一份长报告无法可靠地转义进 {\"final\":\"…\"} 字符串——用这个标记就彻底避开了转义问题。)\n\
+         WHEN DONE, do NOT wrap the report in JSON. Output a line with exactly ===AXIOM3_FINAL=== then your \
+         FULL report as plain Markdown (real newlines, no escaping, NOT inside a JSON string).\n",
     );
     if mode == SandboxMode::ReadWrite {
         s.push_str(
@@ -500,7 +507,9 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              genuinely too big to process in one cell, SUBSAMPLE to a scientifically valid size (e.g. \
              ~800–2000 cells) and disclose it — a solid subsampled result beats a full one that never \
              finishes. Keep each heavy operation in its OWN cell so it completes and gets auto-checkpointed. \
-             Finish with {\"final\":…} only when the analysis is actually complete and its figures are drawn.\n\
+             Finish ONLY when the analysis is actually complete and its figures are drawn — and finish with the \
+             ===AXIOM3_FINAL=== marker + your report as raw Markdown (NOT a {\"final\":…} JSON string, which \
+             can't reliably escape a long report).\n\
              LARGE / REAL DATA — real datasets can be huge and a naive full read hangs the run for \
              MANY MINUTES with no visible progress (a 100+ MB single-cell matrix is the classic \
              trap). So: (1) BEFORE reading, check the size and PRINT it — `import os; \
@@ -836,8 +845,14 @@ pub async fn delegate_tooled(
 /// its gathered material. Retries the synthesis a few times (a transient timeout/429 shouldn't force
 /// the thinner fallback); on total failure builds a CLEAN report from the retrieved SOURCES — it never
 /// dumps the raw transcript (which holds internal steering / the GOAL header) into a user-facing report.
-async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str, sources: &[Source], cancel: &Cancel) -> String {
-    let instr = "[已进入收尾阶段,不再调用工具] 现在直接写出一份**完整的最终报告**:把你已经真正检索到 / 计算出的证据、结果和图,系统组织成报告(已生成的图会自动附上,不要再画)。**按固定五段**:①**直接回答**——开篇正面、简明回答用户最初问的那个问题(先给答案/判断/推荐,别跑偏成另一个新颖角度);②机制/证据分析——主要发现、竞争假说权衡、带 [Sn] 引用;③**可执行方案(必给)**——把分析落到用户能照着做的具体方案:机制/假说题给决定性实验方案(体系材料、方法与关键参数、读出指标、判定判据、对照、预期),选型/决策题给明确推荐+分步落地路径,可行性题给可行性判定+关键卡点+立即可做的下一步动作,how-to 题给操作规程;**具体到能照做、给参数与判据,别写「建议进一步验证」这类空话**;④关键风险与可证伪缺口;⑤参考文献。用 Markdown、用用户的语言。只输出报告正文,不要 JSON、不要工具调用。";
+async fn synthesize_wrapup(model: &impl CodingModel, _sys: &str, transcript: &str, sources: &[Source], cancel: &Cancel) -> String {
+    // DEDICATED report-writer system prompt — NOT the agent system prompt. The agent prompt orders the
+    // model to emit tool calls / {"final":…} JSON, so reusing it here made the model answer "write the
+    // report" with a `{"tool":"python","code":…}` step or a {"final":…} envelope instead of prose — which
+    // then shipped verbatim as a "done" deliverable (THINKING + raw matplotlib code). A focused writer
+    // prompt makes it actually produce the report BODY and nothing else.
+    let report_sys = "你是一名严谨的科研报告撰写助手。你的唯一任务:根据下面给出的研究过程与已检索证据,直接写出一份完整的最终报告【正文】。硬性规则:只输出报告正文本身的 Markdown;绝对不要输出任何 JSON、工具调用(如 {\"tool\":…}、{\"final\":…})、<think> 或 <tool_call> 标签、也不要写 \"THINKING:\"/思考过程/元说明,更不要再写 Python 代码去画图(图已经生成好,会自动附在报告后面)。用用户的语言书写。";
+    let instr = "现在直接写出一份**完整的最终报告正文**:把已经真正检索到 / 计算出的证据、结果和图,系统组织成报告(已生成的图会自动附上,不要再画、不要再写代码)。**按固定五段**:①**直接回答**——开篇正面、简明回答用户最初问的那个问题(先给答案/判断/推荐,别跑偏成另一个新颖角度);②机制/证据分析——主要发现、竞争假说权衡、带 [Sn] 引用;③**可执行方案(必给)**——把分析落到用户能照着做的具体方案:机制/假说题给决定性实验方案(体系材料、方法与关键参数、读出指标、判定判据、对照、预期),选型/决策题给明确推荐+分步落地路径,可行性题给可行性判定+关键卡点+立即可做的下一步动作,how-to 题给操作规程;**具体到能照做、给参数与判据,别写「建议进一步验证」这类空话**;④关键风险与可证伪缺口;⑤参考文献。用 Markdown、用用户的语言。**只输出报告正文,不要 JSON、不要工具调用、不要思考过程。**";
     // The final report is the make-or-break deliverable — a timeout here is the #1 reason a run that
     // did all the work still shows "综述未能自动合成". So: (a) each attempt uses `complete_report`,
     // which grants a generous (>=5 min) timeout — a long GLM-5.2 report over 90s no longer gets cut
@@ -852,8 +867,14 @@ async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str
         }
         if cancel.is_cancelled() { break; }
         let wrap_user = format!("{}\n\n{instr}", compact_transcript(transcript, ctx_chars));
-        if let Ok(r) = model.complete_report(sys, &wrap_user, cancel).await {
-            if r.trim().chars().count() > 80 {
+        if let Ok(r) = model.complete_report(report_sys, &wrap_user, cancel).await {
+            // Recover a report the model wrapped in {"final":…} (unescapes \n, drops a "我已…" preamble).
+            let r = unwrap_report_envelope(&r);
+            // VALIDATE the salvage's OWN output: never return the model's thinking narration or a
+            // tool-call echo (THINKING: … {"tool":"python","code":…}) as the report. If this attempt
+            // still produced one, fall through to the next (smaller-context) try, then the honest banner.
+            // (Fixes: a "done" deliverable that was THINKING + raw matplotlib code from the salvage path.)
+            if r.trim().chars().count() > 80 && looks_like_real_report(&r) {
                 return r.trim().to_string();
             }
         }
@@ -861,12 +882,86 @@ async fn synthesize_wrapup(model: &impl CodingModel, sys: &str, transcript: &str
     fallback_report_from_sources(sources)
 }
 
+/// Recover a real report when the model wrapped it in a `{"final":"…"}` (or `{"tool":…,"…"}`) action
+/// instead of returning raw prose — extract the `final` string (serde UNESCAPES its `\n`), dropping any
+/// leading thinking narration. If there's no such envelope, the input already IS the report prose.
+fn unwrap_report_envelope(s: &str) -> String {
+    if let Some(obj) = extract_json(s) {
+        // Only unwrap when the JSON dominates the text (the report IS the envelope, modulo a short
+        // preamble) — never strip a ```json example that a real prose report happens to contain.
+        if obj.len() * 100 >= s.trim().len() * 60 {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&obj)
+                .or_else(|_| serde_json::from_str(&sanitize_json_strings(&obj)))
+            {
+                if let Some(fin) = v.get("final").and_then(|x| x.as_str()) {
+                    if fin.trim().chars().count() > 40 {
+                        return fin.trim().to_string();
+                    }
+                }
+            }
+        }
+    }
+    // TEXTUAL fallback: the model emitted {"final":"…"} but the JSON is too broken to parse — a RAW
+    // control character inside the value, unescaped interior quotes, or a garbled/missing closing quote
+    // (observed: an 8KB report whose value ended `[S15]」}` with a stray newline → serde + sanitize both
+    // fail). Recover the report body by hand so it isn't shipped as a raw `{"final":"…\n…"}` blob.
+    if let Some(body) = textual_final(s) {
+        if body.trim().chars().count() > 40 {
+            return body.trim().to_string();
+        }
+    }
+    s.trim().to_string()
+}
+
+/// Recover the value of a `"final"` key from text too broken to JSON-parse. Takes from after
+/// `"final" : "` to the last `"}` (else the last `}`, else the end — tolerating a missing close quote),
+/// then unescapes the common JSON string escapes (\n \t \" \\ \/). Robust to raw control chars and
+/// unescaped interior quotes in the report body.
+fn textual_final(s: &str) -> Option<String> {
+    let k = s.find("\"final\"")?;
+    let after_key = &s[k + "\"final\"".len()..];
+    let colon = after_key.find(':')?;
+    let body = after_key[colon + 1..].trim_start();
+    let body = body.strip_prefix('"')?;
+    // Find the envelope's END. Prefer the proper `"}` close. When it's ABSENT (the truncated/broken
+    // case this fn exists for), do NOT fall back to the last bare `}` — that is almost always INTERIOR
+    // content (LaTeX `\frac{a}{b}`, set notation `{x}`, a ```json example) and would silently truncate
+    // the report tail. The report was cut off anyway → take it to end-of-string, only shedding a single
+    // trailing `}` if it's the very last non-whitespace char (a real, if unquoted, envelope close).
+    let end = if let Some(p) = body.rfind("\"}") {
+        p
+    } else {
+        let trimmed = body.trim_end();
+        if trimmed.ends_with('}') { trimmed.len() - 1 } else { body.len() }
+    };
+    let raw = body[..end].trim_end().trim_end_matches('"').trim_end();
+    let mut out = String::with_capacity(raw.len());
+    let mut it = raw.chars();
+    while let Some(c) = it.next() {
+        if c == '\\' {
+            match it.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => {}
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some('/') => out.push('/'),
+                Some(o) => { out.push('\\'); out.push(o); }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Some(out.trim().to_string())
+}
+
 /// When the model can't synthesize the final report, build a clean, readable report from the retrieved
 /// sources (with clickable [Sn] markers) — NEVER a raw transcript dump. Figures are attached separately.
 /// Stable leading marker for a fallback (report-not-synthesized) deliverable. Kept in sync with
 /// [`is_fallback_report`], which detects it to mark the run `no_report`.
 const FALLBACK_BANNER: &str = "> ⚠️ **报告未自动生成** — 本次已完成检索与绘图,但最终文字报告合成未成功。**已算出的图和来源都已保存,不会丢失**(见下方 / 产物库)。点右下角【继续 / 重试】即可在已有材料基础上重新生成报告。\n\n";
-fn fallback_report_from_sources(sources: &[Source]) -> String {
+pub(crate) fn fallback_report_from_sources(sources: &[Source]) -> String {
     if sources.is_empty() {
         return format!("{FALLBACK_BANNER}下方为本次已生成的图。");
     }
@@ -890,6 +985,144 @@ fn fallback_report_from_sources(sources: &[Source]) -> String {
 /// clean deliverable (a user must never think an hour of work produced a complete report when it didn't).
 fn is_fallback_report(s: &str) -> bool {
     s.trim_start().starts_with("> ⚠️ **报告未自动生成**")
+}
+
+/// The FINALIZE MARKER for the raw-Markdown report protocol. When the agent is done it writes a line
+/// containing exactly this, then the report as plain Markdown — NO JSON, NO escaping. This removes the
+/// #1 recurring failure (GLM can't reliably escape an 8KB report into a `{"final":"…"}` JSON string).
+const FINAL_MARKER: &str = "===AXIOM3_FINAL===";
+
+/// Remove fenced ```…``` blocks (base64 ```pyfig figures, ```json tool echoes) so only NARRATIVE
+/// prose is measured. An unterminated fence (a truncated reply) drops everything after the opener.
+fn strip_fenced_blocks(s: &str) -> String {
+    let mut out = String::new();
+    let mut in_fence = false;
+    for line in s.lines() {
+        if line.trim_start().starts_with("```") { in_fence = !in_fence; continue; }
+        if !in_fence { out.push_str(line); out.push('\n'); }
+    }
+    out
+}
+
+/// The highest source id `n` cited as `[Sn]` in the text (0 if none). Used to catch DANGLING citations —
+/// a `[Sn]` whose `n` exceeds the number of sources actually retrieved means the model invented a
+/// citation it can't back. Requires the closing `]` so `[S12` inside other prose doesn't false-match.
+fn max_cited_marker(s: &str) -> u32 {
+    let b = s.as_bytes();
+    let mut max = 0u32;
+    let mut i = 0;
+    while i + 2 < b.len() {
+        if b[i] == b'[' && b[i + 1] == b'S' && b[i + 2].is_ascii_digit() {
+            let mut j = i + 2;
+            let mut val: u32 = 0;
+            while j < b.len() && b[j].is_ascii_digit() {
+                val = val.saturating_mul(10).saturating_add((b[j] - b'0') as u32);
+                j += 1;
+            }
+            if j < b.len() && b[j] == b']' {
+                max = max.max(val);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    max
+}
+
+/// Backstop for DANGLING citations: remove every `[Sn]` marker whose `n` exceeds `max_valid` (the number
+/// of sources actually retrieved), so a dead provenance link never ships even if the model ignores the
+/// dangling-citation nudge. Only the unbacked marker is dropped; the claim text stays. UTF-8 safe — it
+/// skips whole ASCII `[S…]` tokens and copies every other byte verbatim (incl. multi-byte CJK).
+fn strip_dangling_markers(s: &str, max_valid: u32) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'[' && i + 2 < b.len() && b[i + 1] == b'S' && b[i + 2].is_ascii_digit() {
+            let mut j = i + 2;
+            let mut val: u32 = 0;
+            while j < b.len() && b[j].is_ascii_digit() {
+                val = val.saturating_mul(10).saturating_add((b[j] - b'0') as u32);
+                j += 1;
+            }
+            if j < b.len() && b[j] == b']' && val > max_valid {
+                i = j + 1; // drop the whole [Sn] token
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Strip a residual `===AXIOM3_FINAL===` marker from a summary. The loop's own detection already takes
+/// the text AFTER the marker, but the SALVAGE writers (synthesize_wrapup / the budget-exhausted wrap-up)
+/// ask the model to write a report and it sometimes re-prepends the marker line — which would then ship
+/// verbatim. Take everything after the (first) marker; no-op when there is none.
+fn strip_final_marker(s: &str) -> String {
+    match s.find(FINAL_MARKER) {
+        Some(i) => s[i + FINAL_MARKER.len()..].trim_start().to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// Final cleanup applied to EVERY shipped report summary, from ANY path (accept, salvage, wrap-up,
+/// budget-exhaustion): strip a leaked ===AXIOM3_FINAL=== marker, then strip DANGLING [Sn] citations
+/// (n > sources retrieved). Idempotent; a no-op on a clean report or the honest fallback banner.
+fn clean_summary(summary: &str, n_sources: usize) -> String {
+    strip_dangling_markers(&strip_final_marker(summary), n_sources as u32)
+}
+
+/// Heuristic guard: does `summary` read like a genuine final report, or is it the agent's thinking
+/// narration + a {"tool":…}/{"todos":…} action echo, an empty/trivial string, or a raw JSON/base64
+/// blob? Deliberately LENIENT — a real markdown report must pass; only obvious non-reports fail. The
+/// figure/files appendix is appended by the CALLER later, so `summary` here is the narrative only.
+/// (Fixes: a truncated first-step "thinking + {plan}" reply was shipped as a `done` deliverable.)
+/// True if the text carries the agent's raw-scaffolding markers OUTSIDE any ```fence``` — thinking
+/// narration ("THINKING:"), tool-call tags (`<tool_call>`/`<think>`), or a tool-call JSON echo
+/// (`"tool":`/`"code":`/`"queries":`/`"todos":`). Their presence means a raw reply leaked instead of a
+/// real report. Split out from `looks_like_real_report` so the {"final"} ACCEPT path can gate on markers
+/// ALONE — there a short but CLEAN final ("created hello.txt") must still pass (the >200-char prose check
+/// would wrongly reject it), but a final that smuggled thinking+code inside its value must be caught.
+pub(crate) fn has_journal_markers(s: &str) -> bool {
+    let prose = strip_fenced_blocks(s.trim());
+    let pt = prose.trim();
+    pt.starts_with("THINKING:") || pt.starts_with("THINKING：")
+        || pt.contains("<tool_call>") || pt.contains("<think>") || pt.contains("</think>")
+        || pt.contains("\"tool\":") || pt.contains("tool\":\"")
+        || pt.contains("\"queries\":") || pt.contains("\"todos\":") || pt.contains("\"code\":")
+}
+
+pub(crate) fn looks_like_real_report(summary: &str) -> bool {
+    let t = summary.trim();
+    // The honest no-report banner is short by design — treat as "real" so we don't re-salvage it
+    // (the caller maps the banner to `no_report`).
+    if is_fallback_report(t) { return true; }
+    // A raw reply / truncated tool-call echo leaked as the "report" — reject regardless of length
+    // (a LONG thinking narration is >200 prose chars, so the length check alone can't catch it).
+    if has_journal_markers(t) { return false; }
+    // Strip fenced blocks + a leading bare JSON action object, then require substantial narrative prose;
+    // a "thinking + {plan}" echo (or empty/JSON-only reply) leaves almost nothing once stripped.
+    let mut prose = strip_fenced_blocks(t);
+    if let Some(obj) = extract_json(&prose) { prose = prose.replacen(&obj, "", 1); }
+    prose.chars().filter(|c| !c.is_whitespace()).count() >= 200
+}
+
+/// Guard a candidate "done" summary taken from a RAW model reply (the non-`{"final":…}` return
+/// paths): if it isn't a real report, salvage one from the transcript; if the salvage also fails it
+/// returns the honest fallback banner, which the caller detects and marks `no_report`. This is why a
+/// run can never again ship the agent's thinking+plan echo as a finished report.
+async fn guard_done_summary(
+    candidate: String, model: &impl CodingModel, sys: &str, transcript: &str,
+    sources: &[Source], cancel: &Cancel,
+) -> String {
+    // First recover a report the model wrapped in {"final":…} (unescapes \n, drops a thinking preamble);
+    // if that yields a real report use it, else synthesize a fresh one from the transcript.
+    let candidate = unwrap_report_envelope(&candidate);
+    if looks_like_real_report(&candidate) { candidate }
+    else { synthesize_wrapup(model, sys, transcript, sources, cancel).await }
 }
 
 /// Back-compat entry: run with no extra system steering (the `goal` is the whole task).
@@ -964,6 +1197,7 @@ pub async fn run_coding_agent_steered(
     let mut figure_nudges = 0u32;
     let mut reflected = false; // whether the ONE-time self-critique gate has fired before finalizing
     let mut cite_nudged = false; // whether the ONE-time "you gathered sources but cited none" gate has fired
+    let mut dangling_nudged = false; // whether the ONE-time "you cited [Sn] beyond the sources you retrieved" gate has fired
     let mut last_compact_len = 0usize; // transcript length at the last context-compaction (avoid re-compacting every step)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
@@ -996,7 +1230,7 @@ pub async fn run_coding_agent_steered(
         // stretch we still steer it to converge — but as "entering wrap-up", and we never expose a
         // remaining-count/total, so it wraps up a COMPLETE deliverable instead of narrating scarcity.
         let warn = if remaining <= (budget.max_steps / 5).max(3) {
-            "\n[收尾阶段] 深度探索已经充分,现在请停止继续检索/探索,集中把核心结果与图算全,并用 {\"final\":\"…\"} 产出一份**完整**的报告(原生图块 + 有据的结论段落);不要停在半成品。"
+            "\n[收尾阶段] 深度探索已经充分,现在请停止继续检索/探索,集中把核心结果与图算全,然后**先写一行 ===AXIOM3_FINAL=== 再直接写裸 Markdown 报告**(不要包进 JSON)产出一份**完整**的报告(原生图块 + 有据的结论段落);不要停在半成品。"
         } else {
             ""
         };
@@ -1054,7 +1288,7 @@ pub async fn run_coding_agent_steered(
                             // tail). The run ends gracefully with real content + its figures.
                             let _ = &e; // error is captured in the transcript; the salvage speaks for itself
                             let artifacts = collect_artifacts(sandbox.root(), &start_files);
-                            let summary = synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await;
+                            let summary = clean_summary(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, sources.len());
                             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                             return CodingResult { status: status.into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
                         }
@@ -1072,11 +1306,73 @@ pub async fn run_coding_agent_steered(
             }
         };
         let json = extract_json(&reply);
-        // The model's reasoning = its reply minus the JSON action it chose this turn.
-        let reasoning = match &json {
-            Some(j) => reply.replacen(j, "", 1).trim().to_string(),
-            None => String::new(),
+        // The model's reasoning = its reply minus the JSON action (or minus the ===AXIOM3_FINAL=== marker + report).
+        let reasoning = if let Some(i) = reply.find(FINAL_MARKER) {
+            reply[..i].trim().to_string()
+        } else {
+            match &json {
+                Some(j) => reply.replacen(j, "", 1).trim().to_string(),
+                None => String::new(),
+            }
         };
+        // ── FINAL-REPORT DETECTION ─────────────────────────────────────────────────────────────────
+        // NEW PROTOCOL (preferred, unbreakable): the report is RAW Markdown after a `===AXIOM3_FINAL===`
+        // line — no JSON, no escaping. LEGACY (still accepted): a {"final":"…"} JSON action, parsed or
+        // recovered textually when GLM's escaping of a long report is broken (raw control char / missing
+        // closing quote). Either yields a clean report. Detected BEFORE the tool-call parse so a
+        // marker-only reply (no JSON object) is finalized, not mistaken for a "no action" nudge.
+        let final_text: Option<String> = if let Some(i) = reply.find(FINAL_MARKER) {
+            // NEW protocol: raw Markdown after the marker.
+            Some(reply[i + FINAL_MARKER.len()..].trim().to_string())
+        } else {
+            // LEGACY {"final":"…report…"} envelope. Must be distinguished from a TOOL CALL whose string
+            // args merely contain the word "final" (e.g. write_file of a config with a "final" key, or
+            // python building a dict `{"final": …}`) — misreading that as a final would ship a garbage
+            // fragment AND skip the real action.
+            let parsed = json.as_deref().and_then(|j| {
+                serde_json::from_str::<Value>(j)
+                    .ok()
+                    .or_else(|| serde_json::from_str::<Value>(&sanitize_json_strings(j)).ok())
+            });
+            match parsed {
+                // Parsed cleanly → a final ONLY if the top-level object has `final` and is NOT a tool
+                // call (a `tool` key means it's an action, even if "final" appears nested in its args).
+                Some(v) => v
+                    .as_object()
+                    .filter(|o| !o.contains_key("tool"))
+                    .and_then(|o| o.get("final"))
+                    .and_then(|x| x.as_str())
+                    .map(str::to_string)
+                    .filter(|s| !s.trim().is_empty()),
+                // Unparseable JSON (GLM's escaping of a long report broke). Recover textually ONLY when
+                // this is a broken final ENVELOPE — the `final` key precedes any tool-arg key — AND the
+                // recovered body actually looks like a report. A broken TOOL CALL (tool/path/code/… key
+                // first) recovers to a garbage fragment and must fall through to the malformed-JSON nudge.
+                None if reply.contains("\"final\"") => {
+                    let j = json.as_deref().unwrap_or(reply.as_str());
+                    let is_envelope = j.find("\"final\"").is_some_and(|fp| {
+                        ["\"tool\"", "\"content\"", "\"code\"", "\"cmd\"", "\"path\"", "\"query\"",
+                         "\"queries\"", "\"url\"", "\"packages\"", "\"task\"", "\"pattern\"", "\"todos\""]
+                            .iter()
+                            .filter_map(|k| j.find(k))
+                            .min()
+                            .is_none_or(|tp| fp < tp)
+                    });
+                    if is_envelope {
+                        textual_final(&reply).filter(|b| looks_like_real_report(b))
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
+        };
+        // If a FINAL report was detected (the ===AXIOM3_FINAL=== marker OR a {"final":…} action, incl.
+        // textual recovery of broken JSON), normalize it into a {"final":…} value so the SINGLE finalize
+        // path below handles both protocols uniformly. Otherwise parse the tool call as before.
+        let v: Value = if let Some(ft) = final_text {
+            serde_json::json!({ "final": ft })
+        } else {
         // No JSON object at all → the model may be DONE (prose answer) OR it "thought out loud" and
         // forgot the action envelope. Don't silently end the run: nudge it (bounded, shares the
         // malformed budget) to emit one JSON object; only accept the prose as FINAL after the nudge
@@ -1088,9 +1384,9 @@ pub async fn run_coding_agent_steered(
                 if malformed < MAX_MALFORMED {
                     malformed += 1;
                     transcript.push_str(
-                        "\n[system] I couldn't find a JSON action in your reply. If you're still \
-                         working, respond with EXACTLY ONE JSON object — a tool call, or \
-                         {\"final\":\"…\"} only when the analysis is truly complete (with its figure).\n",
+                        "\n[system] I couldn't find a JSON action in your reply. If you're still WORKING, \
+                         respond with EXACTLY ONE JSON tool-call object. If you are DONE, do NOT use JSON — \
+                         write a line with exactly ===AXIOM3_FINAL=== then your full report as raw Markdown.\n",
                     );
                     continue;
                 }
@@ -1098,12 +1394,13 @@ pub async fn run_coding_agent_steered(
                 // the run actually gathered material (>=3 steps of data), synthesize a report from the
                 // transcript instead of returning nothing ("无产物内容"). This turned an empty analysis run
                 // (agent absorbed in data-gathering, never wrote the report) into a real deliverable.
-                let summary = if reply.trim().is_empty() && n >= 3 {
-                    synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await
-                } else {
-                    reply.trim().to_string()
-                };
-                return CodingResult { status: "done".into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
+                // GUARD: never ship a raw non-report reply (thinking + {plan}/{tool} echo, or an
+                // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
+                // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
+                // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
+                let summary = clean_summary(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, sources.len());
+                let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
+                return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
         };
         // Weaker models routinely emit a valid-INTENT tool call whose JSON is technically
@@ -1112,7 +1409,7 @@ pub async fn run_coding_agent_steered(
         // repair control chars; if it STILL won't parse, that's a MALFORMED tool call, NOT a final
         // answer — nudge the model to re-emit valid JSON and continue (bounded), rather than
         // silently ending the run on what was clearly an attempted action.
-        let v: Value = match serde_json::from_str(&action)
+        match serde_json::from_str(&action)
             .or_else(|_| serde_json::from_str(&sanitize_json_strings(&action)))
         {
             Ok(v) => { malformed = 0; v }
@@ -1120,9 +1417,10 @@ pub async fn run_coding_agent_steered(
                 if malformed < MAX_MALFORMED {
                     malformed += 1;
                     transcript.push_str(&format!(
-                        "\n[system] Your last message was not valid JSON ({e}). Respond with EXACTLY \
-                         ONE well-formed JSON object — a tool call or {{\"final\":\"…\"}} — and nothing \
-                         else. If it carries code, escape newlines as \\n inside the string.\n"
+                        "\n[system] Your last message was not valid JSON ({e}). If it was a TOOL CALL, \
+                         re-emit EXACTLY ONE well-formed JSON object (escape newlines as \\n in code strings). \
+                         If it was your FINAL REPORT, do NOT use JSON at all — write a line with exactly \
+                         ===AXIOM3_FINAL=== then the report as raw Markdown (real newlines, no escaping).\n"
                     ));
                     continue;
                 }
@@ -1130,13 +1428,15 @@ pub async fn run_coding_agent_steered(
                 // the run actually gathered material (>=3 steps of data), synthesize a report from the
                 // transcript instead of returning nothing ("无产物内容"). This turned an empty analysis run
                 // (agent absorbed in data-gathering, never wrote the report) into a real deliverable.
-                let summary = if reply.trim().is_empty() && n >= 3 {
-                    synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await
-                } else {
-                    reply.trim().to_string()
-                };
-                return CodingResult { status: "done".into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
+                // GUARD: never ship a raw non-report reply (thinking + {plan}/{tool} echo, or an
+                // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
+                // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
+                // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
+                let summary = clean_summary(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, sources.len());
+                let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
+                return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
+        }
         };
         if let Some(f) = v.get("final").and_then(|x| x.as_str()) {
             // EMPTY-FINAL SALVAGE: an empty/trivial "final" would ship as "无产物内容". If the run gathered
@@ -1147,9 +1447,16 @@ pub async fn run_coding_agent_steered(
             } else {
                 f.to_string()
             };
+            // LAST-STEP GUARD: every gate below `continue`s to nudge the model for one more turn. On the
+            // FINAL step there is no next turn — nudging would DISCARD the model's actual final report and
+            // force the inferior budget-exhausted wrap-up path (observed: a good report thrown away, then
+            // re-synthesized with a leaked ===AXIOM3_FINAL=== marker + a dangling [S7]). So on the last
+            // step, skip the nudges and ACCEPT the report — the accept-path guard + clean_summary below
+            // still sanitize it. (nudge_ok = there is budget for another turn.)
+            let nudge_ok = n < budget.max_steps;
             // In write mode, don't accept "done" until the agent has actually RUN a
             // build/test command at least once — nudge it once, like Codex verifying.
-            if sandbox.mode() == SandboxMode::ReadWrite && !ran_command && !nudged {
+            if nudge_ok && sandbox.mode() == SandboxMode::ReadWrite && !ran_command && !nudged {
                 nudged = true;
                 transcript.push_str(
                     "\n[system] You haven't run any build/test command yet. Before finishing, RUN \
@@ -1163,7 +1470,7 @@ pub async fn run_coding_agent_steered(
             // with a bar-chart stand-in or an inline block. Push it ONCE to load the real engine and
             // draw the publication figure, then relent. Research mode only (deep reports, where the
             // figure IS the differentiator) and only when a kernel exists to actually render.
-            if pause.delegate_encouraged() && kernel.is_some() && figure_nudges < 1 {
+            if nudge_ok && pause.delegate_encouraged() && kernel.is_some() && figure_nudges < 1 {
                 let mut missing: Vec<&str> = Vec::new();
                 if needs_struct && !loaded_struct { missing.push("protein-structure-figure(蛋白/酶/复合物结构 → PyMOL 无头光追)"); }
                 if needs_mol && !loaded_mol { missing.push("small-molecule-figure(药物/抑制剂/配体 2D 结构 + 实测描述符 → RDKit)"); }
@@ -1185,7 +1492,7 @@ pub async fn run_coding_agent_steered(
             // CITATION GATE: the run gathered real sources but the report cites NONE of them ([Sn]=0).
             // Push once to thread the markers in — a report making claims with zero clickable provenance
             // defeats the product's core promise (observed: an 84-source PCSK9 report with 0 [Sn]).
-            if sources.len() >= 5 && !f.contains("[S") && !cite_nudged {
+            if nudge_ok && sources.len() >= 5 && !f.contains("[S") && !cite_nudged {
                 cite_nudged = true;
                 transcript.push_str(&format!(
                     "\n[system] 你已检索到 {} 条来源,但报告正文里一个 [Sn] 角标都没有 —— 关键结论/数字必须挂上对应来源的 [Sn](如 [S3]、[S12],用你实际检索到的 sources 的真实编号),否则读者无法溯源,这违背本产品最核心的承诺。请给正文的关键论断补上 [Sn] 角标,补完再 {{\"final\":…}}。You gathered sources but cited none — add [Sn] markers to the key claims before finalizing.\n",
@@ -1200,12 +1507,12 @@ pub async fn run_coding_agent_steered(
             // and it's the quality net that replaces a hard budget cutoff. Bounded to one pass. RESEARCH
             // mode only (deep reports, where drift/quality is the risk) — analysis mode stays fast; a
             // sub-agent (delegate not encouraged) never reflects. Skipped for a tiny run (nothing to check).
-            if !reflected && pause.delegate_encouraged() && n >= 3 {
+            if nudge_ok && !reflected && pause.delegate_encouraged() && n >= 3 {
                 reflected = true;
                 transcript.push_str(&format!(
-                    "\n[system] 收尾前做一次自检(只此一次,别拖延)。对照你正要提交的报告逐条核对,不达标的先补齐再 {{\"final\":…}};都达标就直接 final:\n\
+                    "\n[system] 收尾前做一次自检(只此一次,别拖延)。对照你正要提交的报告逐条核对,不达标的先补齐;都达标就收尾 —— **收尾方式:先一行 ===AXIOM3_FINAL=== 再直接写裸 Markdown 报告(不要 JSON、不要转义)**:\n\
                      1) 答的是不是用户【原题】「{}」?开篇第一段有没有正面、直接回答它(而不是跑偏到别的角度)?\n\
-                     2) 每条关键结论/数字是不是都有真实 [Sn] 来源支撑?有没有编造或凭记忆?没来源的先补检索或删掉。\n\
+                     2) 每条关键结论/数字是不是都有真实 [Sn] 来源支撑?有没有编造或凭记忆?没来源的先补检索或删掉。**特别检查具体数字——效应量(Cohen's d/HR/OR)、百分比、剂量、统计量、p 值这类,凡是没挂 [Sn] 的,要么补上真实来源,要么显式标注为「估计/示意值」,绝不把无源数字当既定事实列出。**\n\
                      3) 图是不是都来自真实检索/计算的数据(不是示意图)?课题点名要的图都出了吗?\n\
                      4) 有没有该用而没用的数据库(靶点→opentargets、变异→clinvar/gnomad、试验→clinical_trials、GWAS→gwas_catalog)?\n\
                      5) 有没有明显缺口/自相矛盾?诚实标注局限,别硬撑。\n\
@@ -1214,7 +1521,44 @@ pub async fn run_coding_agent_steered(
                 ));
                 continue;
             }
-            return CodingResult { status: "done".into(), summary: f.to_string(), steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
+            // DANGLING-CITATION GATE: the report cites a [Sn] whose n EXCEEDS the number of sources
+            // actually retrieved — the model invented a citation number it can't back (observed under
+            // thin retrieval: a 2-source run citing [S7]). A [Sn] with no matching source is a dead
+            // provenance link + reads as a fabricated citation, violating the product's anti-fabrication
+            // promise. Push ONCE to ground the claim with a real search or drop the unsupported marker.
+            // Research mode only (deep cited reports); the strip backstop below is the hard guarantee.
+            if nudge_ok && pause.delegate_encouraged() && !dangling_nudged && max_cited_marker(&f) as usize > sources.len() {
+                dangling_nudged = true;
+                let ns = sources.len();
+                transcript.push_str(&format!(
+                    "\n[system] 报告里出现了超出范围的引用(如 [S{}]),但你实际只检索到 {ns} 条来源,有效编号只有 [S1]–[S{ns}]。超范围的 [Sn] 指向不存在的来源 = 悬空/编造引用,会变成点不开的死链,违背本产品最核心的溯源承诺。二选一:①对这些论断补一次真实检索、用拿到的真实编号引用;②删掉无据的引用角标(或把该数字/论断标注为「估计」)。改完再收尾(先一行 ===AXIOM3_FINAL=== 再裸 Markdown)。Some [Sn] exceed the {ns} sources you retrieved — ground them with a real search or remove the unsupported markers, then finalize.\n",
+                    max_cited_marker(&f)
+                ));
+                continue;
+            }
+            // GUARD the accepted final: if the agent's thinking/tool-call echo leaked INTO the "final"
+            // value (e.g. {"final":"THINKING: … {\"tool\":\"python\",\"code\":…}"}), or the final is empty,
+            // salvage a real report / honest banner instead of shipping the raw blob. A short but CLEAN
+            // final (no markers, e.g. "created hello.txt") ships as-is, so write-mode short finals still
+            // work. (Closes the primary residual leak the audit found — the {"final"} accept path.)
+            // RESEARCH mode (a deep, multi-section cited report IS the deliverable — the same signal the
+            // self-critique and figure gates use) gets one more gate: reject a "final" that doesn't look
+            // like a real report (e.g. raw Python dumped right after ===AXIOM3_FINAL===, which carries no
+            // journal markers) → salvage instead. A real research report is always ≥200 prose chars, so
+            // this never over-rejects one; a short compute/analysis final (no deep-report demand) and a
+            // terse write-mode final ("created hello.txt") keep their exemption.
+            let report_mode = pause.delegate_encouraged();
+            let summary = if has_journal_markers(&f) || f.trim().is_empty() || (report_mode && !looks_like_real_report(&f)) {
+                guard_done_summary(f.to_string(), model, &sys, &transcript, &sources, cancel).await
+            } else {
+                f.to_string()
+            };
+            // BACKSTOP: never ship a leaked ===AXIOM3_FINAL=== marker or a dead provenance link. Strip a
+            // residual marker + any DANGLING [Sn] (n > sources retrieved) that survived the nudge — claim
+            // text stays, only the unbacked marker is dropped. No-op for a clean report / fallback banner.
+            let summary = clean_summary(&summary, sources.len());
+            let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
+            return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
         let mut tool = v.get("tool").and_then(|x| x.as_str()).unwrap_or("").to_string();
         // ROBUSTNESS: models sometimes emit a tool call but FORGET the "tool" key (just the args) —
@@ -2087,7 +2431,7 @@ pub async fn run_coding_agent_steered(
     // Budget exhausted without a {"final"}. Don't dump the raw transcript as the "report" — do ONE
     // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
     // figures (falls back to a transcript tail on failure). Same salvage the model-error path uses.
-    let summary = synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await;
+    let summary = clean_summary(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, sources.len());
     let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
     CodingResult { status: status.into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
@@ -2393,6 +2737,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn finalizes_via_raw_markdown_marker() {
+        // NEW FINALIZE PROTOCOL: the report is RAW Markdown after ===AXIOM3_FINAL=== — real newlines,
+        // unescaped quotes, no JSON. The loop must take everything after the marker as the final report
+        // (this is the durable fix for the recurring broken-{"final"}-JSON envelope).
+        let root = tmp("marker");
+        let sb = Sandbox::new(&root).unwrap();
+        let model = ScriptModel {
+            replies: Mutex::new(vec![
+                r#"{"tool":"list_dir","path":"."}"#.into(),
+                "我已看完,现在收尾。\n===AXIOM3_FINAL===\n# 报告标题\n\n## 一、直接回答\n结论:这里有\"引号\"和\n真实换行,都不用转义,直接写。\n\n完。".into(),
+            ]),
+        };
+        let mut steps = 0;
+        let res = run_coding_agent("x", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| steps += 1, |_, _| {}).await;
+        assert_eq!(res.status, "done");
+        assert!(res.summary.starts_with("# 报告标题"), "got: {:?}", res.summary.chars().take(20).collect::<String>());
+        assert!(res.summary.contains("\"引号\""), "raw quotes must survive (no JSON escaping)");
+        assert!(res.summary.contains('\n'), "real newlines preserved");
+        assert!(!res.summary.contains("AXIOM3_FINAL"), "the marker line must be stripped");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
     async fn malformed_json_is_retried_not_finalized() {
         // A weaker model's malformed tool call (here: missing comma) must NOT be mistaken for a
         // final answer — the loop nudges it and continues to the next, valid action.
@@ -2410,6 +2777,28 @@ mod tests {
         assert_eq!(res.status, "done", "summary: {}", res.summary);
         assert!(res.summary.contains("looked at the dir"), "must reach the post-nudge final, got: {}", res.summary);
         assert_eq!(steps, 1, "only the valid list_dir ran as a step (malformed reply executed nothing)");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn broken_tool_call_embedding_final_is_not_mistaken_for_a_report() {
+        // REGRESSION (finalize-protocol audit): a write_file/python tool call whose STRING ARG contains
+        // an unescaped "final":"…" makes the JSON broken AND contain the substring "final". It must NOT be
+        // textually recovered as a final report (which would ship a garbage fragment AND skip the real
+        // action) — it's a malformed tool call → nudge → the REAL final on the next turn wins.
+        let root = tmp("embfinal");
+        let sb = Sandbox::new(&root).unwrap();
+        let model = ScriptModel {
+            replies: Mutex::new(vec![
+                // broken JSON (unescaped inner quotes) whose args embed `"final"` — tool key comes first
+                r#"{"tool":"write_file","path":"c.json","content":"{"final": "v1", "n": 3}"}"#.into(),
+                r#"{"final":"真正的收尾:已完成分析。"}"#.into(), // the REAL final on the next turn
+            ]),
+        };
+        let res = run_coding_agent("x", &sb, &model, &Cancel::new(), &Pause::new(), &CodingBudget::default(), None, |_| {}, |_, _| {}).await;
+        assert_eq!(res.status, "done", "summary: {}", res.summary);
+        assert!(res.summary.contains("真正的收尾"), "must reach the real next-turn final, got: {}", res.summary);
+        assert!(!res.summary.contains("\"n\": 3") && !res.summary.contains("v1\""), "must not ship the broken tool call's fragment, got: {}", res.summary);
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2539,6 +2928,78 @@ mod tests {
     }
 
     #[test]
+    fn guard_rejects_leaked_thinking_and_tool_echo_as_report() {
+        // The exact 无产出 failure: a truncated reply (thinking narration + a cut-off tool call) shipped
+        // as a "done" report. A LONG thinking narration is >200 prose chars, so length alone won't catch
+        // it — the tell-tale markers must. All of these must be judged NOT a real report → salvaged.
+        assert!(!looks_like_real_report(
+            "THINKING: 我已获得 SELECT 试验核心定量数据（MACE HR=0.80），但还缺几块关键拼图，让我做最后一轮针对性检索补全这些缺口，然后即可综合撰写报告。<tool_call>tool\":\"multi_search\",\"queries\":[\"SELECT trial semaglutide 9."
+        ));
+        assert!(!looks_like_real_report("我先整理任务清单。\n```json\n{\"tool\":\"plan\",\"todos\":[\"a\",\"b\"]}\n```"));
+        assert!(!looks_like_real_report(""));
+        assert!(!looks_like_real_report("{\"tool\":\"python\",\"code\":\"print(1)\"}"));
+        // A genuine markdown report passes (substantial narrative, no scaffolding markers).
+        let report = "# 司美格鲁肽心血管获益机制\n\n## 一、直接回答\n本报告系统整合 SELECT 试验与机制证据，判定 MACE 下降部分独立于减重 [S1]。抗炎、内皮功能改善与直接心肌 GLP-1R 作用共同贡献，权衡三类竞争假说后给出机制判定与验证实验设计。\n\n## 二、证据分析\n证据显示体重配对分析中获益仍存在，支持非减重通路。多项机制研究提示内皮功能改善独立于减重幅度。\n\n## 三、可执行方案\n设计体重配对随机对照，读出 hs-CRP 与 FMD，判据为组间差异显著。";
+        assert!(looks_like_real_report(report));
+    }
+
+    #[test]
+    fn final_accept_marker_gate_keeps_short_clean_finals_but_catches_leaks() {
+        // The {"final"} ACCEPT path gates on markers ALONE (not the >200-char prose rule): a SHORT but
+        // CLEAN final must ship as-is (write-mode / test finals), while a final that smuggled thinking or a
+        // tool-call/code echo inside its value must be caught and salvaged.
+        for clean in ["created hello.txt", "looked at the dir", "computed 42 then 43", "main.rs prints hi; no issues.", "could not write"] {
+            assert!(!has_journal_markers(clean), "clean short final wrongly flagged: {clean}");
+        }
+        assert!(has_journal_markers("THINKING: 先画个图。{\"tool\":\"python\",\"code\":\"import matplotlib\"}"));
+        assert!(has_journal_markers("<tool_call>tool\":\"multi_search\""));
+        // markers INSIDE a ```fence``` (a legit report quoting JSON) do NOT trip the gate.
+        assert!(!has_journal_markers("## 报告\n正文很充分。\n```json\n{\"tool\":\"x\"}\n```\n结论。"));
+    }
+
+    #[test]
+    fn unwrap_recovers_final_wrapped_report() {
+        // The salvage model wrapped its report in {"final":"…"} (obeying the main system prompt) after a
+        // "我已…" preamble → the deliverable showed literal {"final":"##…\n\n…"}. unwrap must recover the
+        // clean markdown (serde unescapes \n) and drop the preamble.
+        let raw = "我已收集全部核心证据。\n\n{\"final\":\"## 报告标题\\n\\n### ① 直接回答\\n基于最高等级证据，判定获益部分独立于减重 [S1]。抗炎、内皮功能改善与直接心肌作用共同贡献，权衡三类竞争假说后给出机制判定与决定性验证实验设计，落到可照做的方案与判据，覆盖体系材料、方法参数、读出指标、判定判据与对照组设置。\"}";
+        let out = unwrap_report_envelope(raw);
+        assert!(out.starts_with("## 报告标题"), "got: {}", &out[..out.len().min(40)]);
+        assert!(out.contains('\n') && !out.contains("\\n"), "newlines must be real, not literal");
+        assert!(!out.contains("{\"final\""), "the {{final}} wrapper must be gone");
+        // A plain prose report is returned unchanged (no false unwrap of an embedded ```json example).
+        let prose = "## 真实报告\n\n正文分析很长，其中提到一个示例 ```json\n{\"final\":\"x\"}\n``` 但整体是散文报告，占绝大多数篇幅，不应被误当作信封解开处理掉正文内容内容内容内容。";
+        assert_eq!(unwrap_report_envelope(prose), prose.trim());
+    }
+
+    #[test]
+    fn recovers_broken_final_envelope_textually() {
+        // GLM emitted {"final":"…"} for a long report but the JSON is BROKEN — a RAW newline inside the
+        // value + a garbled close `」}` (no closing quote) → serde + sanitize both fail. Must recover the
+        // body textually, unescape \n, drop the preamble + envelope. (Fixes the raw {"final":"…\n…"} blob.)
+        let raw = "自检已通过。现在输出最终报告。\n\n{\"final\":\"# 报告标题\\n\\n## 一、直接回答\\n结论成立且有据 [S1]。表格 | A | B |\\n这里混进一个真实换行\n破坏了 JSON。\\n\\n## 参考文献\\n- [S1]」}";
+        let out = unwrap_report_envelope(raw);
+        assert!(out.starts_with("# 报告标题"), "got head: {:?}", out.chars().take(20).collect::<String>());
+        assert!(out.contains('\n') && !out.contains("\\n"), "newlines must be real, not literal");
+        assert!(!out.contains("{\"final\""), "the envelope wrapper must be gone");
+        assert!(out.contains("[S1]"), "report content must be preserved");
+    }
+
+    #[test]
+    fn textual_final_keeps_full_body_when_close_is_missing_despite_interior_braces() {
+        // REGRESSION (finalize-protocol audit): a broken/truncated {"final":"…"} whose CLOSING `"}` is
+        // absent and whose body has interior braces (LaTeX `\frac{a}{b}`, set `{x}`, a ```json example)
+        // must NOT be truncated at the last INTERIOR `}` — the whole (truncated) body must survive.
+        let raw = "{\"final\":\"# 结论\\n方程 \\\\frac{a}{b} 成立 [S1]。后面还有一整段很重要的分析和参考文献，绝不能被 {a}{b} 里的括号截断掉";
+        let out = textual_final(raw).expect("recovers a body");
+        assert!(out.contains("[S1]"), "content before interior braces kept: {out}");
+        assert!(out.contains("绝不能被") && out.contains("截断掉"), "the tail AFTER an interior `}}` must survive: {out}");
+        // A well-formed envelope (proper `"}` close) still trims exactly at the real end.
+        let ok = textual_final("{\"final\":\"# 报告\\n正文 {x} 里有括号。\"}").expect("recovers");
+        assert!(ok.contains("{x}") && !ok.contains("\"}"), "well-formed close trims correctly: {ok}");
+    }
+
+    #[test]
     fn sanitize_repairs_raw_newlines_in_code_so_tool_call_parses() {
         // A model emitted a python tool call with LITERAL newlines/tabs inside `code`
         // (invalid JSON). Raw parse fails; sanitized parse must recover the tool call.
@@ -2551,5 +3012,78 @@ mod tests {
         let good = "{\"final\":\"line1\\nline2 with a {brace}\"}";
         assert_eq!(sanitize_json_strings(good), good);
         assert!(serde_json::from_str::<Value>(&sanitize_json_strings(good)).is_ok());
+    }
+
+    #[test]
+    fn dangling_citation_helpers_detect_and_strip_out_of_range_markers() {
+        // max_cited_marker: highest [Sn]; an unclosed `[S12` must NOT false-match.
+        assert_eq!(max_cited_marker("结论 [S2] 与 [S7],还有 [S12 未闭合"), 7);
+        assert_eq!(max_cited_marker("正文没有任何引用"), 0);
+        // strip_dangling_markers: drop ONLY n > max_valid; keep valid markers + all claim text (incl. CJK).
+        let r = "机制成立 [S1],证据充分 [S2];但这条 [S7] 和 [S4] 无据支撑。中文正文照旧保留。";
+        let s = strip_dangling_markers(r, 2);
+        assert!(s.contains("[S1]") && s.contains("[S2]"), "valid markers kept: {s}");
+        assert!(!s.contains("[S7]") && !s.contains("[S4]"), "dangling markers dropped: {s}");
+        assert!(s.contains("机制成立") && s.contains("中文正文照旧保留"), "claim text + CJK preserved: {s}");
+        // max_valid = 0 (no sources retrieved) → every [Sn] is dangling.
+        assert_eq!(strip_dangling_markers("凭空 [S1] 引用", 0), "凭空  引用");
+    }
+
+    #[test]
+    fn clean_summary_strips_leaked_marker_and_dangling_together() {
+        // A salvage/wrap-up writer sometimes re-prepends the marker AND cites out-of-range sources.
+        // clean_summary must remove the leading ===AXIOM3_FINAL=== and drop [Sn] beyond the source count.
+        let raw = "===AXIOM3_FINAL===\n# 报告\n结论 [S1] 与 [S9] 混合。";
+        let out = clean_summary(raw, 2);
+        assert!(!out.contains("AXIOM3_FINAL"), "marker stripped: {out}");
+        assert!(out.starts_with("# 报告"), "report body kept: {out}");
+        assert!(out.contains("[S1]") && !out.contains("[S9]"), "valid kept, dangling dropped: {out}");
+        // Idempotent + no-op on a clean report.
+        assert_eq!(clean_summary("# 干净\n正文 [S1]。", 3), "# 干净\n正文 [S1]。");
+    }
+
+    #[tokio::test]
+    async fn last_step_final_is_accepted_and_cleaned_not_discarded() {
+        // REGRESSION (self-test found this): when a nudge gate WOULD fire on the FINAL step, nudging
+        // discards the model's real report and forces the budget-exhausted wrap-up (which leaked a marker
+        // + a dangling cite). On the last step the gates must be SKIPPED and the report ACCEPTED, with the
+        // marker + dangling-citation strip still applied.
+        let root = tmp("laststep");
+        let sb = Sandbox::new(&root).unwrap();
+        let pause = Pause::new();
+        pause.encourage_delegate(); // research mode → the dangling gate WOULD fire (0 sources, cites [S3])
+        let budget = CodingBudget { max_steps: 1, per_call_timeout_s: 30, cmd_timeout_s: 10, cell_timeout_s: 30 };
+        let report = "===AXIOM3_FINAL===\n# 研究简报\n\n## 一、直接回答\n结论成立且证据链完整，机制路径清晰，已权衡多条竞争假说并给出决定性验证实验设计，覆盖体系材料、方法参数、读出指标、判定判据与对照组设置，正文足够充分以通过真报告判定；为满足长度门槛这里继续补充足够多的中文叙述内容，保持自然通顺不堆砌，逐条说明关键机制、证据强度、剂量与效应关系、潜在混杂、外推边界、已知局限，以及下一步可照做的验证方案与预期读出，确保非空白字符数量明显超过二百个字符的下限要求，避免因过短被判定为非报告而走抢救路径 [S3]。\n\n## 二、机制与证据\n多条通路协同，权衡后给出主判断，并列出反证条件与证伪实验，保证结论可被后续工作检验。\n\n## 三、结论\n综上，机制与证据支持该判断，后续以所述实验证伪或坐实。";
+        let model = ScriptModel { replies: Mutex::new(vec![report.into()]) };
+        let res = run_coding_agent("研究课题", &sb, &model, &Cancel::new(), &pause, &budget, None, |_| {}, |_, _| {}).await;
+        assert_eq!(res.status, "done", "last-step report must be accepted (not discarded to no_report): {}", res.summary.chars().take(50).collect::<String>());
+        assert!(!res.summary.contains("AXIOM3_FINAL"), "marker stripped: {}", res.summary.chars().take(30).collect::<String>());
+        assert!(!res.summary.contains("[S3]"), "dangling [S3] stripped (0 sources): {}", res.summary);
+        assert!(res.summary.starts_with("# 研究简报"), "the model's real report ships: {}", res.summary.chars().take(20).collect::<String>());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn research_final_nudges_then_strips_a_dangling_citation() {
+        // REGRESSION (self-test found this): research mode, THIN retrieval (0 sources here). The model
+        // finalizes a report citing [S3] (dangling). The gate nudges ONCE; if the model re-emits the same
+        // dangling cite, the backstop STRIPS it so no dead provenance link ships — the claim text stays.
+        let root = tmp("dangling_loop");
+        let sb = Sandbox::new(&root).unwrap();
+        let pause = Pause::new();
+        pause.encourage_delegate(); // research mode → the dangling-citation gate is active
+        // A report long enough to pass looks_like_real_report (≥200 non-whitespace prose chars).
+        let report = "===AXIOM3_FINAL===\n# 研究简报\n\n## 一、直接回答\n结论成立且证据链完整，机制路径清晰，已权衡多条竞争假说并给出决定性验证实验设计，覆盖体系材料、方法参数、读出指标、判定判据与对照组设置，正文足够充分以通过真报告判定；为满足长度门槛这里继续补充足够多的中文叙述内容，保持自然通顺不堆砌，说明关键机制、证据强度、局限与下一步可照做的验证方案，确保非空白字符数量明显超过二百的下限要求 [S3]。\n\n## 二、结论\n综上，机制与证据支持该判断，后续以所述实验证伪或坐实。";
+        let model = ScriptModel {
+            replies: Mutex::new(vec![
+                report.into(), // 1st finalize → dangling-citation gate nudges (max_cited=3 > 0 sources)
+                report.into(), // model re-emits the SAME dangling cite → backstop must strip it
+            ]),
+        };
+        let res = run_coding_agent("研究课题", &sb, &model, &Cancel::new(), &pause, &CodingBudget::default(), None, |_| {}, |_, _| {}).await;
+        assert_eq!(res.status, "done", "summary: {}", res.summary);
+        assert!(!res.summary.contains("[S3]"), "dangling [S3] must be stripped (0 sources), got: {}", res.summary);
+        assert!(res.summary.contains("结论成立") && res.summary.starts_with("# 研究简报"), "claim/report body preserved: {}", res.summary.chars().take(20).collect::<String>());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

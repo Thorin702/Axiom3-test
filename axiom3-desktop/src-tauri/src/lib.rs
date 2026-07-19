@@ -73,6 +73,19 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        // GUARD: closing the (only) window destroys it → the process exits → any in-process run is
+        // killed mid-flight. While a run/check is live, VETO the close and ask the UI to confirm
+        // (it calls `force_quit` on confirm, which arms the bypass). No run → close normally.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                use tauri::{Emitter, Manager};
+                let state = window.state::<AppState>();
+                if state.is_busy() && !state.force_quit_armed() {
+                    api.prevent_close();
+                    let _ = window.emit("close-blocked", ());
+                }
+            }
+        })
         .setup(|app| {
             // Hydrate the process env from any stored BYO provider keys so the fleet uses
             // them without re-entry (env still wins, so `KEY=… pnpm tauri dev` overrides).
@@ -135,7 +148,24 @@ pub fn run() {
             auth::account_logout,
             telemetry::telemetry,
             telemetry::fetch_notice,
+            telemetry::set_telemetry,
+            workbench::run_active,
+            workbench::force_quit,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        // GUARD (Cmd+Q / last-window-close cascade): the same protection at the app-exit level. While a
+        // run is live and the user hasn't confirmed via `force_quit`, veto the exit and ask the UI. The
+        // `force_quit` command arms `force_quit_armed()` before calling `app.exit(0)`, so the bypass lets
+        // the process actually quit.
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                use tauri::{Emitter, Manager};
+                let state = app_handle.state::<AppState>();
+                if state.is_busy() && !state.force_quit_armed() {
+                    api.prevent_exit();
+                    let _ = app_handle.emit("exit-blocked", ());
+                }
+            }
+        });
 }

@@ -121,7 +121,15 @@ pub async fn synthesize(goal: &str, steps: &[StepState], critique: &str, provide
             .map_err(|_| anyhow::anyhow!("synthesis timed out after 45s"))?
     })
     .await;
-    r.unwrap_or(concat)
+    let out = r.unwrap_or(concat);
+    // GUARD (legacy orchestrate engine): never ship a fold that leaked the agent's thinking/tool-call
+    // echo as the deliverable — swap it for the honest "报告未生成" banner. Marker-only (not a length
+    // check) so a short-but-clean legitimate synthesis still passes.
+    if crate::coding::has_journal_markers(&out) {
+        crate::coding::fallback_report_from_sources(&[])
+    } else {
+        out
+    }
 }
 
 fn concat_fallback(steps: &[StepState]) -> String {

@@ -119,6 +119,17 @@ macro_rules! run_provider_agent {
         if let Some(mt) = $req.max_tokens {
             b = b.max_tokens(mt as u64);
         }
+        // DISABLE GLM's native reasoning. GLM-5.2's hidden `reasoning_content` COUNTS AGAINST max_tokens
+        // and, on a hard step, consumes the ENTIRE budget (finish_reason=length) — truncating the actual
+        // `content` (our JSON tool call) to nothing → the "JSON 被截断 / tool 字段丢失" parse failures,
+        // no-output runs, and ~40-min courses. We never use the hidden CoT (Rig drops reasoning_content;
+        // the agent elicits its OWN visible "THINKING:" narration in content), so it is pure cost.
+        // Verified on SCNet, identical request: reasoning 4000→0 tokens, content 0→valid JSON, finish
+        // length→stop, ~10x fewer tokens. Gated to GLM models — only they understand this knob; sending
+        // it to OpenAI/Anthropic/DeepSeek/Gemini/Qwen would error, so those paths are untouched.
+        if $req.model.to_lowercase().contains("glm") {
+            b = b.additional_params(serde_json::json!({ "thinking": { "type": "disabled" } }));
+        }
         let agent = b.build();
         agent.prompt(last_user_text($req)).await.map_err(anyerr)
     }};

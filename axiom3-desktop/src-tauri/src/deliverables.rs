@@ -96,6 +96,29 @@ pub fn deliverable_save(app: tauri::AppHandle, id: String, json: String) -> Resu
     // metadata (notably the `recap`, which is produced AFTER the first backup). So field-MERGE:
     // keep the figure-bearing fields from disk, take everything else from the incoming copy.
     let mut json = json;
+    // ANTI-DEMOTION GUARD: the ~8s progress JOURNAL writes a LEAN, status:"running" snapshot of a
+    // live run to disk (so a crash leaves a resumable record). Such a late-landing snapshot must NEVER
+    // overwrite an already-FINISHED, figure-bearing record (done/no_report) — that would wipe the real
+    // report+figures. Block exactly that demotion; every other transition (running→running fresh-wins,
+    // running→cancelled, a resumed cancelled→running, anything→done) is allowed.
+    if f.exists() {
+        if let Ok(existing) = fs::read_to_string(&f) {
+            let status_of = |s: &str| {
+                serde_json::from_str::<serde_json::Value>(s)
+                    .ok()
+                    .and_then(|v| v.get("status").and_then(|x| x.as_str()).map(str::to_string))
+            };
+            let is_final = |s: &Option<String>| matches!(s.as_deref(), Some("done") | Some("no_report"));
+            // Only block the SPECIFIC demotion we care about: a finished record being overwritten by an
+            // explicit in-flight JOURNAL snapshot (status:"running"/"partial"). A save that OMITS `status`
+            // (e.g. a metadata-only patch) is not a demotion — treat unknown/missing status as allowed so
+            // it isn't silently dropped onto a done record.
+            let is_stub = |s: &Option<String>| matches!(s.as_deref(), Some("running") | Some("partial"));
+            if is_final(&status_of(&existing)) && is_stub(&status_of(&json)) {
+                return Ok(()); // never demote a finished deliverable to an in-flight/partial snapshot
+            }
+        }
+    }
     if f.exists() && json.contains(LEAN_MARK) {
         if let Ok(existing) = fs::read_to_string(&f) {
             if !existing.contains(LEAN_MARK) {
@@ -146,6 +169,17 @@ pub fn deliverable_list(app: tauri::AppHandle) -> Result<Vec<DeliverableMeta>, S
         }
         let bytes = e.metadata().map(|m| m.len()).unwrap_or(0);
         if let Ok(json) = fs::read_to_string(&path) {
+            // Hide in-flight / empty JOURNAL stubs from the 产出物库: a status:"running" progress
+            // snapshot (or a record with no report and no rounds) is a resume aid, not a deliverable.
+            // The stub still lives at <id>.json for openTask to load by id (the resume path).
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) {
+                let status = v.get("status").and_then(|s| s.as_str()).unwrap_or("");
+                let has_report = v.get("synthesis").and_then(|s| s.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+                let has_rounds = v.get("versions").and_then(|a| a.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+                if status == "running" || (!has_report && !has_rounds) {
+                    continue;
+                }
+            }
             out.push(meta_from(&id, &json, bytes));
         }
     }
