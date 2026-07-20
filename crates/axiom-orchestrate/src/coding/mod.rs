@@ -342,6 +342,12 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              gwas_catalog(gene) (clinical variants/genetics); scidb.clinical_trials(query); scidb.blast(seq); \
              and scidb.rest(url, params) for ANY other public REST DB (provenance-tracked). Run \
              `scidb.catalog()` once to see them all. Prefer a real scidb record over a remembered fact.\n\
+             **溯源铁律:要在报告里用 [Sn] 引用一条 scidb 取到的记录,必须先用 `scidb.cite(记录)` 登记 \
+             (可链式:`rows = scidb.cite(scidb.chembl(query=...))`、`scidb.cite(scidb.pdb('7XKJ'))`)—— \
+             它会回一行『已登记…可引用来源:[Sn]…』,你只能引用这些真实登记过的 [Sn]。文献同理:用 \
+             scidb.lit_search 后对要引用的条目 scidb.cite 一下。native litsearch/multi_search 工具已自动登记, \
+             无需再 cite。⚠️ 绝不要自己编 [Sn] 编号、也绝不要写『检索结果:…关键文献包括…』这种打包式引用—— \
+             凡没有真实登记来源的 [Sn] 会被系统当死链剥掉。**\n\
              {\"tool\":\"python\",\"code\":\"<python source>\"}   (a PERSISTENT Python kernel: \
              variables/dataframes/models stay in memory across python calls, so build up an analysis \
              step by step. stdout and the last expression's value come back to you; any matplotlib \
@@ -470,6 +476,12 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              combined hits in ONE step, far faster than firing litsearch one-by-one. Give 2-4 genuinely \
              different angles up front; results carry the same [Sn] citations. Use single litsearch only \
              when the next query depends on what the last one returned.)\n\
+             {\"tool\":\"extract_evidence\"}   或 {\"tool\":\"extract_evidence\",\"ids\":[3,7,12]}   \
+             (★**把已登记来源榨成定量证据表**。它会对每条来源的原文摘录跑一次专门的抽取,回给你形如 \
+             `[Sn] | 结论 | 数字+单位 | 人群/n | 终点 | 证据等级` 的行。**检索完、动笔前先调用它**——\
+             深度报告的价值在于具体数字(样本量、效应量 HR/OR/DC50/IC50、终点 mPFS/OS/ORR、剂量、毒性等级、\
+             p/95%CI),而不是「X 等报道了…」这类书目式转述。写正文时只用表里的数字,每个数字紧跟它的 [Sn]。\
+             不传 ids 就抽全部已登记来源。)\n\
              {\"tool\":\"web_search\",\"query\":\"<search terms>\"}   (search the WHOLE WEB, not just \
              papers — official databases (GEO/SRA/UniProt/PDB/Ensembl/PubChem), datasets, tool docs, \
              preprints, standards, org/news pages. Returns titles + URLs + snippets. Use it to FIND a \
@@ -1068,11 +1080,211 @@ fn strip_final_marker(s: &str) -> String {
     }
 }
 
+/// Normalize MULTI-reference citation groups into consecutive single markers: `[S2, S3]` / `[S2,S3]` /
+/// `[S2; S3]` → `[S2][S3]`. The model routinely bundles several refs in one bracket, but the dangling
+/// gate, the strip backstop, AND the frontend clickable-source regex (`/\[S\d+\]/`) only recognize a
+/// SINGLE `[Sn]` — so a bundled `[S1, S16]` was invisible to the anti-fabrication gate (a fabricated
+/// [S16] with 0 sources shipped) and rendered as dead, unclickable text. Normalizing once here makes
+/// every downstream consumer work unchanged. Only rewrites strict `S<digits>`-and-separator groups, so
+/// `[START]`, `[Section 2]`, `[SI]` are untouched.
+fn normalize_citations(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'[' {
+            // Try to parse a citation group: [ (S digits) (sep S digits)* ] with ≥1 ref.
+            let mut j = i + 1;
+            let mut nums: Vec<u32> = Vec::new();
+            loop {
+                while j < b.len() && (b[j] == b' ' || b[j] == b'\t') { j += 1; }
+                if j >= b.len() || b[j] != b'S' || j + 1 >= b.len() || !b[j + 1].is_ascii_digit() {
+                    break;
+                }
+                j += 1; // past 'S'
+                let mut v: u32 = 0;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    v = v.saturating_mul(10).saturating_add((b[j] - b'0') as u32);
+                    j += 1;
+                }
+                nums.push(v);
+                while j < b.len() && (b[j] == b' ' || b[j] == b'\t') { j += 1; }
+                if j < b.len() && (b[j] == b',' || b[j] == b';') { j += 1; continue; }
+                break;
+            }
+            if !nums.is_empty() && j < b.len() && b[j] == b']' {
+                for n in &nums {
+                    out.extend_from_slice(format!("[S{n}]").as_bytes());
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
 /// Final cleanup applied to EVERY shipped report summary, from ANY path (accept, salvage, wrap-up,
-/// budget-exhaustion): strip a leaked ===AXIOM3_FINAL=== marker, then strip DANGLING [Sn] citations
+/// budget-exhaustion): strip a leaked ===AXIOM3_FINAL=== marker, NORMALIZE bundled `[S2, S3]` citations
+/// into `[S2][S3]` (so the dangling strip + frontend see every ref), then strip DANGLING [Sn] citations
 /// (n > sources retrieved). Idempotent; a no-op on a clean report or the honest fallback banner.
 fn clean_summary(summary: &str, n_sources: usize) -> String {
-    strip_dangling_markers(&strip_final_marker(summary), n_sources as u32)
+    let s = normalize_citations(&strip_final_marker(summary));
+    strip_dangling_markers(&s, n_sources as u32)
+}
+
+/// Count QUANTITATIVE claims: text segments carrying BOTH a digit and a unit/statistic marker — an
+/// effect size, sample size, dose, endpoint, or potency. This is the real signal of evidence DEPTH, as
+/// opposed to a bibliographic pointer ("X et al. reported …"). Benchmarking against a web-research
+/// baseline: 126 registered sources yielded ~4 such numbers while the 23-source baseline produced 37 —
+/// retrieval VOLUME is not evidence depth, so the gate below measures this instead of source count.
+fn quant_claim_count(s: &str) -> usize {
+    const UNITS: &[&str] = &[
+        "n=", "n =", "%", "nM", "µM", "uM", "μM", "pM", "mg/kg", "mg", "kDa", "Å", "HR", "OR", "CI",
+        "p<", "p =", "p=", "P<", "IC50", "DC50", "Dmax", "EC50", "PFS", "OS", "ORR", "倍", "个月", "±", "≥",
+    ];
+    strip_fenced_blocks(s)
+        .split(|c| c == '。' || c == '\n' || c == '；' || c == ';')
+        .filter(|seg| {
+            seg.chars().any(|c| c.is_ascii_digit()) && UNITS.iter().any(|u| seg.contains(u))
+        })
+        .count()
+}
+
+/// Every `[Sn]` id cited anywhere in `s`.
+fn cited_ids(s: &str) -> std::collections::BTreeSet<u32> {
+    let b = s.as_bytes();
+    let mut out = std::collections::BTreeSet::new();
+    let mut i = 0;
+    while i + 2 < b.len() {
+        if b[i] == b'[' && b[i + 1] == b'S' && b[i + 2].is_ascii_digit() {
+            let mut j = i + 2;
+            let mut v: u32 = 0;
+            while j < b.len() && b[j].is_ascii_digit() {
+                v = v.saturating_mul(10).saturating_add((b[j] - b'0') as u32);
+                j += 1;
+            }
+            if j < b.len() && b[j] == b']' {
+                out.insert(v);
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Guarantee every cited `[Sn]` is RESOLVABLE by the reader: append any cited-but-unlisted source
+/// (title + URL, taken from the REGISTERED provenance list) to the report's reference section.
+/// The dangling gate only compares an id against the COUNT of registered sources — benchmarking found a
+/// report citing [S91] (≤ the 126 registered, so it passed) whose own 参考文献 listed just 30 entries, so
+/// the reader could not look it up; and the listed entries carried no URL/DOI at all. Deterministic, no
+/// model call: it closes both holes at once.
+fn ensure_reference_list(summary: &str, sources: &[Source]) -> String {
+    if sources.is_empty() {
+        return summary.to_string();
+    }
+    // Split body vs the reference section (if the model wrote one).
+    let head_at = ["参考文献", "参考资料", "References", "REFERENCES"]
+        .iter()
+        .filter_map(|k| summary.find(k))
+        .min();
+    let (body, refs) = match head_at {
+        Some(i) => (&summary[..i], &summary[i..]),
+        None => (summary, ""),
+    };
+    let cited = cited_ids(body);
+    if cited.is_empty() {
+        return summary.to_string();
+    }
+    // What the reference section already resolves — accept `[S3]` or a bare `S3` entry marker.
+    let mut listed = cited_ids(refs);
+    let rb = refs.as_bytes();
+    let mut i = 0;
+    while i + 1 < rb.len() {
+        if rb[i] == b'S' && rb[i + 1].is_ascii_digit() {
+            let mut j = i + 1;
+            let mut v: u32 = 0;
+            while j < rb.len() && rb[j].is_ascii_digit() {
+                v = v.saturating_mul(10).saturating_add((rb[j] - b'0') as u32);
+                j += 1;
+            }
+            listed.insert(v);
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    let missing: Vec<u32> = cited.difference(&listed).copied().collect();
+    if missing.is_empty() {
+        return summary.to_string();
+    }
+    let mut out = summary.to_string();
+    if head_at.is_none() {
+        out.push_str("\n\n## 参考文献\n");
+    }
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    for id in missing {
+        if let Some(src) = sources.iter().find(|s| s.id == id) {
+            let url = if src.url.trim().is_empty() { String::new() } else { format!(" — {}", src.url) };
+            out.push_str(&format!("- [S{}] {}{}\n", id, src.title.trim(), url));
+        }
+    }
+    out
+}
+
+/// Capture sources the model registered via `scidb.cite(...)` (which prints a `#AXIOM_CITE#<json>` line):
+/// parse them into the provenance list so DB/lit records fetched through the python+scidb path become
+/// CITABLE [Sn]. Previously ONLY the native litsearch/multi_search tools pushed sources, so a report
+/// built on `import scidb` in python had 0 registered sources and the model fabricated [Sn] to fill the
+/// gap (observed in benchmarking: a full report citing [S1..S16] with 0 real sources). Returns the
+/// observation with the marker line(s) replaced by the assigned [Sn] ids, so the model knows which
+/// numbers it may now cite. De-duplicates by URL.
+fn capture_cited_sources(o: &str, sources: &mut Vec<Source>, src_n: &mut u32) -> String {
+    const TAG: &str = "#AXIOM_CITE#";
+    if !o.contains(TAG) {
+        return o.to_string();
+    }
+    let mut kept = String::new();
+    let mut assigned: Vec<u32> = Vec::new();
+    for line in o.lines() {
+        if let Some(js) = line.trim_start().strip_prefix(TAG) {
+            if let Ok(items) = serde_json::from_str::<Vec<Value>>(js.trim()) {
+                for it in items {
+                    let url = it.get("url").and_then(|x| x.as_str()).unwrap_or("").trim().to_string();
+                    if url.is_empty() {
+                        continue;
+                    }
+                    if let Some(existing) = sources.iter().find(|s| s.url == url) {
+                        assigned.push(existing.id); // already registered → reuse its [Sn]
+                        continue;
+                    }
+                    *src_n += 1;
+                    sources.push(Source {
+                        id: *src_n,
+                        kind: "db".into(),
+                        title: it.get("title").and_then(|x| x.as_str()).unwrap_or("record").to_string(),
+                        url,
+                        excerpt: it.get("excerpt").and_then(|x| x.as_str()).unwrap_or("").chars().take(4000).collect(),
+                    });
+                    assigned.push(*src_n);
+                }
+            }
+            continue; // drop the raw marker line from what the model sees
+        }
+        kept.push_str(line);
+        kept.push('\n');
+    }
+    if !assigned.is_empty() {
+        let ids: Vec<String> = assigned.iter().map(|n| format!("[S{n}]")).collect();
+        kept.push_str(&format!("[已登记 {} 条可引用来源;在报告正文引用它们时用:{}]\n", assigned.len(), ids.join(" ")));
+    }
+    kept
 }
 
 /// Heuristic guard: does `summary` read like a genuine final report, or is it the agent's thinking
@@ -1198,6 +1410,8 @@ pub async fn run_coding_agent_steered(
     let mut reflected = false; // whether the ONE-time self-critique gate has fired before finalizing
     let mut cite_nudged = false; // whether the ONE-time "you gathered sources but cited none" gate has fired
     let mut dangling_nudged = false; // whether the ONE-time "you cited [Sn] beyond the sources you retrieved" gate has fired
+    let mut breadth_nudged = false; // whether the ONE-time "too few sources for a deep report" gate has fired
+    let mut depth_nudges = 0u32; // "many sources but no numbers extracted" gate — bounded to 2 passes
     let mut last_compact_len = 0usize; // transcript length at the last context-compaction (avoid re-compacting every step)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
     let mut lit_queries: Vec<String> = Vec::new(); // litsearch queries so far — nudge for breadth when one angle is over-searched
@@ -1500,6 +1714,53 @@ pub async fn run_coding_agent_steered(
                 ));
                 continue;
             }
+            // BREADTH GATE: a DEEP research report standing on very few registered sources is thin — the
+            // model has either under-searched or leaned on memory. (Benchmarking vs a web-research baseline:
+            // 8/4/0 registered sources where the baseline had 15-19.) Push ONCE to broaden: several DISTINCT
+            // angles via litsearch/multi_search + scidb.cite on the records, especially landmark clinical /
+            // competing-approach / negative results. Research mode only; one nudge; only if budget remains.
+            // NOTE: threshold deliberately LOW (5, was 8). Benchmarking showed a high bar here drove the
+            // model to keep RETRIEVING (126-144 registered sources) without deepening the argument — the
+            // evidence-DEPTH gate below is what carries quality now; this one only catches a starved run.
+            if nudge_ok && pause.delegate_encouraged() && !breadth_nudged && n >= 3 && sources.len() < 5 {
+                breadth_nudged = true;
+                transcript.push_str(&format!(
+                    "\n[system] 收尾前先补检索广度。你目前只登记了 {} 条可引用来源,对一份深度研究简报偏少——很容易漏掉里程碑证据或变成凭记忆。请再做几组【不同角度】的检索(litsearch/multi_search + 对要引用的记录 scidb.cite 登记),重点补:关键临床读出/III期数据、竞争性方案/路线、以及反面或阴性结果;把关键结论都挂到真实登记的 [Sn] 上,再收尾。别为了收尾而少检索。Too few registered sources for a deep report — run several MORE distinct searches (landmark/clinical, competing approaches, negative results), scidb.cite the records, then finalize.\n",
+                    sources.len()
+                ));
+                continue;
+            }
+            // EVIDENCE-DEPTH GATE (the one that actually carries quality). Retrieval volume ≠ depth:
+            // benchmarking found a run with 126 registered sources citing 29 of them yet stating only ~4
+            // real effect sizes, while a 23-source baseline produced 37 — and for the SAME drug the
+            // baseline extracted 6 numbers from ONE paper where this run extracted none and got the trial
+            // facts wrong. So when the run HAS sources but the draft is quantitatively thin, do NOT send
+            // it to search more (that made it worse) — send it BACK INTO the sources it already cited to
+            // pull the numbers out. Research mode, one nudge, budget permitting.
+            // Threshold calibrated against the web-research baseline (52-57 quantitative claims on these
+            // topics vs 5-9 here). Measured behaviour drove both constants: with the bar at 20 one run
+            // stopped at EXACTLY 20 (the bar is what binds, so raise it) and another stalled at 13 after a
+            // single push (so allow a second pass). 30 with 2 passes; still met by mining cited sources.
+            if nudge_ok && pause.delegate_encouraged() && depth_nudges < 2 && n >= 3
+                && sources.len() >= 5 && quant_claim_count(&f) < 30
+            {
+                depth_nudges += 1;
+                transcript.push_str(&format!(
+                    "\n[system] 先别收尾:你检索到了 {} 条来源,但报告里只有约 {} 处带具体数字的论断——这是「宽而薄」。\
+                     **现在调用 {{\"tool\":\"extract_evidence\"}}**——它会把你已登记的来源逐条榨成 \
+                     `[Sn] | 结论 | 数字+单位 | 人群/n | 终点 | 证据等级` 的证据表,然后你【照着表】把数字写进正文。\
+                     **不要再去检索新文献**,回到你【已经引用】的那几条来源里,把数字抽出来写进正文:样本量(n=)、\
+                     效应量(HR/OR/DC50/IC50/Dmax/%降解)、终点读出(mPFS/OS/ORR)、剂量与浓度、毒性等级与发生率、\
+                     统计量(p/95%CI)。一条高质量来源应该能榨出好几个数字。每个数字紧跟它的 [Sn]。\
+                     同时:凡是写进「临床试验」类表格的行,NCT号/期别/状态/适应症必须来自你真实检索到的记录,\
+                     没有真实 NCT 的化合物不许放进临床表(放到临床前小节);别把设计原理写成已观测到的结果。\
+                     ⚠️**不许为了凑数硬塞数字**:每个数字必须是来源里真实报告的量(不是你推算/举例/编的),\
+                     必须紧跟它的 [Sn],且要服务于论断(说明该证据支持或反对什么)。凑出来的空数字比没有更糟。\
+                     补完再收尾。Don't search more — mine the sources you already cited for real numbers; never pad.\n",
+                    sources.len(), quant_claim_count(&f)
+                ));
+                continue;
+            }
             // SELF-CRITIQUE GATE (quality > budget cutoff): before accepting the FINAL report, make the
             // agent critique its own draft ONCE against the ORIGINAL question + an evidence checklist.
             // This is the "verify before done" pattern (grok /goal, biomni self_critic) — it catches
@@ -1512,10 +1773,14 @@ pub async fn run_coding_agent_steered(
                 transcript.push_str(&format!(
                     "\n[system] 收尾前做一次自检(只此一次,别拖延)。对照你正要提交的报告逐条核对,不达标的先补齐;都达标就收尾 —— **收尾方式:先一行 ===AXIOM3_FINAL=== 再直接写裸 Markdown 报告(不要 JSON、不要转义)**:\n\
                      1) 答的是不是用户【原题】「{}」?开篇第一段有没有正面、直接回答它(而不是跑偏到别的角度)?\n\
-                     2) 每条关键结论/数字是不是都有真实 [Sn] 来源支撑?有没有编造或凭记忆?没来源的先补检索或删掉。**特别检查具体数字——效应量(Cohen's d/HR/OR)、百分比、剂量、统计量、p 值这类,凡是没挂 [Sn] 的,要么补上真实来源,要么显式标注为「估计/示意值」,绝不把无源数字当既定事实列出。**\n\
-                     3) 图是不是都来自真实检索/计算的数据(不是示意图)?课题点名要的图都出了吗?\n\
-                     4) 有没有该用而没用的数据库(靶点→opentargets、变异→clinvar/gnomad、试验→clinical_trials、GWAS→gwas_catalog)?\n\
-                     5) 有没有明显缺口/自相矛盾?诚实标注局限,别硬撑。\n\
+                     2) 每条关键结论/数字是不是都有真实 [Sn] 来源支撑?有没有编造或凭记忆?没来源的先补检索或删掉。**特别检查具体数字——效应量(Cohen's d/HR/OR)、百分比、剂量、统计量、p 值这类,凡是没挂 [Sn] 的,要么补上真实来源,要么显式标注为「估计/示意值」,绝不把无源数字当既定事实列出。绝不写『检索结果:…关键文献包括』这种打包式引用,只引用真实登记过的 [Sn]。**\n\
+                     3) **证据分级**:人体研究有没有按【真实设计】标注(首次人体/开放标签/单臂/pilot/样本量 n/II期RCT)?**绝不把开放标签 pilot 或早期小样本说成「II 期」「已验证疗效」**;机制/临床两环因果分别说清证据强度。药名/NCT号/ChEMBL ID 只写真实检索回填到的,拼写与记录一致,别自撰试验臂细节。**临床试验表纪律:没有真实 NCT 号的化合物不许进「临床试验」表(放临床前小节);同一个药全文的 NCT/期别/适应症必须唯一且自洽(别出现「已完成…状态招募中」这种自相矛盾);别把设计原理(rationale)写成已观测到的结果(outcome)——尤其当你引用的那篇文献其实报告了相反的不良事件。**\n\
+                     3b) **数字密度**:每个一级章节至少要有几条【带具体数字】的证据(n=/效应量/剂量/终点/毒性等级/统计量),而不是通篇「X 等报道了…」这种书目式指针。数字不够就回到已引用的来源里去抽,别靠再检索凑数。\n\
+                     3c) **禁止关于「自己核验过程」的全称陈述**:不许写「所有引用均经检索验证」「所有状态均已核实」这类话——除非每条都真的逐条核过。要写就逐条标注真实状态(已读全文/仅核对元数据/仅检索命中未读全文)。**对核验过程本身说大话,比措辞含糊更严重。**\n\
+                     3d) **参考文献可点击**:每条参考文献尽量带 DOI 或 URL;拿不到全文的条目显式标「未获取全文,仅据摘要/二次转述」。\n\
+                     4) **竞争假说**:是不是给了 ≥3 条【真正不同的路线级】假说/技术路线(不是同一路线内部的一次二选一),每条带支持证据 + 软肋 + 鉴别性证据 + 有理由的取舍/采信,并给出可证伪该判断的观测?\n\
+                     5) 图是不是都来自真实检索/计算的数据(不是示意图)?课题点名要的图都出了吗?手里已检索到结构(PDB)却没出结构图吗?\n\
+                     6) 有没有该用而没用的数据库(靶点→opentargets、变异→clinvar/gnomad、试验→clinical_trials、GWAS→gwas_catalog)?有没有明显缺口/自相矛盾?诚实标注局限,别硬撑。\n\
                      哪几条不达标就补哪几条,补完再 final。Self-critique against the ORIGINAL question + evidence; fix gaps; THEN finalize.\n",
                     goal.chars().take(220).collect::<String>()
                 ));
@@ -1527,7 +1792,9 @@ pub async fn run_coding_agent_steered(
             // provenance link + reads as a fabricated citation, violating the product's anti-fabrication
             // promise. Push ONCE to ground the claim with a real search or drop the unsupported marker.
             // Research mode only (deep cited reports); the strip backstop below is the hard guarantee.
-            if nudge_ok && pause.delegate_encouraged() && !dangling_nudged && max_cited_marker(&f) as usize > sources.len() {
+            if nudge_ok && pause.delegate_encouraged() && !dangling_nudged
+                && max_cited_marker(&normalize_citations(&f)) as usize > sources.len()
+            {
                 dangling_nudged = true;
                 let ns = sources.len();
                 transcript.push_str(&format!(
@@ -1557,6 +1824,10 @@ pub async fn run_coding_agent_steered(
             // residual marker + any DANGLING [Sn] (n > sources retrieved) that survived the nudge — claim
             // text stays, only the unbacked marker is dropped. No-op for a clean report / fallback banner.
             let summary = clean_summary(&summary, sources.len());
+            // RESOLVABILITY: every cited [Sn] must be lookup-able by the reader. Append any cited-but-
+            // unlisted source (with its URL) to the reference section — closes the "[S91] cited but the
+            // bibliography only lists 30 entries" hole AND gives entries a real URL to click.
+            let summary = ensure_reference_list(&summary, &sources);
             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
             return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
@@ -1831,6 +2102,72 @@ pub async fn run_coding_agent_steered(
                 }
                 None => ("pip_install".to_string(), "ERROR: pip_install needs the analysis kernel".to_string()),
             },
+            // ORCHESTRATION: evidence extraction as an explicit MAP-REDUCE stage. Benchmarking showed the
+            // core weakness is not retrieval but EXTRACTION: a single loop juggling search+read+reason+
+            // write registers 126 sources yet states ~4 real numbers, while a stronger reference model
+            // pulls 6 numbers out of ONE paper. Asking the same model to "read deeper" inside the big loop
+            // does not fix that. Instead: MAP a tight, bounded sub-call over each stored source excerpt
+            // (a small focused task — what a mid-tier model is actually good at), REDUCE into a structured
+            // evidence table, then let the agent compose the report FROM that table.
+            "extract_evidence" => {
+                let want: Vec<u32> = v
+                    .get("ids")
+                    .and_then(|x| x.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as u32)).collect())
+                    .unwrap_or_default();
+                let pool: Vec<&Source> = sources
+                    .iter()
+                    .filter(|s| !s.excerpt.trim().is_empty())
+                    .filter(|s| want.is_empty() || want.contains(&s.id))
+                    .collect();
+                if pool.is_empty() {
+                    ("extract_evidence".to_string(),
+                     "ERROR: 还没有带原文摘录的已登记来源。先 litsearch/multi_search 或对 scidb 记录 scidb.cite 登记,再抽取。".to_string())
+                } else {
+                    const EX_SYS: &str = "你是证据抽取器。只做一件事:从给定的来源原文摘录里,抽出可用于论证的【定量事实】。\n\
+                        每条一行,严格用这个格式:[Sn] | 结论(一句) | 数字+单位 | 人群或样本量 | 终点/指标 | 证据等级\n\
+                        规则:①只写摘录里【真实出现】的数字,绝不推算、绝不补全、绝不凭常识填;②一条来源可以抽多行;\
+                        ③摘录里没有任何定量信息就写 `[Sn] | NONE`;④证据等级按摘录写(如 III期RCT/II期/开放标签pilot/临床前/体外/综述);\
+                        ⑤不要输出除这些行以外的任何内容(不要前言、不要总结)。";
+                    // Bounded map: cap the fan-out and batch a few sources per sub-call to keep it cheap.
+                    let capped: Vec<&&Source> = pool.iter().take(12).collect();
+                    let mut table = String::new();
+                    let mut got = 0usize;
+                    for chunk in capped.chunks(3) {
+                        if cancel.is_cancelled() { break; }
+                        let mut user = String::new();
+                        for s in chunk {
+                            user.push_str(&format!(
+                                "\n=== [S{}] {} ===\n{}\n",
+                                s.id,
+                                s.title.chars().take(200).collect::<String>(),
+                                s.excerpt.chars().take(2500).collect::<String>()
+                            ));
+                        }
+                        user.push_str("\n按格式抽取上面每条来源的定量事实:");
+                        if let Ok(out) = model.complete(EX_SYS, &user, cancel).await {
+                            for line in out.lines() {
+                                let l = line.trim();
+                                if l.starts_with("[S") && !l.contains("| NONE") {
+                                    table.push_str(l);
+                                    table.push('\n');
+                                    got += 1;
+                                }
+                            }
+                        }
+                    }
+                    let obs = if got == 0 {
+                        "抽取完成:这些来源的摘录里没有可用的定量事实。别编数字——要么换更具体的检索(补临床读出/效应量),要么在报告里如实说明该处缺定量证据。".to_string()
+                    } else {
+                        format!(
+                            "从 {} 条来源抽出 {} 条定量证据(每条已绑定 [Sn],可直接写进报告正文):\n{}\n\
+                             ⚠️ 只用上表里的数字,别添别的;每个数字在正文里都要紧跟它的 [Sn]。",
+                            capped.len(), got, table.trim_end()
+                        )
+                    };
+                    (format!("{} 条来源", capped.len()), obs)
+                }
+            }
             "litsearch" => {
                 // First-class literature tool (OpenAlex) — not a shell command, so it works
                 // regardless of the sandbox network fence. Grounds analysis in real citations.
@@ -2127,6 +2464,9 @@ pub async fn run_coding_agent_steered(
                             if !step_figures.is_empty() {
                                 o.push_str(&format!("\n[{} figure(s) captured into the report]", step_figures.len()));
                             }
+                            // Register any sources the model declared via `scidb.cite(...)` so records
+                            // fetched through python+scidb become citable [Sn] (not fabricated).
+                            o = capture_cited_sources(&o, &mut sources, &mut src_n);
                             if o.trim().is_empty() { o = "(ran; no output)".into(); }
                             // AUTO-CHECKPOINT: after a SUCCESSFUL, expensive cell (or every few cells),
                             // snapshot picklable globals so a later kernel restart can recover them.
@@ -3040,6 +3380,76 @@ mod tests {
         assert!(out.contains("[S1]") && !out.contains("[S9]"), "valid kept, dangling dropped: {out}");
         // Idempotent + no-op on a clean report.
         assert_eq!(clean_summary("# 干净\n正文 [S1]。", 3), "# 干净\n正文 [S1]。");
+    }
+
+    #[test]
+    fn normalize_bundles_multiref_citations_so_gate_and_frontend_see_them() {
+        // REGRESSION (benchmark found this): bundled `[S2, S3]` / `[S1;S16]` must become `[S2][S3]` so the
+        // dangling gate + strip + the frontend's single-`[Sn]` clickable regex all see every ref.
+        assert_eq!(normalize_citations("结论 [S2, S3] 与 [S1;S16] 成立"), "结论 [S2][S3] 与 [S1][S16] 成立");
+        assert_eq!(normalize_citations("单个 [S4] 不变"), "单个 [S4] 不变");
+        // Non-citation brackets untouched (must not eat [Section 2]/[START]/[SI]).
+        assert_eq!(normalize_citations("[Section 2]、[START]、[SI] 不动"), "[Section 2]、[START]、[SI] 不动");
+        // The exact T3 failure: a 9000-char report citing bundled [S1, S16] with only 3 real sources —
+        // clean_summary normalizes then strips the out-of-range ref (no dead link ships), keeps valid ones.
+        let cleaned = clean_summary("机制成立 [S2, S3];另见 [S1, S16]。", 3);
+        assert!(cleaned.contains("[S2]") && cleaned.contains("[S3]") && cleaned.contains("[S1]"), "valid refs kept: {cleaned}");
+        assert!(!cleaned.contains("[S16]"), "dangling [S16] stripped after normalization: {cleaned}");
+    }
+
+    #[test]
+    fn quant_claim_count_measures_numbers_not_bibliography() {
+        // Bibliographic pointers carry no evidence depth…
+        let biblio = "Smith 等(2019)报道了该机制。Lopez 等(2012)提出了模型。Kortüm 等(2016)发现了耐药。";
+        assert!(quant_claim_count(biblio) <= 1, "bibliographic pointers shouldn't count: {}", quant_claim_count(biblio));
+        // …whereas real quantitative claims do.
+        let quant = "血小板减少发生于 9/20(45%)。中位 OS 12.8 个月。DC50 为 0.130 nM。降解深度 60-72% vs ≥95%。\
+                     入组 n=20 例。mPFS 5.0 vs 2.1 个月(HR 0.40,p<0.001)。";
+        assert!(quant_claim_count(quant) >= 5, "quantitative claims must count: {}", quant_claim_count(quant));
+        // Numbers inside a fenced code block don't inflate the count.
+        assert_eq!(quant_claim_count("```python\nx = 45 # %\n```\n没有数字的正文。"), 0);
+    }
+
+    #[test]
+    fn ensure_reference_list_makes_every_cited_source_resolvable() {
+        // REGRESSION (benchmark found this): a report cited [S91] while its own 参考文献 listed far fewer
+        // entries — the dangling gate passed (91 <= registered count) but the reader could not look it up.
+        let sources = vec![
+            Source { id: 3, kind: "paper".into(), title: "KT-474 首次人体研究".into(), url: "https://doi.org/10.1000/kt474".into(), excerpt: String::new() },
+            Source { id: 91, kind: "db".into(), title: "ARV-471 试验记录".into(), url: "https://clinicaltrials.gov/study/NCT04072952".into(), excerpt: String::new() },
+        ];
+        let report = "# 报告\n结论 A [S3];结论 B [S91]。\n\n## 参考文献\n- [S3] KT-474 首次人体研究 — https://doi.org/10.1000/kt474\n";
+        let out = ensure_reference_list(report, &sources);
+        assert!(out.contains("[S91] ARV-471 试验记录"), "cited-but-unlisted source appended: {out}");
+        assert!(out.contains("clinicaltrials.gov/study/NCT04072952"), "appended entry carries a clickable URL: {out}");
+        // Already-complete bibliography is left alone (idempotent).
+        let complete = "# 报告\n只引用 [S3]。\n\n## 参考文献\n- [S3] KT-474 首次人体研究 — https://doi.org/10.1000/kt474\n";
+        assert_eq!(ensure_reference_list(complete, &sources), complete);
+        // No reference section at all → one is created for the cited source.
+        let noref = "# 报告\n结论 [S3]。";
+        let made = ensure_reference_list(noref, &sources);
+        assert!(made.contains("## 参考文献") && made.contains("[S3]"), "creates a reference section: {made}");
+    }
+
+    #[test]
+    fn capture_registers_scidb_cited_sources_and_relabels_output() {
+        // REGRESSION (benchmark root cause): records fetched via python+scidb never became citable [Sn]
+        // (only native litsearch did), so the model fabricated citations. scidb.cite(...) prints a
+        // #AXIOM_CITE# line that capture_cited_sources turns into real registered sources + [Sn] ids.
+        let mut sources: Vec<Source> = Vec::new();
+        let mut src_n = 0u32;
+        let o = "PDB 7XKJ loaded\n#AXIOM_CITE#[{\"title\":\"KRAS G12D structure\",\"url\":\"https://www.rcsb.org/structure/7XKJ\",\"excerpt\":\"[PDB] ...\"}]\n分析完成";
+        let out = capture_cited_sources(o, &mut sources, &mut src_n);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].id, 1);
+        assert_eq!(sources[0].url, "https://www.rcsb.org/structure/7XKJ");
+        assert!(!out.contains("#AXIOM_CITE#"), "raw marker dropped from the observation: {out}");
+        assert!(out.contains("[S1]"), "assigned id surfaced back to the model: {out}");
+        assert!(out.contains("PDB 7XKJ loaded") && out.contains("分析完成"), "surrounding output preserved: {out}");
+        // De-dup by URL: citing the same record again reuses [S1], adds no new source.
+        let out2 = capture_cited_sources("#AXIOM_CITE#[{\"title\":\"x\",\"url\":\"https://www.rcsb.org/structure/7XKJ\"}]", &mut sources, &mut src_n);
+        assert_eq!(sources.len(), 1, "dedup by url");
+        assert!(out2.contains("[S1]"));
     }
 
     #[tokio::test]

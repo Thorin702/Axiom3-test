@@ -111,6 +111,35 @@ def _http(url, params=None, is_json=True, headers=None, data=None, cache=True):
     return {"error": last_err or "request failed", "url": url}
 
 
+def cite(records):
+    """Register retrieved record(s) as CITABLE sources → the runtime assigns each a [Sn] id you can use
+    in the report. Pass the dict(s)/list any scidb function returned. Returns `records` unchanged, so you
+    can chain inline:  rows = scidb.cite(scidb.chembl(query="aspirin"))  or  scidb.cite(scidb.pdb("7XKJ")).
+    ONLY records registered this way (or via native litsearch/multi_search) may be cited — an [Sn] with no
+    registered source is a dead/ fabricated link and will be stripped from the report."""
+    recs = records if isinstance(records, list) else [records]
+    items = []
+    for r in recs:
+        if not isinstance(r, dict) or r.get("error"):
+            continue
+        doi = r.get("doi")
+        url = r.get("url") or r.get("source_url") or (("https://doi.org/" + str(doi)) if doi else "")
+        if not url:
+            continue
+        title = (r.get("title") or r.get("name") or r.get("recommendedName") or r.get("symbol")
+                 or r.get("accession") or r.get("id") or (r.get("source_db") or "record"))
+        items.append({
+            "title": str(title)[:300],
+            "url": str(url),
+            "excerpt": ("[%s] %s" % (r.get("source_db") or r.get("db") or "", str(r)))[:600],
+        })
+    if items:
+        import json as _json
+        # Machine-readable line the runtime captures to assign [Sn] ids (see capture_cited_sources).
+        print("#AXIOM_CITE#" + _json.dumps(items, ensure_ascii=False))
+    return records
+
+
 # ────────────────────────────── literature ──────────────────────────────
 def lit_search(query, limit=10, source="europepmc"):
     """Search the literature. source='europepmc' (default) | 'crossref' | 'semanticscholar' | 'pubmed'.

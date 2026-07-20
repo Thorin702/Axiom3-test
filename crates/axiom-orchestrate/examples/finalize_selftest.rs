@@ -46,7 +46,11 @@ async fn main() {
     std::fs::create_dir_all(&dir).unwrap();
     let sb = Sandbox::with_mode(&dir, SandboxMode::ReadWrite).unwrap();
     let kernel = Arc::new(PyKernel::start(&py, &dir).expect("start kernel"));
-    let budget = CodingBudget { max_steps: 22, per_call_timeout_s: 220, cmd_timeout_s: 60, cell_timeout_s: 300 };
+    // Headroom matters: the REAL app budgets max_steps=320 for research mode. A tight cap makes the run
+    // finalize AT the cap, where the last-step guard (correctly) skips the breadth/self-critique nudges —
+    // so a small budget silently under-tests those gates. Keep enough room for them to actually fire.
+    let max_steps: u32 = std::env::var("AXIOM_MAX_STEPS").ok().and_then(|s| s.parse().ok()).unwrap_or(70);
+    let budget = CodingBudget { max_steps, per_call_timeout_s: 220, cmd_timeout_s: 60, cell_timeout_s: 300 };
     let pause = Pause::new();
     pause.encourage_delegate(); // research mode: activates the self-critique + figure + report gates
 
