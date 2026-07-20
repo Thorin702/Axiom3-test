@@ -1140,6 +1140,14 @@ fn clean_summary(summary: &str, n_sources: usize) -> String {
 /// opposed to a bibliographic pointer ("X et al. reported …"). Benchmarking against a web-research
 /// baseline: 126 registered sources yielded ~4 such numbers while the 23-source baseline produced 37 —
 /// retrieval VOLUME is not evidence depth, so the gate below measures this instead of source count.
+/// ⚠️ RETAINED AS A DIAGNOSTIC ONLY — must never drive a gate again. Benchmarking against a stronger
+/// reference model made this look like a depth signal, but an audit showed it counts background
+/// epidemiology and database descriptors (PDB resolutions, molecular weights) as "quantitative claims",
+/// so gating on it rewarded PADDING rather than depth: one run stopped at exactly the threshold, another
+/// regressed, and the audited report's extra numbers were filler while its facts got worse. Kept because
+/// the lesson is worth more than the function: a proxy metric that can be satisfied without doing the
+/// real work will be satisfied without doing the real work.
+#[allow(dead_code)]
 fn quant_claim_count(s: &str) -> usize {
     const UNITS: &[&str] = &[
         "n=", "n =", "%", "nM", "µM", "uM", "μM", "pM", "mg/kg", "mg", "kDa", "Å", "HR", "OR", "CI",
@@ -1236,6 +1244,93 @@ fn ensure_reference_list(summary: &str, sources: &[Source]) -> String {
         }
     }
     out
+}
+
+/// The six fields a CONJECTURE block must carry, and why. Deliberately NOT "must have a source": a
+/// genuinely new hypothesis has none by definition, and gating on provenance would suppress exactly the
+/// output that makes this a research tool rather than a literature summariser. What IS required is that
+/// the idea be REACHABLE — anchored in something known, honest about the gap, with a method path, a
+/// falsifier, and a horizon. `现在就能算` is the key one: it asks which steps THIS platform's kernel +
+/// data connectors can already run, turning our own compute into methodology FOR the conjecture.
+/// The harness checks only that the structure is present — it never judges whether the idea is right.
+const CONJ_FIELDS: &[&str] = &["锚点", "缺口", "方法路径", "现在就能算", "证伪条件", "时间尺度"];
+
+/// Parse `### C1: …` style conjecture blocks out of a report. Returns (id, body) pairs.
+fn conjecture_blocks(s: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut cur: Option<(String, String)> = None;
+    for line in s.lines() {
+        let t = line.trim_start();
+        if t.starts_with('#') {
+            let head = t.trim_start_matches('#').trim();
+            // A conjecture heading looks like `C1:` / `C2 …` (optionally after a word like 推想).
+            let is_conj = head
+                .split_whitespace()
+                .next()
+                .map(|w| {
+                    let w = w.trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+                    w.starts_with('C') && w[1..].chars().take_while(|c| c.is_ascii_digit()).count() > 0
+                })
+                .unwrap_or(false)
+                || head.starts_with("推想 C")
+                || head.starts_with("推想C");
+            if let Some(c) = cur.take() {
+                out.push(c);
+            }
+            if is_conj {
+                let id: String = head.chars().take(24).collect();
+                cur = Some((id, String::new()));
+            }
+            continue;
+        }
+        if let Some((_, body)) = cur.as_mut() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if let Some(c) = cur.take() {
+        out.push(c);
+    }
+    out
+}
+
+/// Mechanically list what is STRUCTURALLY missing from the report's conjectures. Content is never
+/// judged — only presence of each required field (with non-trivial content) and that `锚点` cites at
+/// least one [Sn] that actually resolves to a registered source.
+fn conjecture_issues(s: &str, n_sources: usize) -> Vec<String> {
+    let blocks = conjecture_blocks(s);
+    if blocks.is_empty() {
+        return vec!["报告里没有任何「### C1: …」形式的推想块".to_string()];
+    }
+    let mut issues = Vec::new();
+    for (id, body) in &blocks {
+        for f in CONJ_FIELDS {
+            // Field present AND followed by real content on that line.
+            let has = body.lines().any(|l| {
+                match l.find(f) {
+                    Some(i) => {
+                        let rest: String = l[i + f.len()..]
+                            .trim_start_matches([':', '：', '-', '—', ' ', '\t'])
+                            .trim()
+                            .to_string();
+                        rest.chars().count() >= 2
+                    }
+                    None => false,
+                }
+            });
+            if !has {
+                issues.push(format!("{id} 缺「{f}」"));
+            }
+        }
+        // 锚点 must point at a source that actually exists.
+        if let Some(line) = body.lines().find(|l| l.contains("锚点")) {
+            let ok = cited_ids(line).iter().any(|n| *n as usize <= n_sources && *n > 0);
+            if !ok {
+                issues.push(format!("{id} 的「锚点」没有可解析的 [Sn](推想可以大胆,但要说清它站在哪些已知之上)"));
+            }
+        }
+    }
+    issues
 }
 
 /// Capture sources the model registered via `scidb.cite(...)` (which prints a `#AXIOM_CITE#<json>` line):
@@ -1741,25 +1836,36 @@ pub async fn run_coding_agent_steered(
             // topics vs 5-9 here). Measured behaviour drove both constants: with the bar at 20 one run
             // stopped at EXACTLY 20 (the bar is what binds, so raise it) and another stalled at 13 after a
             // single push (so allow a second pass). 30 with 2 passes; still met by mining cited sources.
-            if nudge_ok && pause.delegate_encouraged() && depth_nudges < 2 && n >= 3
-                && sources.len() >= 5 && quant_claim_count(&f) < 30
-            {
-                depth_nudges += 1;
-                transcript.push_str(&format!(
-                    "\n[system] 先别收尾:你检索到了 {} 条来源,但报告里只有约 {} 处带具体数字的论断——这是「宽而薄」。\
-                     **现在调用 {{\"tool\":\"extract_evidence\"}}**——它会把你已登记的来源逐条榨成 \
-                     `[Sn] | 结论 | 数字+单位 | 人群/n | 终点 | 证据等级` 的证据表,然后你【照着表】把数字写进正文。\
-                     **不要再去检索新文献**,回到你【已经引用】的那几条来源里,把数字抽出来写进正文:样本量(n=)、\
-                     效应量(HR/OR/DC50/IC50/Dmax/%降解)、终点读出(mPFS/OS/ORR)、剂量与浓度、毒性等级与发生率、\
-                     统计量(p/95%CI)。一条高质量来源应该能榨出好几个数字。每个数字紧跟它的 [Sn]。\
-                     同时:凡是写进「临床试验」类表格的行,NCT号/期别/状态/适应症必须来自你真实检索到的记录,\
-                     没有真实 NCT 的化合物不许放进临床表(放到临床前小节);别把设计原理写成已观测到的结果。\
-                     ⚠️**不许为了凑数硬塞数字**:每个数字必须是来源里真实报告的量(不是你推算/举例/编的),\
-                     必须紧跟它的 [Sn],且要服务于论断(说明该证据支持或反对什么)。凑出来的空数字比没有更糟。\
-                     补完再收尾。Don't search more — mine the sources you already cited for real numbers; never pad.\n",
-                    sources.len(), quant_claim_count(&f)
-                ));
-                continue;
+            // CONJECTURE-STRUCTURE GATE. The platform's reason to exist is not a tidy literature summary
+            // but a REACHABLE new idea — "use this and you might reproduce the conjecture in a few months".
+            // So conjecture is deliberately NOT gated on provenance (a new hypothesis has no source), and
+            // the model is free to be bold. What the harness enforces — mechanically, never judging the
+            // content — is that each conjecture is REACHABLE: anchored in known [Sn], honest about the
+            // gap, with a method path, the steps OUR kernel can already run, a falsifier, and a horizon.
+            // (Replaces the retired quantitative-density gate, which measured a proxy that rewarded
+            // padding with background numbers and was shown by audit to drive PADDING, not depth.)
+            if nudge_ok && pause.delegate_encouraged() && depth_nudges < 2 && n >= 3 {
+                let issues = conjecture_issues(&f, sources.len());
+                if !issues.is_empty() {
+                    depth_nudges += 1;
+                    transcript.push_str(&format!(
+                        "\n[system] 收尾前补上【推想与验证路径】。本平台的价值不是把已知整理干净,而是给出一个\
+                         **够得着的新想法**——用户看完应该能去把它做出来。所以推想【不需要有来源】,大胆假设没问题,\
+                         但必须写成可执行的结构。缺口如下:{}\n\
+                         请为每条推想写成这个块(至少 1 条,建议 2-3 条真正不同的路径):\n\
+                         ### C1: <一句话说清这个新想法>\n\
+                         - 锚点: [Sn] 说明它的哪一部分由这条已知支撑(可以跨越,但要说清站在什么之上)\n\
+                         - 缺口: 明确讲清哪一部分目前【没有】证据——这正是它的价值所在,别掩饰\n\
+                         - 方法路径: 要验证它,具体怎么做(体系、读出、对照)\n\
+                         - 现在就能算: 这条路径里,**本平台的 python 内核 + 数据接口现在就能跑**的是哪几步\
+                         (例如先用 GEO/ChEMBL/gnomAD 数据算个先验、先做结构可及性筛查);真没有就写「无」\n\
+                         - 证伪条件: 什么结果出现就说明这个推想是错的\n\
+                         - 时间尺度: 大致多久能见分晓(周/月/年)\n\
+                         ⚠️ 推想必须显式标为推想,**绝不能写得像已确立的事实**——这是唯一的红线。\n",
+                        issues.join(";")
+                    ));
+                    continue;
+                }
             }
             // SELF-CRITIQUE GATE (quality > budget cutoff): before accepting the FINAL report, make the
             // agent critique its own draft ONCE against the ORIGINAL question + an evidence checklist.
@@ -3395,6 +3501,35 @@ mod tests {
         let cleaned = clean_summary("机制成立 [S2, S3];另见 [S1, S16]。", 3);
         assert!(cleaned.contains("[S2]") && cleaned.contains("[S3]") && cleaned.contains("[S1]"), "valid refs kept: {cleaned}");
         assert!(!cleaned.contains("[S16]"), "dangling [S16] stripped after normalization: {cleaned}");
+    }
+
+    #[test]
+    fn conjecture_gate_checks_reachability_structure_not_content() {
+        // A conjecture needs NO source (a genuinely new idea has none) — the gate must never demand one.
+        // What it demands is that the idea be REACHABLE: the six structural fields, with 锚点 pointing at
+        // a [Sn] that resolves. Content is never judged.
+        let good = "# 报告\n\n## 推想与验证路径\n\
+            ### C1: 衰老细胞通过某条未描述的代谢旁路逃避清除\n\
+            - 锚点: [S2] 已知该通路在衰老细胞中上调\n\
+            - 缺口: 该旁路与清除抵抗的因果关系尚无直接证据\n\
+            - 方法路径: 敲低该酶后测清除效率,设野生型对照\n\
+            - 现在就能算: 先用 GEO 公开数据算该酶在衰老签名中的富集先验\n\
+            - 证伪条件: 敲低后清除效率无变化即证伪\n\
+            - 时间尺度: 约 3-6 个月\n";
+        assert!(conjecture_issues(good, 5).is_empty(), "完整推想块不应报错: {:?}", conjecture_issues(good, 5));
+        // Missing fields are reported precisely, by id.
+        let missing = "## 推想\n### C1: 某新机制\n- 锚点: [S1] 有据\n- 缺口: 未知\n";
+        let iss = conjecture_issues(missing, 5);
+        assert!(iss.iter().any(|s| s.contains("方法路径")), "应报缺方法路径: {iss:?}");
+        assert!(iss.iter().any(|s| s.contains("证伪条件")), "应报缺证伪条件: {iss:?}");
+        assert!(iss.iter().any(|s| s.contains("现在就能算")), "应报缺自算路径: {iss:?}");
+        // No conjecture at all → flagged (a pure literature summary is not the deliverable).
+        assert!(!conjecture_issues("# 只有综述\n正文。", 5).is_empty());
+        // 锚点 must resolve to a real source — an anchor citing [S99] with 5 sources is unanchored.
+        let bad_anchor = good.replace("[S2]", "[S99]");
+        assert!(conjecture_issues(&bad_anchor, 5).iter().any(|s| s.contains("锚点")), "应报锚点不可解析");
+        // Boldness is NOT penalised: a conjecture whose claim has no citation of its own still passes.
+        assert!(conjecture_issues(good, 5).is_empty(), "推想本身无来源不应被判失败");
     }
 
     #[test]
