@@ -3613,6 +3613,8 @@ pub async fn coding_run(
                 // Algorithm layer: every search action must be visible. A harness action with no step
                 // is undebuggable — that lesson cost a near-miss fix to correct logic once already.
                 "conj_seed" => format!("🌱 推想裁决 · {}", step.detail),
+                "derive" => format!("🧮 平台自算 · {}", step.detail),
+                "derived_rerun" => format!("🔁 自算结果复算 · {}", step.detail),
                 "conj_expand" => format!("🌳 推想搜索 · {}", step.detail),
                 "conj_gen" => format!("🌳 推想搜索 · {}", step.detail),
                 "conj_dupe" => format!("🌳 推想搜索 · {}", step.detail),

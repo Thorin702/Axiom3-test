@@ -6,6 +6,7 @@
 //! examples/coding_live.rs). The sandbox keeps every path inside the workspace and runs
 //! commands shell-free against a mode-gated allowlist.
 mod conj_search;
+mod derived;
 pub mod sandbox;
 
 use crate::control::Pause;
@@ -1587,11 +1588,14 @@ fn finalize_report(
     sources: &[Source],
     research: bool,
     conj: Option<&conj_search::ConjSearchOutcome>,
+    derived: &[derived::Derived],
 ) -> String {
     let s = clean_summary(summary, sources.len());
     let s = ensure_reference_list(&s, sources);
     let s = append_verified_trials(&s, sources);
     let s = conj_search::append_conjecture_search(&s, conj, research);
+    let s = derived::append_derived_results(&s, derived);
+    let s = derived::append_fulfillment_banner(&s, derived, research);
     if !research || is_fallback_report(&s) {
         return s;
     }
@@ -1806,6 +1810,8 @@ pub async fn run_coding_agent_steered(
     let mut depth_nudges = 0u32;
     let mut clinical_slot_nudged = false; // ONE-time: clinical topic with no trial readout in evidence
     let mut conj_oc: Option<conj_search::ConjSearchOutcome> = None;
+    let mut derived_out: Vec<derived::Derived> = Vec::new();
+    let mut derive_passes = 0u32;
     let mut refuted = false; // whether the ONE-time adversarial refutation pass over conjectures has run // "many sources but no numbers extracted" gate — bounded to 2 passes
     let mut last_compact_len = 0usize; // transcript length at the last context-compaction (avoid re-compacting every step)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
@@ -1897,7 +1903,7 @@ pub async fn run_coding_agent_steered(
                             // tail). The run ends gracefully with real content + its figures.
                             let _ = &e; // error is captured in the transcript; the salvage speaks for itself
                             let artifacts = collect_artifacts(sandbox.root(), &start_files);
-                            let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
+                            let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
                             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                             return CodingResult { status: status.into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
                         }
@@ -2007,7 +2013,7 @@ pub async fn run_coding_agent_steered(
                 // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
                 // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
                 // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
-                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
+                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
                 let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                 return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
@@ -2041,7 +2047,7 @@ pub async fn run_coding_agent_steered(
                 // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
                 // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
                 // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
-                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
+                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
                 let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                 return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
@@ -2213,6 +2219,121 @@ pub async fn run_coding_agent_steered(
                 ));
                 continue;
             }
+            // DERIVED SLOT. A conjecture's 「现在就能算」 field is, today, only checked for EXISTENCE —
+            // writing "可以用 ChEMBL 算" satisfies the structure gate without anything being computed.
+            // That is `quant_claim_count` one level up. So the harness stops believing the sentence and
+            // COMPUTES IT: it picks a fixed recipe, sanitises the slots, assembles the cell itself, runs
+            // it, hashes the code IT holds, registers the result, and writes it into the report.
+            // Bounded to ONE model call per run, and disabled under an evidence cutoff (the recipes hit
+            // live databases, which would leak past the holdout boundary).
+            if nudge_ok && n + 2 < budget.max_steps && pause.delegate_encouraged() && kernel.is_some()
+                && derive_passes < 1 && n >= 3 && evidence_cutoff_year().is_none()
+                && !derived::computable_claims(&f).is_empty()
+            {
+                derive_passes += 1;
+                let claims = derived::computable_claims(&f);
+                match derived::plan_derivation(goal, &claims, model, cancel).await {
+                    Ok(plan) => {
+                        let code = derived::build_cell(plan.recipe, &plan.slots);
+                        let (obs, ok) = match &kernel {
+                            Some(k) => {
+                                let kc = k.clone();
+                                let c2 = code.clone();
+                                let to = Duration::from_secs(budget.cell_timeout_s.clamp(60, 240));
+                                match tokio::task::spawn_blocking(move || kc.exec(&c2, to)).await {
+                                    Ok(Ok(cell)) => (cell.stdout, true),
+                                    Ok(Err(e)) => (format!("ERROR: {e}"), false),
+                                    Err(e) => (format!("ERROR: join failed: {e}"), false),
+                                }
+                            }
+                            None => ("ERROR: 无内核".to_string(), false),
+                        };
+                        let ctx = derived::DeriveCtx {
+                            recipe: plan.recipe.name,
+                            conj_id: &plan.conj_id,
+                            code: &code,
+                            volatile: plan.recipe.volatile,
+                        };
+                        let obs = if ok {
+                            derived::capture_derived(&obs, &ctx, &mut derived_out, &mut sources, &mut src_n)
+                        } else {
+                            derived_out.push(derived::Derived {
+                                recipe: plan.recipe.name.into(),
+                                conj_id: plan.conj_id.clone(),
+                                ok: false,
+                                error: Some(obs.chars().take(200).collect()),
+                                ..Default::default()
+                            });
+                            obs
+                        };
+                        on_step(CodingStepRec {
+                            n,
+                            tool: "derive".into(),
+                            detail: format!("平台自算 · {} · {}", plan.recipe.name, plan.conj_id),
+                            observation: obs.chars().take(2000).collect(),
+                            input: code,
+                            reasoning: String::new(),
+                            figures: Vec::new(),
+                        });
+                        // Verify by RE-RUNNING in a fresh namespace. Costs one kernel exec, no model
+                        // call, and is the only check that distinguishes "we computed this" from "we
+                        // can compute this again" — the ledger prints whichever answer comes back.
+                        if let Some(k) = &kernel {
+                            for i in 0..derived_out.len() {
+                                if !derived_out[i].ok || derived_out[i].rerun != derived::RerunStatus::NotAttempted {
+                                    continue;
+                                }
+                                let rc = derived::rerun_code(&derived_out[i]);
+                                let kc = k.clone();
+                                let to = Duration::from_secs(budget.cell_timeout_s.clamp(60, 240));
+                                let st = match tokio::task::spawn_blocking(move || kc.exec(&rc, to)).await {
+                                    Ok(Ok(cell)) => derived::classify_rerun(&derived_out[i], &cell.stdout),
+                                    Ok(Err(e)) => derived::RerunStatus::Failed(e.to_string()),
+                                    Err(e) => derived::RerunStatus::Failed(format!("join failed: {e}")),
+                                };
+                                on_step(CodingStepRec {
+                                    n,
+                                    tool: "derived_rerun".into(),
+                                    detail: format!("派生结果复算 · {}", derived_out[i].label),
+                                    observation: format!("{st:?}"),
+                                    input: String::new(),
+                                    reasoning: String::new(),
+                                    figures: Vec::new(),
+                                });
+                                derived_out[i].rerun = st;
+                            }
+                        }
+                        if derived_out.iter().any(|d| d.ok) {
+                            transcript.push_str(&format!(
+                                "\n[system] 系统已【替你真算】了一个数(不是检索、不是估计,代码与指纹已登记):\n{}\n\
+                                 把它折回对应推想的「现在就能算」里,并明说这个结果是**支持**还是**削弱**该推想。\
+                                 ⚠️ 它证明的是可复现,不是正确 —— 若你认为方法有问题(例如单位口径),请直接指出。\n",
+                                obs.trim()
+                            ));
+                            continue;
+                        }
+                    }
+                    Err(why) => {
+                        // NO FALLBACK RECIPE. Computing something irrelevant and shipping it with a
+                        // blake3 fingerprint would read MORE rigorous while being meaningless. The
+                        // honest output is the shortfall banner, which finalize_report adds.
+                        derived_out.push(derived::Derived {
+                            ok: false,
+                            error: Some(why.clone()),
+                            ..Default::default()
+                        });
+                        on_step(CodingStepRec {
+                            n,
+                            tool: "derive".into(),
+                            detail: "平台自算 · 未匹配到可用配方".into(),
+                            observation: why,
+                            input: String::new(),
+                            reasoning: String::new(),
+                            figures: Vec::new(),
+                        });
+                    }
+                }
+            }
             // ADVERSARIAL PASS: conjectures are structurally complete but have never been attacked. The
             // harness itself runs a refuter over them (objective: kill each one using the evidence already
             // gathered) and forces the writer to answer with an explicit 裁决. Fires ONCE, only when the
@@ -2369,7 +2490,7 @@ pub async fn run_coding_agent_steered(
             // BACKSTOP: never ship a leaked ===AXIOM3_FINAL=== marker or a dead provenance link. Strip a
             // residual marker + any DANGLING [Sn] (n > sources retrieved) that survived the nudge — claim
             // text stays, only the unbacked marker is dropped. No-op for a clean report / fallback banner.
-            let summary = finalize_report(&summary, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
+            let summary = finalize_report(&summary, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
             return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
@@ -3322,7 +3443,7 @@ pub async fn run_coding_agent_steered(
     // Budget exhausted without a {"final"}. Don't dump the raw transcript as the "report" — do ONE
     // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
     // figures (falls back to a transcript tail on failure). Same salvage the model-error path uses.
-    let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
+    let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
     let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
     CodingResult { status: status.into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
@@ -3977,24 +4098,24 @@ mod tests {
                                  url: "https://doi.org/10.1/x".into(), excerpt: "e".into() }];
         // zero conjectures in research mode → shortfall must be visible
         // zero sources: the shortfall that bypasses every gate (a 2-step run never reaches n>=3)
-        let unsourced = finalize_report("# 报告\n全凭记忆写的正文。", &[], true, None);
+        let unsourced = finalize_report("# 报告\n全凭记忆写的正文。", &[], true, None, &[]);
         assert!(unsourced.contains("未检索到任何来源"), "0 来源必须显式标注: {unsourced}");
-        let none = finalize_report("# 报告\n正文 [S1]。", &srcs, true, None);
+        let none = finalize_report("# 报告\n正文 [S1]。", &srcs, true, None, &[]);
         assert!(none.contains("未产出「推想与验证路径」"), "零推想必须显式标注: {none}");
         // structurally incomplete conjecture → also visible, naming what is missing
-        let partial = finalize_report("# 报告\n\n### C1: 某新机制\n- 锚点: [S1] 有据\n", &srcs, true, None);
+        let partial = finalize_report("# 报告\n\n### C1: 某新机制\n- 锚点: [S1] 有据\n", &srcs, true, None, &[]);
         assert!(partial.contains("推想结构不完整"), "结构不全必须显式标注: {partial}");
         assert!(partial.contains("证伪条件"), "应点名缺失字段: {partial}");
         // a complete conjecture ships clean, with no scolding appended
         let good = "# 报告\n\n### C1: 新机制\n- 锚点: [S1] 支撑\n- 缺口: 未知\n- 方法路径: 做实验\n                    - 现在就能算: 先算先验\n- 证伪条件: 无变化即证伪\n- 时间尺度: 3 个月\n";
         // A structurally complete conjecture draws no STRUCTURE warning…
-        let ok = finalize_report(good, &srcs, true, None);
+        let ok = finalize_report(good, &srcs, true, None, &[]);
         assert!(!ok.contains("推想结构不完整"), "完整推想不应被加结构警示: {ok}");
         // …but with no search outcome it still gets the ledger's "search never ran" notice: shipping
         // conjectures that were never adjudicated, silently, is precisely the degradation we refuse.
         assert!(ok.contains("未执行推想搜索"), "未裁决必须可见: {ok}");
         // non-research mode is never asked for conjectures at all
-        assert!(!finalize_report("# 代码任务完成", &srcs, false, None).contains("⚠️"));
+        assert!(!finalize_report("# 代码任务完成", &srcs, false, None, &[]).contains("⚠️"));
     }
 
     #[test]

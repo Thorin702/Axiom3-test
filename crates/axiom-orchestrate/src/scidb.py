@@ -39,7 +39,7 @@ __all__ = [
     "uniprot", "uniprot_search", "pdb", "pdb_search", "alphafold",
     "pubchem", "chembl", "chembl_activity", "kegg", "reactome", "string_db",
     "opentargets", "clinvar", "gnomad", "gwas_catalog", "clinical_trials", "blast",
-    "interpro", "protein_atlas", "rest",
+    "interpro", "protein_atlas", "rest", "derive",
 ]
 
 _UA = "Axiom3-scidb/1.0 (scientific research; https://axiom3.local)"
@@ -139,6 +139,50 @@ def cite(records):
         # Machine-readable line the runtime captures to assign [Sn] ids (see capture_cited_sources).
         print("#AXIOM_CITE#" + _json.dumps(items, ensure_ascii=False))
     return records
+
+
+def _fin(x):
+    """Coerce numpy scalars to plain floats and REJECT non-finite values. A bare NaN makes the whole
+    JSON line unparseable on the Rust side, which turns a successful computation into a silent
+    "registration failed" — the error would point at the wrong place entirely."""
+    if isinstance(x, dict):
+        return {k: _fin(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_fin(v) for v in x]
+    if hasattr(x, "item") and not isinstance(x, (str, bytes)):
+        try:
+            x = x.item()
+        except Exception:
+            return x
+    if isinstance(x, float):
+        import math as _m
+        if not _m.isfinite(x):
+            raise ValueError("derive() 不接受 NaN/Inf 数值:%r" % (x,))
+        return float(x)
+    return x
+
+
+def derive(label, value, inputs=None, unit=None, method=None):
+    """Register a number THIS RUN COMPUTED (a DERIVED result), not something retrieved.
+
+    The runtime hashes the cell source, the inputs and the output, registers the result as a citable
+    [Sn], and writes it into the report with the code attached — provenance IS the script.
+
+    Note there is deliberately NO fingerprint argument: hashes are computed by the runtime over the
+    code IT holds. Anything self-reported here could be forged, and a forgeable badge that outranks a
+    real citation is worse than no badge."""
+    import json as _json, datetime as _dt
+    payload = {
+        "label": str(label)[:200],
+        "value": _fin(value),
+        "inputs": _fin(inputs) if inputs is not None else {},
+        "unit": str(unit or ""),
+        "method": str(method or ""),
+        "fetched_at": _dt.datetime.now().strftime("%Y-%m-%d"),
+    }
+    print("#AXIOM_DERIVED#" + _json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                          separators=(",", ":")))
+    return value
 
 
 # ────────────────────────────── literature ──────────────────────────────
