@@ -3610,6 +3610,12 @@ pub async fn coding_run(
                 "list_dir" => format!("📁 列目录 {}", step.input),
                 "search" => format!("🔍 搜索 {}", step.input),
                 "glob" => format!("🔍 查找 {}", step.input),
+                // Algorithm layer: every search action must be visible. A harness action with no step
+                // is undebuggable — that lesson cost a near-miss fix to correct logic once already.
+                "conj_seed" => format!("🌱 推想裁决 · {}", step.detail),
+                "conj_expand" => format!("🌳 推想搜索 · {}", step.detail),
+                "conj_gen" => format!("🌳 推想搜索 · {}", step.detail),
+                "conj_dupe" => format!("🌳 推想搜索 · {}", step.detail),
                 "edit" => format!("✎ 编辑 {}", step.input),
                 "write_file" => format!("✎ 写入 {}", step.input),
                 "litsearch" => format!("📚 文献检索 · {}", step.input),

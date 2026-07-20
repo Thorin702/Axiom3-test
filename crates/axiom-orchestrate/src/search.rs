@@ -90,12 +90,12 @@ pub trait Scorer: Send + Sync {
 
 // ── Beta-Bernoulli posterior arm (Thompson sampling) ─────────────────────────
 #[derive(Clone, Default)]
-struct Arm {
+pub(crate) struct Arm {
     sum: f64, // Σ reward (pseudo-successes)
     n: f64,   // # observations
 }
 impl Arm {
-    fn update(&mut self, reward: f64) {
+    pub(crate) fn update(&mut self, reward: f64) {
         if !reward.is_finite() {
             return; // never let a non-finite reward poison sum (defense-in-depth)
         }
@@ -104,7 +104,7 @@ impl Arm {
     }
     /// Draw a value from Beta(1+successes, 1+failures). A never-tried arm draws from
     /// Beta(1,1) = Uniform(0,1), i.e. optimistic exploration.
-    fn sample(&self, rng: &mut StdRng) -> f64 {
+    pub(crate) fn sample(&self, rng: &mut StdRng) -> f64 {
         let a = 1.0 + self.sum;
         let b = 1.0 + (self.n - self.sum).max(0.0);
         Beta::new(a, b).map(|d| d.sample(rng)).unwrap_or(0.5)
@@ -420,15 +420,45 @@ pub async fn search_core<G: Generator, S: Scorer>(
 /// expand. Invariant: the returned node has depth < max_depth (we only ever descend into
 /// children with depth < max_depth, and the root has depth 0), so its new child stays
 /// within the depth cap.
-fn select(nodes: &[Node], max_depth: usize, rng: &mut StdRng) -> usize {
+/// The shape `select_node` needs from a search node. Implemented by this module's `Node` and by
+/// the conjecture search's `ConjNode`, so ONE adaptive-branching descent serves both — the AB-MCTS
+/// core lives here and is never forked.
+pub(crate) trait Branchable {
+    fn children(&self) -> &[usize];
+    fn depth(&self) -> usize;
+    fn subtree(&self) -> &Arm;
+    fn gen_arm(&self) -> &Arm;
+}
+
+/// Every hop of one descent, recording the ACTUAL Thompson draws — not the posterior means.
+/// Means cannot explain a single decision, and "is this bandit doing anything at these budgets?"
+/// is the number-one open question about the search (at 0-2 observations per arm a Beta posterior
+/// is nearly Uniform(0,1)). Without the real draws on the wall we would be guessing.
+pub(crate) struct SelectTrace {
+    pub target: usize,
+    pub went_deep: bool,
+    /// (node, its GEN draw, winning child as (idx, its SUBTREE draw))
+    pub hops: Vec<(usize, f64, Option<(usize, f64)>)>,
+}
+
+/// Descend from the root, at each node Thompson-sampling between "descend into an expandable
+/// child" and "generate a new child here", until GEN wins. Returns the node to expand. Invariant:
+/// the returned node has depth < max_depth (we only ever descend into children with depth <
+/// max_depth, and the root has depth 0), so its new child stays within the depth cap.
+pub(crate) fn select_node<N: Branchable>(
+    nodes: &[N],
+    max_depth: usize,
+    rng: &mut StdRng,
+) -> (usize, SelectTrace) {
     let mut cur = 0usize;
+    let mut trace = SelectTrace { target: 0, went_deep: false, hops: Vec::new() };
     loop {
         let node = &nodes[cur];
         let mut best_score = f64::MIN;
         let mut best_child: Option<usize> = None;
-        for &c in &node.children {
-            if nodes[c].depth < max_depth {
-                let s = nodes[c].subtree.sample(rng);
+        for &c in node.children() {
+            if nodes[c].depth() < max_depth {
+                let s = nodes[c].subtree().sample(rng);
                 if s > best_score {
                     best_score = s;
                     best_child = Some(c);
@@ -436,12 +466,32 @@ fn select(nodes: &[Node], max_depth: usize, rng: &mut StdRng) -> usize {
             }
         }
         // "generate here" is always a valid action at `cur` (depth < max_depth by invariant).
-        let gen = node.gen_arm.sample(rng);
+        let gen = node.gen_arm().sample(rng);
+        trace.hops.push((cur, gen, best_child.map(|c| (c, best_score))));
         match best_child {
-            Some(c) if best_score >= gen => cur = c, // go deeper
-            _ => return cur,                         // go wider (expand at cur)
+            Some(c) if best_score >= gen => {
+                cur = c; // go deeper
+                trace.went_deep = true;
+            }
+            _ => {
+                trace.target = cur; // go wider (expand at cur)
+                return (cur, trace);
+            }
         }
     }
+}
+
+impl Branchable for Node {
+    fn children(&self) -> &[usize] { &self.children }
+    fn depth(&self) -> usize { self.depth }
+    fn subtree(&self) -> &Arm { &self.subtree }
+    fn gen_arm(&self) -> &Arm { &self.gen_arm }
+}
+
+/// Thin wrapper preserving this module's original call shape. The RNG draw ORDER and COUNT are
+/// identical to the pre-extraction implementation, which is what keeps the seeded tests valid.
+fn select(nodes: &[Node], max_depth: usize, rng: &mut StdRng) -> usize {
+    select_node(nodes, max_depth, rng).0
 }
 
 fn pick_arm(arms: &[Arm], rng: &mut StdRng) -> usize {
@@ -677,7 +727,7 @@ fn parse_lens(text: &str) -> Vec<f64> {
 /// Combine axis scores into one [0,1] quality signal. A blend of mean and MIN so a draft
 /// that's strong on one axis but weak on another (e.g. fluent but incomplete) can't ride
 /// its best axis to the top — the weakest axis pulls it down.
-fn combine_lens(v: &[f64]) -> f64 {
+pub(crate) fn combine_lens(v: &[f64]) -> f64 {
     if v.is_empty() {
         return 0.5;
     }

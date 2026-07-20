@@ -5,6 +5,7 @@
 //! implement a change, run the tests, and iterate to green (verified live in
 //! examples/coding_live.rs). The sandbox keeps every path inside the workspace and runs
 //! commands shell-free against a mode-gated allowlist.
+mod conj_search;
 pub mod sandbox;
 
 use crate::control::Pause;
@@ -1344,6 +1345,19 @@ fn has_trial_readout(sources: &[Source]) -> bool {
 /// "just restating known work" as the strongest attack), never as a hard gate — a hard gate on a proxy
 /// this crude would repeat the quant_claim_count mistake.
 fn novelty_score(claim: &str, sources: &[Source]) -> f32 {
+    let corpus: String = sources
+        .iter()
+        .map(|s| format!("{} {}", s.title, s.excerpt))
+        .collect::<Vec<_>>()
+        .join(" ");
+    bigram_novelty(claim, &corpus)
+}
+
+/// The underlying primitive: fraction of the claim's CJK character bigrams ABSENT from `corpus`.
+/// LEXICAL, not semantic — it cannot tell a genuinely new idea from clumsy wording, so it informs the
+/// refuter and contributes ONE of three search axes, never a hard gate. A crude proxy used as a gate is
+/// exactly the `quant_claim_count` mistake.
+fn bigram_novelty(claim: &str, corpus: &str) -> f32 {
     let bigrams = |s: &str| -> std::collections::HashSet<String> {
         let cs: Vec<char> = s
             .chars()
@@ -1355,12 +1369,7 @@ fn novelty_score(claim: &str, sources: &[Source]) -> f32 {
     if claim_bg.len() < 4 {
         return 0.0; // too short to judge
     }
-    let corpus: String = sources
-        .iter()
-        .map(|s| format!("{} {}", s.title, s.excerpt))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let corpus_bg = bigrams(&corpus);
+    let corpus_bg = bigrams(corpus);
     let unseen = claim_bg.iter().filter(|b| !corpus_bg.contains(*b)).count();
     unseen as f32 / claim_bg.len() as f32
 }
@@ -1378,13 +1387,6 @@ async fn refute_conjectures(
     sources: &[Source],
     cancel: &Cancel,
 ) -> Vec<(String, String)> {
-    const REF_SYS: &str = "你是这条推想的【反驳者】。你的唯一目标是**杀死它**,不是评价它、更不是鼓励它。\n\
-        只用给你的【已检索证据】说话,禁止凭记忆编造反例。按这个格式回一段,不要别的:\n\
-        最强反驳: <一句话,指出它最可能错在哪>\n\
-        依据: <引用已检索证据里的具体内容/[Sn];若证据不足以反驳,写「现有证据不足以反驳」>\n\
-        致命程度: 致命 | 严重 | 轻微 | 无法反驳\n\
-        规则:①宁可判「无法反驳」也不要编造反例;②若该推想与已检索证据直接矛盾,必须点名指出;\
-        ③若它只是把已知换个说法(缺乏新意),这本身就是最强反驳,直说。";
     // Bound the context: the tail of the transcript carries the retrieved evidence.
     let ev: String = transcript.chars().rev().take(12000).collect::<String>().chars().rev().collect();
     let mut out = Vec::new();
@@ -1392,28 +1394,55 @@ async fn refute_conjectures(
         if cancel.is_cancelled() {
             break;
         }
-        // Mechanical novelty: fraction of the claim's bigrams absent from the retrieved corpus.
-        // Low ⇒ the wording already exists in what we read ⇒ prime suspect for a restatement.
-        let nov = novelty_score(id, sources);
-        let hint = if nov < 0.25 {
-            format!("\n\n【机械新颖度检测】该推想措辞与已检索语料重叠度高(新颖度 {:.0}%),\
-                     很可能只是把已知换了个说法——请优先从这个角度攻击:它到底提出了语料里没有的什么?", nov * 100.0)
-        } else {
-            format!("\n\n【机械新颖度检测】新颖度 {:.0}%(措辞与已检索语料重叠较低)。\
-                     注意:这只说明用词不同,不等于想法成立——仍要按证据审查。", nov * 100.0)
-        };
-        let user = format!(
-            "【已检索证据(节选)】\n{ev}\n\n【待反驳的推想 {id}】\n{}{hint}\n\n现在尽力杀死它:",
-            body.chars().take(1500).collect::<String>()
-        );
-        if let Ok(r) = model.complete(REF_SYS, &user, cancel).await {
-            let r = r.trim();
-            if !r.is_empty() {
-                out.push((id.clone(), r.chars().take(900).collect::<String>()));
-            }
+        if let Some(r) = refute_one(model, &ev, id, body, sources, cancel).await {
+            out.push((id.clone(), r));
         }
     }
     out
+}
+
+pub(super) const REF_SYS: &str = "你是这条推想的【反驳者】。你的唯一目标是**杀死它**,不是评价它、更不是鼓励它。\n\
+    只用给你的【已检索证据】说话,禁止凭记忆编造反例。按这个格式回一段,不要别的:\n\
+    最强反驳: <一句话,指出它最可能错在哪>\n\
+    依据: <引用已检索证据里的具体内容/[Sn];若证据不足以反驳,写「现有证据不足以反驳」>\n\
+    致命程度: 致命 | 严重 | 轻微 | 无法反驳\n\
+    规则:①宁可判「无法反驳」也不要编造反例;②若该推想与已检索证据直接矛盾,必须点名指出;\
+    ③若它只是把已知换个说法(缺乏新意),这本身就是最强反驳,直说;\
+    ④若它空泛到与任何已检索证据都没有可检验的联系(证伪条件写不清或无法执行),判「致命」\
+    ——不可证伪不等于不可反驳;⑤若你是因为证据太薄而攻不动它,「致命程度」写「无法反驳」,\
+    并在「依据」行明写「现有证据不足以反驳」。";
+
+/// Attack ONE conjecture. Shared by the legacy refuter gate and the conjecture search, so the two can
+/// never drift apart in what they ask for — the search's whole reward function is parsed out of this
+/// reply's `致命程度` line.
+pub(super) async fn refute_one(
+    model: &impl CodingModel,
+    ev: &str,
+    id: &str,
+    body: &str,
+    sources: &[Source],
+    cancel: &Cancel,
+) -> Option<String> {
+    // Measure the CLAIM, not the heading. `id` is the heading truncated to 24 chars, so scoring it
+    // alone measured a title fragment — the wrong text entirely.
+    let nov = novelty_score(&format!("{id}\n{body}"), sources);
+    let hint = if nov < 0.25 {
+        format!("\n\n【机械新颖度检测】该推想措辞与已检索语料重叠度高(新颖度 {:.0}%),\
+                 很可能只是把已知换了个说法——请优先从这个角度攻击:它到底提出了语料里没有的什么?", nov * 100.0)
+    } else {
+        format!("\n\n【机械新颖度检测】新颖度 {:.0}%(措辞与已检索语料重叠较低)。\
+                 注意:这只说明用词不同,不等于想法成立——仍要按证据审查。", nov * 100.0)
+    };
+    let user = format!(
+        "【已检索证据(节选)】\n{ev}\n\n【待反驳的推想 {id}】\n{}{hint}\n\n现在尽力杀死它:",
+        body.chars().take(1500).collect::<String>()
+    );
+    if cancel.is_cancelled() {
+        return None;
+    }
+    let r = model.complete(REF_SYS, &user, cancel).await.ok()?;
+    let r = r.trim();
+    (!r.is_empty()).then(|| r.chars().take(900).collect::<String>())
 }
 
 /// Parse `### C1: …` style conjecture blocks out of a report. Returns (id, body) pairs.
@@ -1478,42 +1507,47 @@ fn conjecture_issues(s: &str, n_sources: usize) -> Vec<String> {
     if blocks.is_empty() {
         return vec!["报告里没有任何「### C1: …」形式的推想块".to_string()];
     }
+    blocks.iter().flat_map(|(id, body)| block_issues(id, body, n_sources)).collect()
+}
+
+/// Read one labelled field's VALUE out of a conjecture body (`- **现在就能算**：…` → `…`). The
+/// structure gate and the DERIVED slot MUST agree on what counts as a filled field, so both call this
+/// one implementation — two copies of "is this field present" would drift, and the day they disagree
+/// the gate passes a claim the slot cannot read.
+fn field_value(body: &str, field: &str) -> Option<String> {
+    body.lines().find_map(|l| {
+        let i = l.find(field)?;
+        let rest = l[i + field.len()..]
+            .trim_start_matches([':', '：', '-', '—', ' ', '\t', '*', '】'])
+            .trim();
+        (rest.chars().count() >= 2).then(|| rest.to_string())
+    })
+}
+
+/// Structural issues of ONE conjecture block. Split out of `conjecture_issues` so the search layer can
+/// score a single candidate without re-parsing a whole report. Content is never judged — only presence.
+fn block_issues(id: &str, body: &str, n_sources: usize) -> Vec<String> {
     let mut issues = Vec::new();
-    for (id, body) in &blocks {
-        // A conjecture the REFUTER killed (状态/裁决: 放弃) legitimately has no forward path — demanding
-        // 方法路径/现在就能算/时间尺度 for a dead hypothesis is asking the model to plan work it just
-        // proved pointless, and the model correctly drops them. Require only that the kill is RECORDED,
-        // so abandonment stays visible instead of the block quietly vanishing.
-        if is_abandoned(id, body) {
-            if !body.contains("反驳") {
-                issues.push(format!("{id} 标为放弃却没有记录「反驳」理由"));
-            }
-            continue;
+    // A conjecture the REFUTER killed (状态/裁决: 放弃) legitimately has no forward path — demanding
+    // 方法路径/现在就能算/时间尺度 for a dead hypothesis is asking the model to plan work it just
+    // proved pointless, and the model correctly drops them. Require only that the kill is RECORDED,
+    // so abandonment stays visible instead of the block quietly vanishing.
+    if is_abandoned(id, body) {
+        if !body.contains("反驳") {
+            issues.push(format!("{id} 标为放弃却没有记录「反驳」理由"));
         }
-        for f in CONJ_FIELDS {
-            // Field present AND followed by real content on that line.
-            let has = body.lines().any(|l| {
-                match l.find(f) {
-                    Some(i) => {
-                        let rest: String = l[i + f.len()..]
-                            .trim_start_matches([':', '：', '-', '—', ' ', '\t'])
-                            .trim()
-                            .to_string();
-                        rest.chars().count() >= 2
-                    }
-                    None => false,
-                }
-            });
-            if !has {
-                issues.push(format!("{id} 缺「{f}」"));
-            }
+        return issues;
+    }
+    for f in CONJ_FIELDS {
+        if field_value(body, f).is_none() {
+            issues.push(format!("{id} 缺「{f}」"));
         }
-        // 锚点 must point at a source that actually exists.
-        if let Some(line) = body.lines().find(|l| l.contains("锚点")) {
-            let ok = cited_ids(line).iter().any(|n| *n as usize <= n_sources && *n > 0);
-            if !ok {
-                issues.push(format!("{id} 的「锚点」没有可解析的 [Sn](推想可以大胆,但要说清它站在哪些已知之上)"));
-            }
+    }
+    // 锚点 must point at a source that actually exists.
+    if let Some(line) = body.lines().find(|l| l.contains("锚点")) {
+        let ok = cited_ids(line).iter().any(|n| *n as usize <= n_sources && *n > 0);
+        if !ok {
+            issues.push(format!("{id} 的「锚点」没有可解析的 [Sn](推想可以大胆,但要说清它站在哪些已知之上)"));
         }
     }
     issues
@@ -1548,10 +1582,16 @@ fn append_verified_trials(summary: &str, sources: &[Source]) -> String {
 /// verified-trials section and the conjecture-deficiency notice were wired only into the accept path,
 /// so a run that hit the step cap shipped through the exhaustion path with neither — silently missing
 /// both. Anything that must be true of the deliverable belongs here, once.
-fn finalize_report(summary: &str, sources: &[Source], research: bool) -> String {
+fn finalize_report(
+    summary: &str,
+    sources: &[Source],
+    research: bool,
+    conj: Option<&conj_search::ConjSearchOutcome>,
+) -> String {
     let s = clean_summary(summary, sources.len());
     let s = ensure_reference_list(&s, sources);
     let s = append_verified_trials(&s, sources);
+    let s = conj_search::append_conjecture_search(&s, conj, research);
     if !research || is_fallback_report(&s) {
         return s;
     }
@@ -1765,6 +1805,7 @@ pub async fn run_coding_agent_steered(
     let mut breadth_nudged = false; // whether the ONE-time "too few sources for a deep report" gate has fired
     let mut depth_nudges = 0u32;
     let mut clinical_slot_nudged = false; // ONE-time: clinical topic with no trial readout in evidence
+    let mut conj_oc: Option<conj_search::ConjSearchOutcome> = None;
     let mut refuted = false; // whether the ONE-time adversarial refutation pass over conjectures has run // "many sources but no numbers extracted" gate — bounded to 2 passes
     let mut last_compact_len = 0usize; // transcript length at the last context-compaction (avoid re-compacting every step)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
@@ -1856,7 +1897,7 @@ pub async fn run_coding_agent_steered(
                             // tail). The run ends gracefully with real content + its figures.
                             let _ = &e; // error is captured in the transcript; the salvage speaks for itself
                             let artifacts = collect_artifacts(sandbox.root(), &start_files);
-                            let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged());
+                            let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
                             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                             return CodingResult { status: status.into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
                         }
@@ -1966,7 +2007,7 @@ pub async fn run_coding_agent_steered(
                 // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
                 // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
                 // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
-                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged());
+                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
                 let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                 return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
@@ -2000,7 +2041,7 @@ pub async fn run_coding_agent_steered(
                 // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
                 // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
                 // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
-                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged());
+                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
                 let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                 return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
@@ -2181,8 +2222,37 @@ pub async fn run_coding_agent_steered(
                 && !f.contains("反驳")
             {
                 refuted = true;
-                let blocks = conjecture_blocks(&f);
-                let refs = refute_conjectures(&blocks, model, &transcript, &sources, cancel).await;
+                let cfg = conj_search::ConjSearchCfg::from_env(goal);
+                // ALGORITHM LAYER. The refuter's verdict was previously generated and discarded; now it
+                // is the reward signal of a search over candidates. expansions=0 falls back to the plain
+                // refuter pass, so the escape hatch keeps the old, known-good behaviour.
+                let refs: Vec<(String, String)> = if cfg.expansions > 0 {
+                    let mut emit = |tool: String, detail: String, obs: String| {
+                        on_step(CodingStepRec {
+                            n,
+                            tool,
+                            detail,
+                            observation: obs,
+                            input: String::new(),
+                            reasoning: String::new(),
+                            figures: Vec::new(),
+                        });
+                    };
+                    let oc = conj_search::search_conjectures(
+                        goal, &f, model, &transcript, &sources, cancel, &cfg, &mut emit,
+                    )
+                    .await;
+                    let refs = oc
+                        .winners
+                        .iter()
+                        .map(|w| (w.heading.clone(), w.refutation.clone()))
+                        .collect();
+                    conj_oc = Some(oc);
+                    refs
+                } else {
+                    let blocks = conjecture_blocks(&f);
+                    refute_conjectures(&blocks, model, &transcript, &sources, cancel).await
+                };
                 if !refs.is_empty() {
                     let mut msg = String::from(
                         "\n[system] 独立【反驳者】已对你的每条推想发起攻击(它只用本次已检索到的证据,目标就是杀死它们)。\
@@ -2194,6 +2264,21 @@ pub async fn run_coding_agent_steered(
                     );
                     for (id, r) in &refs {
                         msg.push_str(&format!("\n——【反驳 {id}】——\n{r}\n"));
+                    }
+                    if let Some(oc) = conj_oc.as_ref() {
+                        if !oc.winners.is_empty() {
+                            msg.push_str(
+                                "\n[system] 机械评分(结构完整度/词汇新颖度/抗反驳存活度)对候选推想的排名如下。\
+                                 分数高的更值得写进正文;若你不采纳排名第一的,请说明理由:\n",
+                            );
+                            for (i, w) in oc.winners.iter().enumerate() {
+                                msg.push_str(&format!(
+                                    "{}. [{:.2}] {} ({})\n{}\n",
+                                    i + 1, w.score, w.heading, w.severity.label(),
+                                    w.body.chars().take(400).collect::<String>()
+                                ));
+                            }
+                        }
                     }
                     transcript.push_str(&msg);
                     continue;
@@ -2284,7 +2369,7 @@ pub async fn run_coding_agent_steered(
             // BACKSTOP: never ship a leaked ===AXIOM3_FINAL=== marker or a dead provenance link. Strip a
             // residual marker + any DANGLING [Sn] (n > sources retrieved) that survived the nudge — claim
             // text stays, only the unbacked marker is dropped. No-op for a clean report / fallback banner.
-            let summary = finalize_report(&summary, &sources, pause.delegate_encouraged());
+            let summary = finalize_report(&summary, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
             return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
@@ -3237,7 +3322,7 @@ pub async fn run_coding_agent_steered(
     // Budget exhausted without a {"final"}. Don't dump the raw transcript as the "report" — do ONE
     // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
     // figures (falls back to a transcript tail on failure). Same salvage the model-error path uses.
-    let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged());
+    let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref());
     let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
     CodingResult { status: status.into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
@@ -3892,20 +3977,24 @@ mod tests {
                                  url: "https://doi.org/10.1/x".into(), excerpt: "e".into() }];
         // zero conjectures in research mode → shortfall must be visible
         // zero sources: the shortfall that bypasses every gate (a 2-step run never reaches n>=3)
-        let unsourced = finalize_report("# 报告\n全凭记忆写的正文。", &[], true);
+        let unsourced = finalize_report("# 报告\n全凭记忆写的正文。", &[], true, None);
         assert!(unsourced.contains("未检索到任何来源"), "0 来源必须显式标注: {unsourced}");
-        let none = finalize_report("# 报告\n正文 [S1]。", &srcs, true);
+        let none = finalize_report("# 报告\n正文 [S1]。", &srcs, true, None);
         assert!(none.contains("未产出「推想与验证路径」"), "零推想必须显式标注: {none}");
         // structurally incomplete conjecture → also visible, naming what is missing
-        let partial = finalize_report("# 报告\n\n### C1: 某新机制\n- 锚点: [S1] 有据\n", &srcs, true);
+        let partial = finalize_report("# 报告\n\n### C1: 某新机制\n- 锚点: [S1] 有据\n", &srcs, true, None);
         assert!(partial.contains("推想结构不完整"), "结构不全必须显式标注: {partial}");
         assert!(partial.contains("证伪条件"), "应点名缺失字段: {partial}");
         // a complete conjecture ships clean, with no scolding appended
         let good = "# 报告\n\n### C1: 新机制\n- 锚点: [S1] 支撑\n- 缺口: 未知\n- 方法路径: 做实验\n                    - 现在就能算: 先算先验\n- 证伪条件: 无变化即证伪\n- 时间尺度: 3 个月\n";
-        let ok = finalize_report(good, &srcs, true);
-        assert!(!ok.contains("⚠️"), "完整推想不应被加警示: {ok}");
+        // A structurally complete conjecture draws no STRUCTURE warning…
+        let ok = finalize_report(good, &srcs, true, None);
+        assert!(!ok.contains("推想结构不完整"), "完整推想不应被加结构警示: {ok}");
+        // …but with no search outcome it still gets the ledger's "search never ran" notice: shipping
+        // conjectures that were never adjudicated, silently, is precisely the degradation we refuse.
+        assert!(ok.contains("未执行推想搜索"), "未裁决必须可见: {ok}");
         // non-research mode is never asked for conjectures at all
-        assert!(!finalize_report("# 代码任务完成", &srcs, false).contains("⚠️"));
+        assert!(!finalize_report("# 代码任务完成", &srcs, false, None).contains("⚠️"));
     }
 
     #[test]
