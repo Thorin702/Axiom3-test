@@ -1332,6 +1332,39 @@ fn has_trial_readout(sources: &[Source]) -> bool {
     })
 }
 
+/// ALGORITHM LAYER — mechanical novelty. Every audit landed on the same soft spot: a conjecture that
+/// merely restates retrieved literature reads like insight but is worth nothing, and judging that was
+/// left to the model's opinion ("is this new?"), which is exactly the kind of question a model flatters
+/// itself on. This computes it instead: how much of the claim's distinctive wording already exists in
+/// the corpus we retrieved. CJK has no spaces, so character bigrams are the unit. High overlap ⇒ likely
+/// a restatement; low overlap ⇒ the claim combines things the corpus does not.
+///
+/// Deliberately coarse and honest about it: this is a LEXICAL signal, not semantic. It cannot tell a
+/// genuinely new idea from a badly-worded one. It is used to INFORM the refuter (which already treats
+/// "just restating known work" as the strongest attack), never as a hard gate — a hard gate on a proxy
+/// this crude would repeat the quant_claim_count mistake.
+fn novelty_score(claim: &str, sources: &[Source]) -> f32 {
+    let bigrams = |s: &str| -> std::collections::HashSet<String> {
+        let cs: Vec<char> = s
+            .chars()
+            .filter(|c| !c.is_whitespace() && !c.is_ascii_punctuation() && !matches!(c, '，' | '。' | '、' | '：' | '；' | '（' | '）' | '「' | '」'))
+            .collect();
+        cs.windows(2).map(|w| w.iter().collect::<String>()).collect()
+    };
+    let claim_bg = bigrams(claim);
+    if claim_bg.len() < 4 {
+        return 0.0; // too short to judge
+    }
+    let corpus: String = sources
+        .iter()
+        .map(|s| format!("{} {}", s.title, s.excerpt))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let corpus_bg = bigrams(&corpus);
+    let unseen = claim_bg.iter().filter(|b| !corpus_bg.contains(*b)).count();
+    unseen as f32 / claim_bg.len() as f32
+}
+
 /// ADVERSARIAL ADJUDICATION (agent layer). Every audit of this pipeline found the same defect: the
 /// report lists 2-3 hypotheses and concludes they are all "worth watching" — none is ever killed. The
 /// cause is structural, not attitudinal: one agent plays both athlete and referee, so asking it to "be
@@ -1342,6 +1375,7 @@ async fn refute_conjectures(
     blocks: &[(String, String)],
     model: &impl CodingModel,
     transcript: &str,
+    sources: &[Source],
     cancel: &Cancel,
 ) -> Vec<(String, String)> {
     const REF_SYS: &str = "你是这条推想的【反驳者】。你的唯一目标是**杀死它**,不是评价它、更不是鼓励它。\n\
@@ -1358,8 +1392,18 @@ async fn refute_conjectures(
         if cancel.is_cancelled() {
             break;
         }
+        // Mechanical novelty: fraction of the claim's bigrams absent from the retrieved corpus.
+        // Low ⇒ the wording already exists in what we read ⇒ prime suspect for a restatement.
+        let nov = novelty_score(id, sources);
+        let hint = if nov < 0.25 {
+            format!("\n\n【机械新颖度检测】该推想措辞与已检索语料重叠度高(新颖度 {:.0}%),\
+                     很可能只是把已知换了个说法——请优先从这个角度攻击:它到底提出了语料里没有的什么?", nov * 100.0)
+        } else {
+            format!("\n\n【机械新颖度检测】新颖度 {:.0}%(措辞与已检索语料重叠较低)。\
+                     注意:这只说明用词不同,不等于想法成立——仍要按证据审查。", nov * 100.0)
+        };
         let user = format!(
-            "【已检索证据(节选)】\n{ev}\n\n【待反驳的推想 {id}】\n{}\n\n现在尽力杀死它:",
+            "【已检索证据(节选)】\n{ev}\n\n【待反驳的推想 {id}】\n{}{hint}\n\n现在尽力杀死它:",
             body.chars().take(1500).collect::<String>()
         );
         if let Ok(r) = model.complete(REF_SYS, &user, cancel).await {
@@ -1411,6 +1455,21 @@ fn conjecture_blocks(s: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Was this conjecture ABANDONED by the adversarial pass? Deliberately narrow: only the heading, or a
+/// 状态/裁决 verdict line, counts. Matching bare 放弃 anywhere in the body would let a LIVE conjecture
+/// skip its field checks just by discussing an abandoned drug program — a false negative that silently
+/// weakens the gate, which is far worse than the false positive this fixes.
+fn is_abandoned(id: &str, body: &str) -> bool {
+    if id.contains("放弃") {
+        return true;
+    }
+    body.lines().any(|l| {
+        let l = l.trim_start_matches(['-', '*', '#', ' ', '\t']);
+        let head: String = l.chars().take(12).collect();
+        (head.contains("状态") || head.contains("裁决")) && l.contains("放弃")
+    })
+}
+
 /// Mechanically list what is STRUCTURALLY missing from the report's conjectures. Content is never
 /// judged — only presence of each required field (with non-trivial content) and that `锚点` cites at
 /// least one [Sn] that actually resolves to a registered source.
@@ -1421,6 +1480,16 @@ fn conjecture_issues(s: &str, n_sources: usize) -> Vec<String> {
     }
     let mut issues = Vec::new();
     for (id, body) in &blocks {
+        // A conjecture the REFUTER killed (状态/裁决: 放弃) legitimately has no forward path — demanding
+        // 方法路径/现在就能算/时间尺度 for a dead hypothesis is asking the model to plan work it just
+        // proved pointless, and the model correctly drops them. Require only that the kill is RECORDED,
+        // so abandonment stays visible instead of the block quietly vanishing.
+        if is_abandoned(id, body) {
+            if !body.contains("反驳") {
+                issues.push(format!("{id} 标为放弃却没有记录「反驳」理由"));
+            }
+            continue;
+        }
         for f in CONJ_FIELDS {
             // Field present AND followed by real content on that line.
             let has = body.lines().any(|l| {
@@ -2113,7 +2182,7 @@ pub async fn run_coding_agent_steered(
             {
                 refuted = true;
                 let blocks = conjecture_blocks(&f);
-                let refs = refute_conjectures(&blocks, model, &transcript, cancel).await;
+                let refs = refute_conjectures(&blocks, model, &transcript, &sources, cancel).await;
                 if !refs.is_empty() {
                     let mut msg = String::from(
                         "\n[system] 独立【反驳者】已对你的每条推想发起攻击(它只用本次已检索到的证据,目标就是杀死它们)。\
@@ -3795,6 +3864,25 @@ mod tests {
     }
 
     #[test]
+    fn novelty_score_separates_restatement_from_new_combination() {
+        // The soft spot every audit found: a conjecture that restates retrieved literature reads like
+        // insight. Judging that was left to the model's opinion; this measures it lexically instead.
+        let srcs = vec![Source {
+            id: 1, kind: "paper".into(), title: "衰老细胞通过 BCL-2 家族抗凋亡通路逃避清除".into(),
+            url: String::new(),
+            excerpt: "衰老细胞上调 BCL-2、BCL-xL 等抗凋亡蛋白,从而抵抗凋亡,这是 senolytic 药物的作用基础。".into(),
+        }];
+        // A restatement of the corpus should score LOW novelty…
+        let restated = novelty_score("衰老细胞上调 BCL-2 抗凋亡蛋白从而抵抗凋亡", &srcs);
+        // …while a claim combining things absent from the corpus scores HIGHER.
+        let novel = novelty_score("肠道菌群代谢产物经迷走神经调控衰老细胞的免疫清除效率", &srcs);
+        assert!(novel > restated, "新组合应比复述更新颖: novel={novel:.2} restated={restated:.2}");
+        assert!(restated < 0.6, "复述的新颖度应偏低: {restated:.2}");
+        // Too-short claims are not judged (avoids noise on fragments).
+        assert_eq!(novelty_score("衰老", &srcs), 0.0);
+    }
+
+    #[test]
     fn finalize_report_surfaces_conjecture_shortfalls_instead_of_shipping_silently() {
         // REGRESSION (found by the cumulative 8-topic run): the deficiency notice + verified-trials
         // section were wired only into the accept path, so a run that hit the step cap shipped through
@@ -3948,4 +4036,20 @@ mod tests {
         assert!(res.summary.contains("结论成立") && res.summary.starts_with("# 研究简报"), "claim/report body preserved: {}", res.summary.chars().take(20).collect::<String>());
         let _ = std::fs::remove_dir_all(&root);
     }
+    #[test]
+    fn abandoned_conjecture_needs_no_forward_path_but_must_record_the_kill() {
+        // Refuter killed C1: only the reason is required, not 方法路径/时间尺度 for a dead hypothesis.
+        let killed = "### C1: BCL-xL PROTAC 血小板保护\n- **锚点**：[S1] 提示体外选择性\n- **反驳**：[S1] 并不含血小板数据\n- **状态**：**放弃**。锚点不成立。\n";
+        assert!(conjecture_issues(killed, 3).is_empty(), "abandoned block should not demand a roadmap");
+
+        // …but an unexplained abandonment is still flagged.
+        let silent = "### C1: 某推想\n- **锚点**：[S1] 某证据\n- **状态**：**放弃**。\n";
+        assert!(conjecture_issues(silent, 3).iter().any(|i| i.contains("没有记录")));
+
+        // A LIVE conjecture that merely MENTIONS an abandoned program must still be fully checked —
+        // this is the false-negative direction, and it must not open.
+        let live = "### C1: 某推想\n- **锚点**：[S1] 某证据\n- 该公司已放弃同类项目，故窗口打开\n";
+        assert!(conjecture_issues(live, 3).len() >= 4, "prose 放弃 must not bypass the gate");
+    }
+
 }
