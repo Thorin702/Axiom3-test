@@ -115,18 +115,18 @@ fn survival_lens(s: Severity) -> f64 {
     }
 }
 
-/// Structure axis: how complete the six required fields are.
-/// The empty-block special case is essential — `conjecture_issues` returns exactly ONE issue for text
-/// that parses as no conjecture at all, so the naive `1 - issues/7` would award 0.86 to a candidate
-/// that is not even shaped like a hypothesis. Highest score for the worst input, exactly backwards.
-fn structure_lens(text: &str, n_sources: usize) -> f64 {
-    let blocks = conjecture_blocks(text);
-    if blocks.is_empty() {
+/// Structure axis, scored from the ALREADY-PARSED (heading, body) pair.
+/// ⚠️ It must NOT re-parse `heading + body`: `conjecture_blocks` strips the leading `#` when it
+/// extracts a heading, so re-parsing finds no block and returns 0.0 for EVERY candidate. That shipped
+/// once — with `combine_lens`'s min term, a permanently-zero axis pinned every score to ~0.3 and the
+/// ranking became noise. The unit test that missed it fed a full `### C1:` document, a shape this
+/// call path never sees.
+fn structure_lens(heading: &str, body: &str, n_sources: usize) -> f64 {
+    if body.trim().is_empty() {
         return 0.0;
     }
-    let issues: usize = blocks.iter().map(|(id, b)| block_issues(id, b, n_sources).len()).sum();
-    let slots = (blocks.len() * 7) as f64; // 6 CONJ_FIELDS + anchor-resolves
-    (1.0 - issues as f64 / slots).clamp(0.0, 1.0)
+    let issues = block_issues(heading, body, n_sources).len();
+    (1.0 - issues as f64 / 7.0).clamp(0.0, 1.0) // 6 CONJ_FIELDS + anchor-resolves
 }
 
 /// Ceiling on the lexical novelty axis. Above this, extra "unseen bigrams" almost always means odd
@@ -145,24 +145,22 @@ fn novelty_lens(text: &str, sources: &[Source]) -> f64 {
     (bigram_novelty(text, &corpus) / NOV_CAP).clamp(0.0, 1.0) as f64
 }
 
-/// Future seam: score "现在就能算" by ACTUALLY RUNNING it (piece B's kernel slot), never by keyword
-/// matching — matching `ChEMBL`/`gnomAD` in the text would be name-drop-scores-full-marks, the exact
-/// shape of the retired `quant_claim_count` gate.
+/// Score a candidate. Returns (display_lens[structure, novelty, survival], score).
 ///
-/// ⚠️ Whatever implements this: the COUNT of derived results must never become a score or a gate.
-/// Some recipes almost always return a number, so the moment counting is rewarded the system degrades
-/// into farming the cheapest recipe.
-#[allow(dead_code)]
-pub(super) trait ComputabilityProbe: Send + Sync {
-    fn probe(&self, body: &str) -> Option<f64>;
-}
-
-/// The three mechanical axes, combined by `search::combine_lens` (blend of mean and MIN, so a
-/// candidate cannot ride one strong axis to the top).
-fn score_candidate(text: &str, sev: Severity, sources: &[Source]) -> ([f64; 3], f64) {
-    let lens = [structure_lens(text, sources.len()), novelty_lens(text, sources), survival_lens(sev)];
-    let s = combine_lens(&lens);
-    (lens, if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.5 })
+/// ⚠️ The SCORE uses only structure + survival. Novelty is computed for the ledger's display column
+/// but is DELIBERATELY OUT of the ranking: the 8-topic panel showed novelty_lens saturates at 1.00 for
+/// every real candidate (a Chinese conjecture's char-bigrams almost always exceed NOV_CAP vs the source
+/// corpus), so including it moved zero rankings while advertising a three-axis rigour that was fiction.
+/// Structure stays IN as a floor guard — it caught the all-0.0 regression and heavily penalises text
+/// that isn't a conjecture — but since it too is ~1.0 for well-formed candidates, real ranking is
+/// survival-driven, which the ledger now says plainly instead of claiming "three-axis selection".
+fn score_candidate(heading: &str, body: &str, sev: Severity, sources: &[Source]) -> ([f64; 3], f64) {
+    let text = format!("{heading}\n{body}");
+    let structure = structure_lens(heading, body, sources.len());
+    let novelty = novelty_lens(&text, sources); // display only
+    let survival = survival_lens(sev);
+    let s = combine_lens(&[structure, survival]);
+    ([structure, novelty, survival], if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.5 })
 }
 
 // ── search tree ───────────────────────────────────────────────────────────────────────────────────
@@ -319,16 +317,48 @@ fn is_dupe(text: &str, existing: &[ConjNode]) -> bool {
     })
 }
 
+/// Parse ONE generated candidate. `conjecture_blocks` alone is too strict here: it requires a `C<digits>`
+/// heading, so a model answering `### C:` — which the first version of GEN_SYS literally asked for —
+/// had EVERY candidate discarded as malformed. 19 of 24 expansions were thrown away before this
+/// fallback existed. Generation is expensive; refusing to read a well-formed answer over its heading
+/// format is the worst possible reason to waste it.
+fn parse_candidate(cand: &str) -> Option<(String, String)> {
+    if let Some((h, b)) = conjecture_blocks(cand).into_iter().next() {
+        return Some((h, b));
+    }
+    // Fallback: the six fields are what actually matter. If most are present, take the first
+    // heading-ish line as the claim and the rest as the body.
+    let present = super::CONJ_FIELDS.iter().filter(|f| cand.contains(**f)).count();
+    if present < 3 {
+        return None;
+    }
+    let mut lines = cand.lines();
+    let head = lines
+        .by_ref()
+        .find(|l| !l.trim().is_empty())?
+        .trim_start_matches(['#', ' ', '*'])
+        .trim()
+        .to_string();
+    let body: String = lines.collect::<Vec<_>>().join("\n");
+    (!body.trim().is_empty()).then(|| (head.chars().take(60).collect(), body))
+}
+
 const GEN_SYS: &str = "你在为一份科研报告生成【推想】候选。推想不需要有现成来源,但必须够得着。\n\
     严格按这个结构回一条,不要别的:\n\
-    ### C: <一句话主张>\n\
+    ### C9: <一句话主张>\n\
     - **锚点**：<站在哪些已知之上,必须带 [Sn]>\n\
     - **缺口**：<哪部分确实未知——这正是价值所在,不许掩饰>\n\
     - **方法路径**：<怎么做>\n\
-    - **现在就能算**：<用公开数据/本平台内核现在就能跑的具体一步>\n\
+    - **现在就能算**：<必须从下面的【本平台配方表】里选一条,写成「用 某配方名 算 某个量」;\n\
+    写平台跑不了的东西等于没写,系统会真的去执行这一格;真没有一条沾边才写「无」>\n\
     - **证伪条件**：<什么结果出现就说明它错了>\n\
     - **时间尺度**：<多久能见分晓>\n\
     禁止把推想写得像已确立事实。";
+
+/// GEN_SYS plus the live recipe menu. The menu must reach the WRITER, not just the matcher.
+fn gen_sys() -> String {
+    format!("{GEN_SYS}\n\n【本平台现在就能跑的配方表】\n{}", super::derived::recipe_menu())
+}
 
 /// Run the search. Returns an outcome that is ALWAYS reportable — a search that did nothing still
 /// yields `ran:false`, which the ledger surfaces rather than silently omitting.
@@ -384,11 +414,10 @@ pub(super) async fn search_conjectures(
         if is_abandoned(id, body) {
             continue;
         }
-        let text = format!("{id}\n{body}");
         let r = refute_one(model, &ev, id, body, sources, cancel).await;
         out.model_calls += 1;
         let sev = r.as_deref().map(refutation_severity).unwrap_or(Severity::Unparsed);
-        let (lens, score) = score_candidate(&text, sev, sources);
+        let (lens, score) = score_candidate(id, body, sev, sources);
         commit(&mut nodes, 0, id.clone(), body.clone(), r.unwrap_or_default(), sev, lens, score, Origin::Seed);
         out.seeds += 1;
         out.sev_hist[sev.idx()] += 1;
@@ -456,7 +485,7 @@ pub(super) async fn search_conjectures(
             )
         };
 
-        let gen = model.complete(GEN_SYS, &user, cancel).await.ok().map(|s| s.trim().to_string());
+        let gen = model.complete(&gen_sys(), &user, cancel).await.ok().map(|s| s.trim().to_string());
         out.model_calls += 1;
         let Some(cand) = gen.filter(|s| !s.is_empty()) else {
             out.failed += 1;
@@ -464,9 +493,8 @@ pub(super) async fn search_conjectures(
             on_step("conj_gen".into(), "候选生成失败".into(), String::new());
             continue;
         };
-        let blocks = conjecture_blocks(&cand);
-        let (h, b) = match blocks.first() {
-            Some((h, b)) => (h.clone(), b.clone()),
+        let (h, b) = match parse_candidate(&cand) {
+            Some(hb) => hb,
             None => {
                 out.failed += 1;
                 nodes[target].gen_arm.update(0.0);
@@ -485,7 +513,7 @@ pub(super) async fn search_conjectures(
         let r = refute_one(model, &ev, &h, &b, sources, cancel).await;
         out.model_calls += 1;
         let sev = r.as_deref().map(refutation_severity).unwrap_or(Severity::Unparsed);
-        let (lens, score) = score_candidate(&text, sev, sources);
+        let (lens, score) = score_candidate(&h, &b, sev, sources);
         let origin = if deep { Origin::Deep } else { Origin::Wide };
         commit(&mut nodes, target, h.clone(), b, r.unwrap_or_default(), sev, lens, score, origin);
         if deep {
@@ -670,8 +698,10 @@ pub(super) fn append_conjecture_search(summary: &str, oc: Option<&ConjSearchOutc
         out.push_str("**结果**:没有候选通过裁决。\n");
         return format!("{summary}{out}");
     }
-    out.push_str("**排名**(分数 = 三轴的均值与最小值各半,单轴强不能拉高总分):\n\n");
-    out.push_str("| # | 推想 | 来源 | 反驳裁决 | 结构 | 新颖 | 存活 | 总分 |\n|---|---|---|---|---|---|---|---|\n");
+    // Name what actually ranks. The 8-topic panel proved structure+novelty saturate at 1.00 for every
+    // real candidate, so ranking is survival-driven; claiming "three-axis selection" was fiction.
+    out.push_str("**排名**(实际排序由「抗反驳存活度」决定;结构分只作地板守卫;新颖分仅供参考、不参与排序):\n\n");
+    out.push_str("| # | 推想 | 来源 | 反驳裁决 | 结构 | 新颖(仅参考) | 存活 | 总分 |\n|---|---|---|---|---|---|---|---|\n");
     for (i, w) in oc.winners.iter().enumerate() {
         out.push_str(&format!(
             "| {} | {} | {}(深度 {}) | {} | {:.2} | {:.2} | {:.2} | **{:.2}** |\n",
@@ -682,6 +712,16 @@ pub(super) fn append_conjecture_search(summary: &str, oc: Option<&ConjSearchOutc
     }
     out.push('\n');
     let top = &oc.winners[0];
+    // Guard the illegitimate-winner case: if the top candidate ranks on an UNKNOWN or
+    // evidence-insufficient verdict (survival=0.5), the ranking is not trustworthy — the panel caught a
+    // deep candidate reaching #1 purely on Unparsed=0.5. Say so, loudly.
+    if matches!(top.severity, Severity::Unparsed | Severity::Insufficient) {
+        out.push_str(&format!(
+            "> ⚠️ **排名第一的推想其反驳裁决为「{}」(存活分=0.5,即「不知道」而非「站得住」)**,\
+             因此本次排序不可信 —— 冠军是靠中性分顶上来的,不是靠扛住了攻击。请把下方候选都当作「未经有效裁决」看待。\n\n",
+            top.severity.label()
+        ));
+    }
     if !adopted(top, summary) {
         out.push_str(&format!(
             "> ⚠️ **正文未采用排名第一的推想**(启发式判断,可能误判)。冠军原文:\n>\n> **{}**\n>\n> {}\n\n",
@@ -744,13 +784,44 @@ mod tests {
     }
 
     #[test]
-    fn structure_lens_is_zero_for_text_that_is_not_a_conjecture() {
-        // ADVERSARIAL: `conjecture_issues` returns exactly ONE issue for unparseable text, so the
-        // naive 1 - issues/7 would score the WORST possible input 0.86. Highest score for garbage.
-        assert_eq!(structure_lens("这是一段普通的散文,完全没有推想结构。", 3), 0.0);
-        let full = "### C1: 主张\n- **锚点**：[S1] 已知\n- **缺口**：未知部分\n- **方法路径**：做法\n\
+    fn structure_lens_scores_the_parsed_pair_not_a_reparsed_document() {
+        // REGRESSION (found by the 8-topic panel, not by unit tests): the previous version re-parsed
+        // `heading + body`, but `conjecture_blocks` already stripped the leading `#`, so re-parsing
+        // found no block and returned 0.0 for EVERY candidate in EVERY run. With combine_lens's min
+        // term that pinned all scores to ~0.3 and made the ranking pure noise. The old test passed a
+        // full `### C1:` document — a shape this call path never receives.
+        let body = "- **锚点**：[S1] 已知\n- **缺口**：未知部分\n- **方法路径**：做法\n\
                     - **现在就能算**：用 ChEMBL 算 IC50 分布\n- **证伪条件**：若 X 不成立\n- **时间尺度**：6 个月\n";
-        assert!(structure_lens(full, 3) > 0.9);
+        let full = structure_lens("C1: 主张", body, 3);
+        assert!(full > 0.9, "六字段齐全的候选结构分必须接近 1.0,实得 {full:.2}");
+        // A candidate missing most fields scores low, and an empty one scores 0.
+        assert!(structure_lens("C1: 主张", "- **锚点**：[S1] 已知\n", 3) < 0.4);
+        assert_eq!(structure_lens("C1: 主张", "  ", 3), 0.0);
+    }
+
+    #[test]
+    fn generated_candidates_survive_heading_format_drift() {
+        // REGRESSION: GEN_SYS asked for `### C:` while conjecture_blocks demands `C<digits>`, so 19 of
+        // 24 real expansions were discarded as malformed. Generation is the expensive part — refusing
+        // a well-formed answer over its heading format is the worst way to waste it.
+        let drifted = "### C: 某个主张\n- **锚点**：[S1]\n- **缺口**：未知\n- **方法路径**：做法\n";
+        let (h, b) = parse_candidate(drifted).expect("`### C:` 形式的候选必须能被读进来");
+        assert!(h.contains("某个主张"));
+        assert!(b.contains("锚点"));
+        // The canonical form still parses through the normal path…
+        assert!(parse_candidate("### C2: 主张\n- **锚点**：[S1]\n- **缺口**：未知\n- **方法路径**：X\n").is_some());
+        // …but genuine garbage is still rejected: the fallback needs real fields, not any prose.
+        assert!(parse_candidate("这是一段完全没有结构的散文,模型跑题了。").is_none());
+        assert!(parse_candidate("").is_none());
+    }
+
+    #[test]
+    fn gen_template_matches_the_parser() {
+        // The template and the parser must never drift apart again — assert on the REAL constant.
+        let head = GEN_SYS.lines().find(|l| l.contains("###")).expect("模板必须给出标题格式");
+        let sample = format!("{}\n- **锚点**：[S1]\n- **缺口**：未知\n- **方法路径**：X\n",
+            head.trim().replace("<一句话主张>", "某主张"));
+        assert!(parse_candidate(&sample).is_some(), "GEN_SYS 要求的格式必须能被 parse_candidate 读出来: {sample}");
     }
 
     #[test]
@@ -764,10 +835,10 @@ mod tests {
     fn combined_score_cannot_ride_one_strong_axis() {
         let s = vec![src("衰老细胞", "衰老细胞上调 BCL-2 抗凋亡蛋白从而抵抗凋亡")];
         // Structurally perfect + novel, but the refuter判致命 → must not rank high.
-        let full = "### C1: 一条与语料完全不同的全新主张涉及迷走神经与菌群代谢\n- **锚点**：[S1] 已知\n\
-                    - **缺口**：未知\n- **方法路径**：做法\n- **现在就能算**：算一算\n- **证伪条件**：若 X\n- **时间尺度**：6 个月\n";
-        let (_, fatal) = score_candidate(full, Severity::Fatal, &s);
-        let (_, alive) = score_candidate(full, Severity::Minor, &s);
+        let full = "- **锚点**：[S1] 已知\n- **缺口**：未知\n- **方法路径**：做法\n\
+                    - **现在就能算**：算一算\n- **证伪条件**：若 X\n- **时间尺度**：6 个月\n";
+        let (_, fatal) = score_candidate("C1: 一条与语料完全不同的全新主张涉及迷走神经与菌群代谢", full, Severity::Fatal, &s);
+        let (_, alive) = score_candidate("C1: 一条与语料完全不同的全新主张涉及迷走神经与菌群代谢", full, Severity::Minor, &s);
         assert!(fatal < 0.5, "被判致命的推想不能拿高分: {fatal:.2}");
         assert!(alive > fatal);
     }
@@ -797,6 +868,40 @@ mod tests {
         let oc = ConjSearchOutcome { ran: true, seeds: 2, expansions_cfg: 3, ..Default::default() };
         let out = append_conjecture_search("正文", Some(&oc), true);
         assert!(out.contains("接近随机"), "小预算下必须承认分支选择接近随机,不得吹成智能分配");
+    }
+
+    #[test]
+    fn novelty_is_out_of_scoring_but_kept_for_display() {
+        // REGRESSION (red-team, algebraic): novelty saturates at 1.00 for real candidates, so it moved
+        // ZERO rankings while advertising 3-axis rigour. Score must depend ONLY on structure+survival.
+        let s = vec![src("衰老细胞", "衰老细胞上调 BCL-2 抗凋亡蛋白从而抵抗凋亡")];
+        let body = "- **锚点**：[S1]\n- **缺口**：未知\n- **方法路径**：X\n- **现在就能算**：算\n- **证伪条件**：Y\n- **时间尺度**：6月\n";
+        // Two candidates identical except wording novelty; same severity → identical SCORE despite
+        // different novelty display values.
+        let (lens_a, sc_a) = score_candidate("C1: 一个措辞极其常见的复述型主张", body, Severity::Minor, &s);
+        let (lens_b, sc_b) = score_candidate("C1: 迷走神经菌群代谢跨器官轴一个生僻组合主张", body, Severity::Minor, &s);
+        assert!((sc_a - sc_b).abs() < 1e-9, "新颖度不得影响总分: {sc_a} vs {sc_b}");
+        // …but the novelty column is still POPULATED (display), not zeroed out.
+        assert!(lens_a[1] >= 0.0 && lens_b[1] >= 0.0);
+        // Fatal still tanks the score (survival IS in).
+        let (_, sc_fatal) = score_candidate("C1: 主张", body, Severity::Fatal, &s);
+        assert!(sc_fatal < sc_a, "存活轴必须仍然主导");
+    }
+
+    #[test]
+    fn ledger_flags_a_winner_that_ranked_on_an_unknown_verdict() {
+        // ADVERSARIAL (red-team caught this in topic 8): a candidate reaching #1 on Unparsed=0.5 —
+        // a neutral "don't know", not "held up" — must be called out as an untrustworthy ranking.
+        for sev in [Severity::Unparsed, Severity::Insufficient] {
+            let w = ConjWinner {
+                heading: "C1: 靠中性分顶上来的推想".into(), body: "- **锚点**：[S1]".into(),
+                refutation: "最强反驳: 无\n致命程度: 无法反驳".into(),
+                score: 0.5, lens: [1.0, 1.0, 0.5], severity: sev, origin: "深化", depth: 2,
+            };
+            let oc = ConjSearchOutcome { ran: true, seeds: 1, expansions_cfg: 3, winners: vec![w], ..Default::default() };
+            let out = append_conjecture_search("正文内容", Some(&oc), true);
+            assert!(out.contains("排序不可信"), "{sev:?} 冠军必须被标注排序不可信");
+        }
     }
 
     #[test]

@@ -91,6 +91,13 @@ fn g<'a>(m: &'a std::collections::BTreeMap<String, String>, k: &str) -> &'a str 
     m.get(k).map(|s| s.as_str()).unwrap_or("")
 }
 
+// ⚠️ Every recipe's slots must be CONCRETE ENTITIES (a ChEMBL id, gene symbols, a variant, an
+// accession) — never a free-text `query`. A free-text-query recipe (the removed `lit_trend` and
+// `trial_landscape`) matches ANY topic, so the model farms it: 4 of 5 derived numbers in the 8-topic
+// panel were literature-year-counts wearing blake3 fingerprints, irrelevant to the mechanism claim
+// they were attached to. That is `quant_claim_count` reborn — a proxy that pays out without doing the
+// real work. The relevance gate (`plan_is_relevant`) is what enforces this: a slot entity must be
+// named in the conjecture, which a composed query never is. Do NOT add a `query`-slot recipe back.
 pub(super) static RECIPES: &[Recipe] = &[
     Recipe {
         name: "chembl_potency_spread",
@@ -107,45 +114,6 @@ pub(super) static RECIPES: &[Recipe] = &[
              else:\n\
              \x20   print(\"RECIPE_NO_DATA: 该靶点可用 IC50(nM)记录不足 5 条\")\n",
             g(m, "target_chembl_id"), g(m, "target_chembl_id"), g(m, "target_chembl_id")),
-    },
-    Recipe {
-        name: "trial_landscape",
-        slots: &["query"],
-        what: "某方向注册临床试验的期别分布、入组规模分布、有多少条已公布结果",
-        volatile: true,
-        build: |m| format!(
-            "_ax_t = scidb.clinical_trials(\"{}\", limit=100)\n\
-             _ax_n = [int(t[\"enrollment\"]) for t in _ax_t if str(t.get(\"enrollment\", \"\")).isdigit()]\n\
-             _ax_ph = {{}}\n\
-             for _ax_x in _ax_t:\n\
-             \x20   _ax_k = _ax_x.get(\"phase\") or \"未标注\"\n\
-             \x20   _ax_ph[_ax_k] = _ax_ph.get(_ax_k, 0) + 1\n\
-             _ax_res = sum(1 for _ax_x in _ax_t if _ax_x.get(\"has_results\"))\n\
-             if _ax_t:\n\
-             \x20   scidb.derive(\"{} 方向的注册试验格局\", {{\"trials\": len(_ax_t), \"with_results\": _ax_res, \"median_enrollment\": statistics.median(_ax_n) if _ax_n else None, \"phase_counts\": _ax_ph}}, inputs={{\"query\": \"{}\", \"limit\": 100}}, method=\"ClinicalTrials.gov 检索结果的聚合统计\")\n\
-             else:\n\
-             \x20   print(\"RECIPE_NO_DATA: 该查询未返回任何注册试验\")\n",
-            g(m, "query"), g(m, "query"), g(m, "query")),
-    },
-    Recipe {
-        name: "lit_trend",
-        slots: &["query"],
-        what: "某主题文献的年度产出曲线与近三年占比,用于判断这个方向是新兴还是已饱和",
-        volatile: true,
-        build: |m| format!(
-            "_ax_p = scidb.lit_search(\"{}\", limit=100)\n\
-             _ax_y = {{}}\n\
-             for _ax_x in _ax_p:\n\
-             \x20   _ax_k = str(_ax_x.get(\"year\") or \"\")[:4]\n\
-             \x20   if _ax_k.isdigit():\n\
-             \x20       _ax_y[_ax_k] = _ax_y.get(_ax_k, 0) + 1\n\
-             if _ax_y:\n\
-             \x20   _ax_ys = sorted(_ax_y)\n\
-             \x20   _ax_recent = sum(_ax_y[k] for k in _ax_ys if int(k) >= 2022)\n\
-             \x20   scidb.derive(\"{} 的文献年度分布\", {{\"papers\": sum(_ax_y.values()), \"by_year\": _ax_y, \"since_2022_share\": round(_ax_recent/max(1,sum(_ax_y.values())), 3)}}, inputs={{\"query\": \"{}\", \"limit\": 100}}, method=\"Europe PMC 检索命中的发表年份计数\")\n\
-             else:\n\
-             \x20   print(\"RECIPE_NO_DATA: 未取到带年份的文献\")\n",
-            g(m, "query"), g(m, "query"), g(m, "query")),
     },
     Recipe {
         name: "string_neighborhood",
@@ -212,6 +180,19 @@ pub(super) static RECIPES: &[Recipe] = &[
             g(m, "accession"), g(m, "accession"), g(m, "accession"), g(m, "accession")),
     },
 ];
+
+/// The recipe menu, rendered for a PROMPT. Injected where conjectures are WRITTEN, not only where
+/// they are matched: the panel showed the model proposing "查 GEO 的 IFN-γ score 分布" while the menu
+/// offered ChEMBL/STRING/GWAS — zero overlap, so 0 of 8 runs computed anything. Matching after the
+/// fact cannot fix a mismatch that was baked in at generation time. Same lesson as the ask→execute
+/// spectrum: constrain the generation instead of hoping the answer lands in range.
+pub(super) fn recipe_menu() -> String {
+    RECIPES
+        .iter()
+        .map(|r| format!("- `{}`(需要:{}) —— {}", r.name, r.slots.join("、"), r.what))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
 /// Slot sanitiser. The whitelist deliberately excludes quotes, backslash, newline, `#`, `{`, `}` and
 /// `;`. That is the ENTIRE reason harness-assembled cells are safe: whatever survives cannot
@@ -351,6 +332,32 @@ pub(super) struct DerivePlan {
     pub recipe: &'static Recipe,
     pub slots: std::collections::BTreeMap<String, String>,
     pub conj_id: String,
+    /// The entity the model claims this computation is about, copied verbatim from the conjecture.
+    /// The relevance gate checks it actually appears there.
+    pub entity: String,
+}
+
+/// THE RELEVANCE GATE the 8-topic panel proved was missing. A derived number is only evidence FOR a
+/// conjecture if it is ABOUT something the conjecture names. This checks, mechanically, that the
+/// model-declared `entity` (and every entity slot value) literally appears in the target conjecture's
+/// body. A correct, reproducible, fingerprinted number about an entity the hypothesis never mentions
+/// is negative value — it reads as hard evidence while being irrelevant. Fail → route to the shortfall
+/// banner, never into the report.
+pub(super) fn plan_is_relevant(plan: &DerivePlan, summary: &str) -> bool {
+    let Some((_, body)) = conjecture_blocks(summary).into_iter().find(|(id, _)| {
+        // Match on the leading `C<n>` token so "C1" and "C1: 甲" both resolve.
+        let a = id.split([' ', ':', '：']).next().unwrap_or("").trim();
+        let b = plan.conj_id.split([' ', ':', '：']).next().unwrap_or("").trim();
+        !b.is_empty() && a == b
+    }) else {
+        return false;
+    };
+    // The declared entity must be a real, non-trivial span of the conjecture body: the number is only
+    // evidence FOR this conjecture if the thing it was computed on is named IN it. A slot id (a ChEMBL
+    // accession, a variant string) is a database key the prose rarely spells out, so the anchor is the
+    // model-quoted natural-language entity, not the raw slot value.
+    let ent = plan.entity.trim().to_lowercase();
+    ent.chars().count() >= 2 && body.to_lowercase().contains(&ent)
 }
 
 /// ONE tightly-constrained model call: pick a recipe and fill its slots. The model writes no code and
@@ -373,9 +380,11 @@ pub(super) async fn plan_derivation(
         .collect();
     let sys = format!(
         "你要从下面这张【固定配方表】里挑一条,让平台去真算一个数。你不写代码、不做判断,只填槽位。\n{}\n\n\
-         只回一个 JSON,不要别的:{{\"recipe\":\"<表中的name>\",\"conj\":\"<C几>\",\"slots\":{{...}}}}\n\
-         若没有任何一条配方能服务这些推想,回 {{\"recipe\":\"none\"}} —— 宁可不算,也不要挑个不相干的配方凑数。\n\
-         槽位值必须是 ASCII 标识符(如 CHEMBL4523582、TP53、ENSG00000141510、KRAS G12D inhibitor),不要写中文。",
+         只回一个 JSON,不要别的:{{\"recipe\":\"<表中的name>\",\"conj\":\"<C几>\",\"entity\":\"<推想正文里出现的那个实体名,原样抄>\",\"slots\":{{...}}}}\n\
+         硬要求:所算的实体【必须是这条推想正文里已经点名的对象】(某个基因/靶点/变异/蛋白),\
+         `entity` 字段就把那个名字从正文里【原样抄下来】。若推想没点名任何一个配方能处理的具体实体,\
+         就回 {{\"recipe\":\"none\"}} —— 算一个推想没提到的东西 = 不相干的凑数,比不算更糟。\n\
+         槽位值必须是 ASCII 标识符(如 CHEMBL4523582、TP53、ENSG00000141510),对应上面那个 entity。不要写中文。",
         menu.join("\n")
     );
     let user = format!(
@@ -415,6 +424,7 @@ pub(super) async fn plan_derivation(
         recipe,
         slots,
         conj_id: v.get("conj").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        entity: v.get("entity").and_then(|x| x.as_str()).unwrap_or("").to_string(),
     })
 }
 
@@ -514,11 +524,43 @@ mod tests {
 
     #[test]
     fn built_cell_keeps_slot_values_inside_string_literals() {
+        let r = RECIPES.iter().find(|r| r.name == "string_neighborhood").unwrap();
         let mut m = std::collections::BTreeMap::new();
-        m.insert("query".to_string(), sanitize_slot("KRAS G12D\"); evil()").unwrap());
-        let cell = build_cell(&RECIPES[1], &m);
-        assert!(!cell.contains("evil()") || !cell.contains("\"); evil()"), "注入片段不得原样进入 cell");
+        m.insert("genes".to_string(), sanitize_slot("TP53 KRAS\"); evil()").unwrap());
+        let cell = build_cell(r, &m);
+        assert!(!cell.contains("\"); evil()"), "注入片段不得原样进入 cell");
         assert!(cell.contains("scidb.derive("), "配方必须调用 derive 登记");
+    }
+
+    #[test]
+    fn no_free_text_query_recipe_survives() {
+        // REGRESSION (panel): a `query`-slot recipe matches any topic → the model farms it (4/5 derived
+        // numbers were irrelevant literature counts). No recipe may take a free-text query slot.
+        for r in RECIPES {
+            assert!(!r.slots.contains(&"query"), "配方 {} 仍有自由文本 query 槽,会被凑数", r.name);
+        }
+    }
+
+    fn plan(recipe: &'static str, conj: &str, entity: &str) -> DerivePlan {
+        let r = RECIPES.iter().find(|r| r.name == recipe).unwrap();
+        DerivePlan { recipe: r, slots: Default::default(), conj_id: conj.into(), entity: entity.into() }
+    }
+
+    #[test]
+    fn relevance_gate_requires_the_entity_to_be_named_in_the_conjecture() {
+        let rep = "### C1: 抗原提呈通路完整性决定应答\n- **锚点**：[S1] TAP1 与 B2M 参与提呈\n\
+                   ### C2: 别的机制\n- **锚点**：[S2]\n";
+        // Entity named in C1's body → relevant.
+        assert!(plan_is_relevant(&plan("string_neighborhood", "C1", "TAP1"), rep));
+        // ADVERSARIAL: entity NOT in the target conjecture → the panel's failure mode → must reject.
+        assert!(!plan_is_relevant(&plan("string_neighborhood", "C1", "KRAS"), rep),
+            "推想没提到的实体,算出来也不相关,必须拦");
+        // Entity present but in a DIFFERENT conjecture than the one claimed → reject (per-conjecture).
+        assert!(!plan_is_relevant(&plan("gwas_target_evidence", "C2", "TAP1"), rep));
+        // Empty / trivial entity → reject (can't anchor).
+        assert!(!plan_is_relevant(&plan("string_neighborhood", "C1", ""), rep));
+        // Unknown conjecture id → reject, never silently pass.
+        assert!(!plan_is_relevant(&plan("string_neighborhood", "C9", "TAP1"), rep));
     }
 
     #[test]

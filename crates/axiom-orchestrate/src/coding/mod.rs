@@ -2233,6 +2233,33 @@ pub async fn run_coding_agent_steered(
                 derive_passes += 1;
                 let claims = derived::computable_claims(&f);
                 match derived::plan_derivation(goal, &claims, model, cancel).await {
+                    Ok(plan) if !derived::plan_is_relevant(&plan, &f) => {
+                        // RELEVANCE GATE (panel-driven). The plan names an entity not found in its
+                        // target conjecture → the number would be a fingerprinted-but-irrelevant fact.
+                        // Refuse to compute it; the fulfillment banner will report it as unmet. Do NOT
+                        // run a kernel cell for an irrelevant computation.
+                        let why = format!(
+                            "平台自算已规避:配方 `{}` 声称要算的实体「{}」未在对应推想({})正文中出现,\
+                             算出来也与该推想不相关,故不执行(避免带指纹的不相干数)。",
+                            plan.recipe.name, plan.entity, plan.conj_id
+                        );
+                        derived_out.push(derived::Derived {
+                            recipe: plan.recipe.name.into(),
+                            conj_id: plan.conj_id.clone(),
+                            ok: false,
+                            error: Some(why.clone()),
+                            ..Default::default()
+                        });
+                        on_step(CodingStepRec {
+                            n,
+                            tool: "derive".into(),
+                            detail: "平台自算 · 相关性闸门拦截".into(),
+                            observation: why,
+                            input: String::new(),
+                            reasoning: String::new(),
+                            figures: Vec::new(),
+                        });
+                    }
                     Ok(plan) => {
                         let code = derived::build_cell(plan.recipe, &plan.slots);
                         let (obs, ok) = match &kernel {
@@ -2418,12 +2445,16 @@ pub async fn run_coding_agent_steered(
                          - 锚点: [Sn] 说明它的哪一部分由这条已知支撑(可以跨越,但要说清站在什么之上)\n\
                          - 缺口: 明确讲清哪一部分目前【没有】证据——这正是它的价值所在,别掩饰\n\
                          - 方法路径: 要验证它,具体怎么做(体系、读出、对照)\n\
-                         - 现在就能算: 这条路径里,**本平台的 python 内核 + 数据接口现在就能跑**的是哪几步\
-                         (例如先用 GEO/ChEMBL/gnomAD 数据算个先验、先做结构可及性筛查);真没有就写「无」\n\
+                         - 现在就能算: **必须从下面这张配方表里选一条**,写成「用 <配方名> 算 <什么>」。\
+                         写平台跑不了的东西等于没写——系统会真的去执行这一格,写不了就执行不了。真没有一条沾边才写「无」\n\
                          - 证伪条件: 什么结果出现就说明这个推想是错的\n\
                          - 时间尺度: 大致多久能见分晓(周/月/年)\n\
                          ⚠️ 推想必须显式标为推想,**绝不能写得像已确立的事实**——这是唯一的红线。\n",
                         issues.join(";")
+                    ));
+                    transcript.push_str(&format!(
+                        "\n【本平台现在就能跑的配方表】\n{}\n",
+                        derived::recipe_menu()
                     ));
                     continue;
                 }
