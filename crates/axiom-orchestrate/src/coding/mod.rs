@@ -1474,6 +1474,53 @@ fn append_verified_trials(summary: &str, sources: &[Source]) -> String {
     format!("{}{}", summary.trim_end(), sec)
 }
 
+/// THE single finalisation applied to every shipped report, from EVERY return path (accept, salvage,
+/// wrap-up, budget exhaustion). Regression testing caught the reason this must be one function: the
+/// verified-trials section and the conjecture-deficiency notice were wired only into the accept path,
+/// so a run that hit the step cap shipped through the exhaustion path with neither — silently missing
+/// both. Anything that must be true of the deliverable belongs here, once.
+fn finalize_report(summary: &str, sources: &[Source], research: bool) -> String {
+    let s = clean_summary(summary, sources.len());
+    let s = ensure_reference_list(&s, sources);
+    let s = append_verified_trials(&s, sources);
+    if !research || is_fallback_report(&s) {
+        return s;
+    }
+    // MOST BASIC shortfall, and the one that bypasses everything else: a model that finalises at step
+    // 1-2 never triggers any gate (they mostly require n>=3), so it can ship a fluent, entirely
+    // unsourced report written from parametric memory. Regression testing produced exactly that — a
+    // 2-step, 0-source "research report". Whatever else is true, the reader must be told.
+    if sources.is_empty() {
+        return format!(
+            "{}\n\n> ⚠️ **本报告未检索到任何来源** —— 全部内容出自模型既有知识,**未经任何检索核实**,\
+             其中的机制、数字与药名都可能有误。这不构成可依据的研究结论,请补充检索后重跑。\n",
+            s.trim_end()
+        );
+    }
+    // A nudge can be ignored, and under budget pressure it was: reports shipped with zero conjectures,
+    // or with blocks missing half their fields. We cannot mechanically make a model produce a good
+    // hypothesis — but we can refuse to let the shortfall be invisible.
+    let blocks = conjecture_blocks(&s);
+    if blocks.is_empty() {
+        return format!(
+            "{}\n\n> ⚠️ **本报告未产出「推想与验证路径」** —— 未达研究模式的交付要求,当前内容仅相当于一份\
+             文献综述。可能原因:可用证据过薄,或预算耗尽提前收尾。建议补充检索后重跑。\n",
+            s.trim_end()
+        );
+    }
+    let issues = conjecture_issues(&s, sources.len());
+    if !issues.is_empty() {
+        return format!(
+            "{}\n\n> ⚠️ **推想结构不完整**({})—— 缺失字段意味着该推想「够不够得着」无法判断:\
+             没有锚点就不知它站在什么已知之上,没有证伪条件就无法被检验,没有「现在就能算」就不知道\
+             本平台能为它做什么。使用前请自行补足这些环节。\n",
+            s.trim_end(),
+            issues.join(";")
+        );
+    }
+    s
+}
+
 /// Capture sources the model registered via `scidb.cite(...)` (which prints a `#AXIOM_CITE#<json>` line):
 /// parse them into the provenance list so DB/lit records fetched through the python+scidb path become
 /// CITABLE [Sn]. Previously ONLY the native litsearch/multi_search tools pushed sources, so a report
@@ -1740,7 +1787,7 @@ pub async fn run_coding_agent_steered(
                             // tail). The run ends gracefully with real content + its figures.
                             let _ = &e; // error is captured in the transcript; the salvage speaks for itself
                             let artifacts = collect_artifacts(sandbox.root(), &start_files);
-                            let summary = clean_summary(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, sources.len());
+                            let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged());
                             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                             return CodingResult { status: status.into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
                         }
@@ -1850,7 +1897,7 @@ pub async fn run_coding_agent_steered(
                 // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
                 // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
                 // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
-                let summary = clean_summary(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, sources.len());
+                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged());
                 let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                 return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
@@ -1884,7 +1931,7 @@ pub async fn run_coding_agent_steered(
                 // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
                 // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
                 // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
-                let summary = clean_summary(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, sources.len());
+                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged());
                 let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                 return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
@@ -2168,29 +2215,7 @@ pub async fn run_coding_agent_steered(
             // BACKSTOP: never ship a leaked ===AXIOM3_FINAL=== marker or a dead provenance link. Strip a
             // residual marker + any DANGLING [Sn] (n > sources retrieved) that survived the nudge — claim
             // text stays, only the unbacked marker is dropped. No-op for a clean report / fallback banner.
-            let summary = clean_summary(&summary, sources.len());
-            // RESOLVABILITY: every cited [Sn] must be lookup-able by the reader. Append any cited-but-
-            // unlisted source (with its URL) to the reference section — closes the "[S91] cited but the
-            // bibliography only lists 30 entries" hole AND gives entries a real URL to click.
-            let summary = ensure_reference_list(&summary, &sources);
-            // Harness-verified trial readouts are appended unconditionally: fetching them is useless if
-            // the writer can silently drop them (smoke-tested — it did).
-            let summary = append_verified_trials(&summary, &sources);
-            // The conjecture gate NUDGES, and a nudge can be ignored: under a thin-evidence run the model
-            // simply shipped a report with zero conjectures and the gate, having spent its budget, let it
-            // through silently. We cannot mechanically make a model think of a good hypothesis — but we
-            // CAN refuse to let the deficiency be invisible. Research mode without conjectures is a
-            // literature summary, and the deliverable must say so.
-            let summary = if pause.delegate_encouraged() && conjecture_blocks(&summary).is_empty() {
-                format!(
-                    "{}\n\n> ⚠️ **本报告未产出「推想与验证路径」** —— 未达研究模式的交付要求,\
-                     当前内容仅相当于一份文献综述。可能原因:可用证据过薄,或收尾过早。\
-                     建议补充检索后重跑,或据下方局限性判断其可用范围。\n",
-                    summary.trim_end()
-                )
-            } else {
-                summary
-            };
+            let summary = finalize_report(&summary, &sources, pause.delegate_encouraged());
             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
             return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
@@ -3143,7 +3168,7 @@ pub async fn run_coding_agent_steered(
     // Budget exhausted without a {"final"}. Don't dump the raw transcript as the "report" — do ONE
     // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
     // figures (falls back to a transcript tail on failure). Same salvage the model-error path uses.
-    let summary = clean_summary(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, sources.len());
+    let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged());
     let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
     CodingResult { status: status.into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
@@ -3767,6 +3792,32 @@ mod tests {
         let cleaned = clean_summary("机制成立 [S2, S3];另见 [S1, S16]。", 3);
         assert!(cleaned.contains("[S2]") && cleaned.contains("[S3]") && cleaned.contains("[S1]"), "valid refs kept: {cleaned}");
         assert!(!cleaned.contains("[S16]"), "dangling [S16] stripped after normalization: {cleaned}");
+    }
+
+    #[test]
+    fn finalize_report_surfaces_conjecture_shortfalls_instead_of_shipping_silently() {
+        // REGRESSION (found by the cumulative 8-topic run): the deficiency notice + verified-trials
+        // section were wired only into the accept path, so a run that hit the step cap shipped through
+        // the exhaustion path with neither — silently missing both. finalize_report is now the ONE
+        // finalisation used by every return path; these cases lock that behaviour in.
+        let srcs = vec![Source { id: 1, kind: "paper".into(), title: "T".into(),
+                                 url: "https://doi.org/10.1/x".into(), excerpt: "e".into() }];
+        // zero conjectures in research mode → shortfall must be visible
+        // zero sources: the shortfall that bypasses every gate (a 2-step run never reaches n>=3)
+        let unsourced = finalize_report("# 报告\n全凭记忆写的正文。", &[], true);
+        assert!(unsourced.contains("未检索到任何来源"), "0 来源必须显式标注: {unsourced}");
+        let none = finalize_report("# 报告\n正文 [S1]。", &srcs, true);
+        assert!(none.contains("未产出「推想与验证路径」"), "零推想必须显式标注: {none}");
+        // structurally incomplete conjecture → also visible, naming what is missing
+        let partial = finalize_report("# 报告\n\n### C1: 某新机制\n- 锚点: [S1] 有据\n", &srcs, true);
+        assert!(partial.contains("推想结构不完整"), "结构不全必须显式标注: {partial}");
+        assert!(partial.contains("证伪条件"), "应点名缺失字段: {partial}");
+        // a complete conjecture ships clean, with no scolding appended
+        let good = "# 报告\n\n### C1: 新机制\n- 锚点: [S1] 支撑\n- 缺口: 未知\n- 方法路径: 做实验\n                    - 现在就能算: 先算先验\n- 证伪条件: 无变化即证伪\n- 时间尺度: 3 个月\n";
+        let ok = finalize_report(good, &srcs, true);
+        assert!(!ok.contains("⚠️"), "完整推想不应被加警示: {ok}");
+        // non-research mode is never asked for conjectures at all
+        assert!(!finalize_report("# 代码任务完成", &srcs, false).contains("⚠️"));
     }
 
     #[test]
