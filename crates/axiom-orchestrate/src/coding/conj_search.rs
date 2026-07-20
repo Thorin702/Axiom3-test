@@ -103,16 +103,46 @@ pub(super) fn refutation_severity(r: &str) -> Severity {
     Severity::Unparsed
 }
 
-/// Survival axis. `Unparsed`/`Insufficient` sit at 0.5: "we don't know" must not read as "it's good".
-fn survival_lens(s: Severity) -> f64 {
+/// Survival axis.
+///
+/// The `Insufficient` case is where verification must NOT punish novelty. Measured across 10 real
+/// reports, 6 of 10 CHAMPIONS were "证据不足以反驳" — the refuter couldn't kill them because no current
+/// evidence bears on them. For a product whose value is *reachable novel hypotheses*, that is the
+/// SWEET SPOT (a precise, testable claim nobody has tested yet), not a weakness — yet a flat 0.5 ranked
+/// it as mediocre and the ledger called the ranking "untrustworthy", underselling the best output.
+///
+/// The discriminator between good-novel and vacuous is whether the conjecture carries a CONCRETE,
+/// executable falsifier. The refuter's rule ④ already routes the genuinely vacuous to 致命, so anything
+/// reaching `Insufficient` has passed that filter; `concrete_falsifier` is a second, mechanical check.
+/// It stays a SOFT score input, never a gate (the quant_claim_count lesson).
+///
+/// `Unparsed` remains 0.5 — a genuinely unknown/broken verdict, distinct from a novel-but-untested one.
+fn survival_lens(s: Severity, concrete_falsifier: bool) -> f64 {
     match s {
         Severity::Fatal => 0.0,
         Severity::Serious => 0.35,
+        Severity::Unparsed => 0.5,
+        Severity::Insufficient => {
+            if concrete_falsifier {
+                0.68
+            } else {
+                0.45
+            }
+        }
         Severity::Minor => 0.70,
         Severity::Unrefuted => 0.85,
-        Severity::Insufficient => 0.5,
-        Severity::Unparsed => 0.5,
     }
+}
+
+/// A SOFT falsifiability signal: does the conjecture's 证伪条件 name a measurable outcome (a
+/// comparison, a statistic, a magnitude) rather than a circular "if it's wrong"? Used only to tell a
+/// precise novel conjecture from a vague one inside the `Insufficient` bucket — never a gate.
+fn has_concrete_falsifier(body: &str) -> bool {
+    let Some(f) = super::field_value(body, "证伪条件") else { return false };
+    f.contains(['≥', '≤', '<', '>', '%', '='])
+        || ["AUC", "HR", "IC50", "EC50", "统计", "显著", "倍", "阈值", "下降", "升高", "降低", "提高", "减少", "增加", "p 值", "P 值", "置信"]
+            .iter()
+            .any(|m| f.contains(m))
 }
 
 /// Structure axis, scored from the ALREADY-PARSED (heading, body) pair.
@@ -158,7 +188,7 @@ fn score_candidate(heading: &str, body: &str, sev: Severity, sources: &[Source])
     let text = format!("{heading}\n{body}");
     let structure = structure_lens(heading, body, sources.len());
     let novelty = novelty_lens(&text, sources); // display only
-    let survival = survival_lens(sev);
+    let survival = survival_lens(sev, has_concrete_falsifier(body));
     let s = combine_lens(&[structure, survival]);
     ([structure, novelty, survival], if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.5 })
 }
@@ -712,15 +742,22 @@ pub(super) fn append_conjecture_search(summary: &str, oc: Option<&ConjSearchOutc
     }
     out.push('\n');
     let top = &oc.winners[0];
-    // Guard the illegitimate-winner case: if the top candidate ranks on an UNKNOWN or
-    // evidence-insufficient verdict (survival=0.5), the ranking is not trustworthy — the panel caught a
-    // deep candidate reaching #1 purely on Unparsed=0.5. Say so, loudly.
-    if matches!(top.severity, Severity::Unparsed | Severity::Insufficient) {
-        out.push_str(&format!(
-            "> ⚠️ **排名第一的推想其反驳裁决为「{}」(存活分=0.5,即「不知道」而非「站得住」)**,\
-             因此本次排序不可信 —— 冠军是靠中性分顶上来的,不是靠扛住了攻击。请把下方候选都当作「未经有效裁决」看待。\n\n",
-            top.severity.label()
-        ));
+    // Two very different "the champion didn't win by surviving an attack" cases, told apart:
+    //  · Unparsed — the verdict could not be read (broken/unknown). The ranking really is untrustworthy.
+    //  · Insufficient — the refuter found NO current evidence to refute it. For a novel, testable
+    //    hypothesis that is the point, not a defect; framing it as "untrustworthy" undersells the exact
+    //    output this product exists to produce. Reframe it honestly as an exploratory frontier claim.
+    match top.severity {
+        Severity::Unparsed => out.push_str(
+            "> ⚠️ **排名第一的推想其反驳裁决无法解析**,本次排序不可信 —— 冠军是靠中性分顶上来的,\
+             不是靠扛住了攻击。请把下方候选都当作「未经有效裁决」看待。\n\n",
+        ),
+        Severity::Insufficient => out.push_str(
+            "> 🔬 **排名第一的推想是一条新颖的探索性假说**:反驳者用现有已检索证据【既不能证实也不能证伪】它\
+             (而非它站不住)。这正是本平台想要的产出——够得着的新方向,但请按【待前瞻验证的假说】看待,\
+             不是已确立结论。它的证伪条件写在推想里,就是验证它的下一步。\n\n",
+        ),
+        _ => {}
     }
     if !adopted(top, summary) {
         out.push_str(&format!(
@@ -760,7 +797,7 @@ mod tests {
         // returns Fatal here would kill every candidate in every run where the model gets lazy.
         let echo = "最强反驳: 略\n致命程度: 致命 | 严重 | 轻微 | 无法反驳";
         assert_eq!(refutation_severity(echo), Severity::Unparsed);
-        assert_eq!(survival_lens(Severity::Unparsed), 0.5, "「不知道」不能当成「很好」");
+        assert_eq!(survival_lens(Severity::Unparsed, true), 0.5, "「不知道」不能当成「很好」");
     }
 
     #[test]
@@ -780,7 +817,7 @@ mod tests {
         let thin = "最强反驳: 无从下手\n依据: 现有证据不足以反驳\n致命程度: 无法反驳";
         assert_eq!(refutation_severity(held), Severity::Unrefuted);
         assert_eq!(refutation_severity(thin), Severity::Insufficient);
-        assert!(survival_lens(Severity::Unrefuted) > survival_lens(Severity::Insufficient));
+        assert!(survival_lens(Severity::Unrefuted, true) > survival_lens(Severity::Insufficient, true));
     }
 
     #[test]
@@ -889,19 +926,40 @@ mod tests {
     }
 
     #[test]
-    fn ledger_flags_a_winner_that_ranked_on_an_unknown_verdict() {
-        // ADVERSARIAL (red-team caught this in topic 8): a candidate reaching #1 on Unparsed=0.5 —
-        // a neutral "don't know", not "held up" — must be called out as an untrustworthy ranking.
-        for sev in [Severity::Unparsed, Severity::Insufficient] {
+    fn ledger_separates_broken_verdict_from_novel_frontier() {
+        let mk = |sev| {
             let w = ConjWinner {
-                heading: "C1: 靠中性分顶上来的推想".into(), body: "- **锚点**：[S1]".into(),
+                heading: "C1: 冠军推想".into(), body: "- **锚点**：[S1]".into(),
                 refutation: "最强反驳: 无\n致命程度: 无法反驳".into(),
                 score: 0.5, lens: [1.0, 1.0, 0.5], severity: sev, origin: "深化", depth: 2,
             };
             let oc = ConjSearchOutcome { ran: true, seeds: 1, expansions_cfg: 3, winners: vec![w], ..Default::default() };
-            let out = append_conjecture_search("正文内容", Some(&oc), true);
-            assert!(out.contains("排序不可信"), "{sev:?} 冠军必须被标注排序不可信");
-        }
+            append_conjecture_search("正文内容", Some(&oc), true)
+        };
+        // Unparsed = broken verdict → genuinely untrustworthy ranking.
+        assert!(mk(Severity::Unparsed).contains("排序不可信"), "裁决无法解析的冠军必须标不可信");
+        // Insufficient = novel testable frontier → must NOT be called untrustworthy; reframed as
+        // an exploratory hypothesis. This is the verification-must-not-punish-novelty fix.
+        let ins = mk(Severity::Insufficient);
+        assert!(!ins.contains("排序不可信"), "新颖前沿推想不该被贬为排序不可信: {ins}");
+        assert!(ins.contains("探索性假说"), "证据不足的冠军应重构为探索性假说: {ins}");
+    }
+
+    #[test]
+    fn insufficient_with_concrete_falsifier_outranks_vague_and_serious() {
+        // The core novelty fix: a novel conjecture the refuter couldn't refute for lack of evidence,
+        // but which carries a CONCRETE falsifier (AUC comparison, statistic), must not be pinned to a
+        // mediocre 0.5 — it is the product's sweet spot. A vague one stays low; a 严重-flawed one lower.
+        let concrete = has_concrete_falsifier("- **证伪条件**：若前瞻比较中 HLA 亲和力排名的 AUC ≥ TCR 匹配度 AUC 且差异显著,则证伪");
+        let vague = has_concrete_falsifier("- **证伪条件**：若机制被证明不成立则本推想错误");
+        assert!(concrete && !vague, "有可测证伪条件才算 concrete: concrete={concrete} vague={vague}");
+        assert!(survival_lens(Severity::Insufficient, true) > survival_lens(Severity::Insufficient, false),
+            "有具体证伪条件的新颖推想,存活分必须高于空泛的");
+        assert!(survival_lens(Severity::Insufficient, true) > survival_lens(Severity::Serious, true),
+            "新颖可测的推想应排在有严重缺陷的推想之上");
+        assert!(survival_lens(Severity::Insufficient, false) > survival_lens(Severity::Fatal, true));
+        // …but a genuinely survived attack (Unrefuted/Minor) still ranks above a merely-novel one.
+        assert!(survival_lens(Severity::Minor, true) > survival_lens(Severity::Insufficient, true));
     }
 
     #[test]
