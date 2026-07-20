@@ -1274,6 +1274,31 @@ fn clinical_topic(goal: &str) -> bool {
         .any(|k| g.contains(k))
 }
 
+/// EVIDENCE CUTOFF for temporal-holdout evaluation. When `AXIOM_EVIDENCE_CUTOFF=YYYY` is set, any
+/// retrieved work published after that year is mechanically dropped BEFORE it can become a Source.
+/// This is the only objective way to measure predictive validity: restrict the system to what was
+/// knowable before a readout, let it predict, then compare with what actually happened. Built as a
+/// harness invariant rather than a prompt ("pretend you don't know about X" is unenforceable and
+/// unverifiable). Off (None) in normal operation, so it costs nothing when unused.
+fn evidence_cutoff_year() -> Option<i64> {
+    static C: std::sync::OnceLock<Option<i64>> = std::sync::OnceLock::new();
+    *C.get_or_init(|| {
+        std::env::var("AXIOM_EVIDENCE_CUTOFF")
+            .ok()
+            .and_then(|s| s.trim().chars().take(4).collect::<String>().parse::<i64>().ok())
+    })
+}
+
+/// Is this work admissible under the cutoff? A work with an UNKNOWN year is excluded when a cutoff is
+/// active — for a holdout, "can't prove it predates the readout" must fail closed, or the evaluation
+/// silently leaks the answer it is supposed to be testing for.
+fn within_cutoff(year: Option<i64>) -> bool {
+    match evidence_cutoff_year() {
+        None => true,
+        Some(c) => year.is_some_and(|y| y <= c),
+    }
+}
+
 /// Build a ClinicalTrials.gov query from a (usually Chinese) goal. The registry is English-only, so
 /// passing the goal verbatim returns zero hits — the first harness-executed backfill failed exactly
 /// this way (`registered trials: 0`). The searchable content of a biomedical topic is its ASCII
@@ -1968,6 +1993,9 @@ pub async fn run_coding_agent_steered(
             // testing), hand it the exact cell to run — detection and the command are both the harness's.
             if nudge_ok && pause.delegate_encouraged() && !clinical_slot_nudged && n >= 3
                 && clinical_topic(goal) && !has_trial_readout(&sources)
+                // Holdout integrity: trial RESULTS carry a posting date we cannot reliably filter,
+                // so under a cutoff we skip the backfill entirely rather than risk leaking the readout.
+                && evidence_cutoff_year().is_none()
             {
                 clinical_slot_nudged = true;
                 // HARNESS EXECUTES IT. Handing the model a ready-to-run cell was tried and failed: it
@@ -2148,6 +2176,21 @@ pub async fn run_coding_agent_steered(
             // Harness-verified trial readouts are appended unconditionally: fetching them is useless if
             // the writer can silently drop them (smoke-tested — it did).
             let summary = append_verified_trials(&summary, &sources);
+            // The conjecture gate NUDGES, and a nudge can be ignored: under a thin-evidence run the model
+            // simply shipped a report with zero conjectures and the gate, having spent its budget, let it
+            // through silently. We cannot mechanically make a model think of a good hypothesis — but we
+            // CAN refuse to let the deficiency be invisible. Research mode without conjectures is a
+            // literature summary, and the deliverable must say so.
+            let summary = if pause.delegate_encouraged() && conjecture_blocks(&summary).is_empty() {
+                format!(
+                    "{}\n\n> ⚠️ **本报告未产出「推想与验证路径」** —— 未达研究模式的交付要求,\
+                     当前内容仅相当于一份文献综述。可能原因:可用证据过薄,或收尾过早。\
+                     建议补充检索后重跑,或据下方局限性判断其可用范围。\n",
+                    summary.trim_end()
+                )
+            } else {
+                summary
+            };
             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
             return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
@@ -2508,6 +2551,7 @@ pub async fn run_coding_agent_steered(
                         Ok(works) if works.is_empty() => "(no matching works)".to_string(),
                         Ok(works) => works
                             .iter()
+                            .filter(|w| within_cutoff(w.year)) // temporal holdout: drop post-cutoff works
                             .map(|w| {
                                 let authors = if w.authors.is_empty() { "—".into() } else { w.authors.join(", ") };
                                 let year = w.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
@@ -2580,7 +2624,8 @@ pub async fn run_coding_agent_steered(
                         match res {
                             Ok(works) if works.is_empty() => out.push_str("(no matching works)\n"),
                             Ok(works) => {
-                                for w in works.iter() {
+                                // temporal holdout: drop post-cutoff works before they become sources
+                                for w in works.iter().filter(|w| within_cutoff(w.year)) {
                                     let authors = if w.authors.is_empty() { "—".into() } else { w.authors.join(", ") };
                                     let year = w.year.map(|y| y.to_string()).unwrap_or_else(|| "—".into());
                                     let doi = w.doi.clone().unwrap_or_default();
@@ -2604,6 +2649,13 @@ pub async fn run_coding_agent_steered(
                 };
                 (format!("并发检索 {} 条", fresh.len()), obs)
             }
+            // Holdout integrity: web search/fetch cannot be date-filtered, so under a cutoff they are
+            // closed entirely. A narrow-but-valid holdout beats a broad-but-leaky one.
+            "web_search" | "web_fetch" | "multi_fetch" if evidence_cutoff_year().is_some() => (
+                "holdout".to_string(),
+                "【时间留出模式】联网检索已停用(该通道无法按日期过滤,开启会泄漏截止日之后的信息)。\
+                 请只用 litsearch / multi_search(已按截止年过滤)完成本次研究。".to_string(),
+            ),
             "web_search" => {
                 // General web search (DuckDuckGo) — for anything that is NOT a peer-reviewed paper:
                 // official databases, datasets, docs, preprints, news, org pages. Distinct from
