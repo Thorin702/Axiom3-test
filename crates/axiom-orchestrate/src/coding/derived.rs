@@ -321,7 +321,11 @@ pub(super) fn computable_claims(summary: &str) -> Vec<(String, String)> {
         .filter(|(id, b)| !is_abandoned(id, b))
         .filter_map(|(id, b)| {
             let v = field_value(&b, "现在就能算")?;
-            (!v.contains('无') || v.chars().count() > 6).then_some((id, v))
+            // Must NAME a platform recipe. A "现在就能算" that references no recipe is a vague claim,
+            // not an executable declaration — the old length heuristic let "无沾边配方…" style text
+            // through, which then misfired the derive slot. Now the trigger is mechanical: the field
+            // has to point at something the harness can actually run.
+            RECIPES.iter().any(|r| v.contains(r.name)).then_some((id, v))
         })
         .collect()
 }
@@ -352,80 +356,95 @@ pub(super) fn plan_is_relevant(plan: &DerivePlan, summary: &str) -> bool {
     }) else {
         return false;
     };
-    // The declared entity must be a real, non-trivial span of the conjecture body: the number is only
-    // evidence FOR this conjecture if the thing it was computed on is named IN it. A slot id (a ChEMBL
-    // accession, a variant string) is a database key the prose rarely spells out, so the anchor is the
-    // model-quoted natural-language entity, not the raw slot value.
+    // Check the entity against the SUBSTANTIVE claim, EXCLUDING the "现在就能算" line. The model naming
+    // its entity only inside the computation-declaration would satisfy the gate circularly (the panel
+    // showed exactly this: CD274 appeared only in C3's 现在就能算, and a GWAS-on-CD274 number was
+    // irrelevant to C3's ctDNA claim). The number is relevant only if the entity is part of the
+    // hypothesis itself — 锚点/缺口/方法路径 — not merely of the sentence proposing the computation.
+    let substantive: String = body
+        .lines()
+        .filter(|l| !l.contains("现在就能算"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .to_lowercase();
     let ent = plan.entity.trim().to_lowercase();
-    ent.chars().count() >= 2 && body.to_lowercase().contains(&ent)
+    ent.chars().count() >= 2 && substantive.contains(&ent)
 }
 
-/// ONE tightly-constrained model call: pick a recipe and fill its slots. The model writes no code and
-/// makes no judgement — that is the model layer's legitimate job (generate a candidate), and every
-/// value it returns passes `sanitize_slot` before touching a cell.
+/// ONE model call that turns the conjectures' OWN 「现在就能算」 declarations into structured,
+/// harness-executable plans. This is the ask→execute spectrum applied to computation: the model
+/// already DECLARED "用 gwas_target_evidence 算 HLA-A" while writing the conjecture; the harness does
+/// not re-guess (the old `plan_derivation` made an independent pick and misfired onto an unrelated,
+/// already-abandoned conjecture), it EXTRACTS what was declared and runs it ITSELF, fingerprinted.
+/// The model here transcribes, it does not decide — no code, no new claims, only structuring.
 ///
-/// Returns `None` when nothing matches. There is deliberately NO fallback recipe: computing "median
-/// trial enrollment" for a structural-biology conjecture and shipping it with a blake3 fingerprint
-/// reads MORE rigorous than saying nothing, while being irrelevant. The honest output is the shortfall
-/// banner.
-pub(super) async fn plan_derivation(
-    goal: &str,
+/// Returns one plan per conjecture that declared a real recipe on a named entity. Empty vec is a
+/// legitimate answer (nothing declared a runnable computation) → the shortfall banner, never a
+/// fabricated fallback.
+pub(super) async fn extract_derivations(
     claims: &[(String, String)],
     model: &impl CodingModel,
     cancel: &Cancel,
-) -> Result<DerivePlan, String> {
+) -> Result<Vec<DerivePlan>, String> {
     let menu: Vec<String> = RECIPES
         .iter()
         .map(|r| format!("- {} (槽位: {}) —— {}", r.name, r.slots.join(", "), r.what))
         .collect();
     let sys = format!(
-        "你要从下面这张【固定配方表】里挑一条,让平台去真算一个数。你不写代码、不做判断,只填槽位。\n{}\n\n\
-         只回一个 JSON,不要别的:{{\"recipe\":\"<表中的name>\",\"conj\":\"<C几>\",\"entity\":\"<推想正文里出现的那个实体名,原样抄>\",\"slots\":{{...}}}}\n\
-         硬要求:所算的实体【必须是这条推想正文里已经点名的对象】(某个基因/靶点/变异/蛋白),\
-         `entity` 字段就把那个名字从正文里【原样抄下来】。若推想没点名任何一个配方能处理的具体实体,\
-         就回 {{\"recipe\":\"none\"}} —— 算一个推想没提到的东西 = 不相干的凑数,比不算更糟。\n\
-         槽位值必须是 ASCII 标识符(如 CHEMBL4523582、TP53、ENSG00000141510),对应上面那个 entity。不要写中文。",
+        "下面每条推想的「现在就能算」都声明了要用某个平台配方算某个实体。你的唯一工作是把这些声明\
+         整理成结构化 JSON,让平台照着真跑——你不写代码、不改主意、不新增声明。\n\
+         【配方表】\n{}\n\n\
+         只回一个 JSON 数组,每条合格声明一项:\n\
+         [{{\"conj\":\"<C几>\",\"recipe\":\"<配方名>\",\"entity\":\"<推想正文里点名的那个实体,原样抄>\",\"slots\":{{...}}}}]\n\
+         规则:①配方名必须精确来自上表;②slots 填对应该 entity 的 ASCII 标识符(如 TP53、CHEMBL4523582);\
+         ③entity 原样抄推想正文里点名的对象;④若某条声明没点名具体实体或配方跑题,就【跳过它,不放进数组】;\
+         ⑤一条都不合格就回 []。",
         menu.join("\n")
     );
-    let user = format!(
-        "【课题】{goal}\n\n【各条推想声称「现在就能算」的内容】\n{}",
-        claims.iter().map(|(id, v)| format!("{id}: {v}")).collect::<Vec<_>>().join("\n")
-    );
+    let user = claims
+        .iter()
+        .map(|(id, v)| format!("{id} 的现在就能算:{v}"))
+        .collect::<Vec<_>>()
+        .join("\n\n");
     if cancel.is_cancelled() {
         return Err("已取消".into());
     }
     let r = model.complete(&sys, &user, cancel).await.map_err(|e| e.to_string())?;
     let js = r
-        .find('{')
-        .and_then(|a| r.rfind('}').map(|b| &r[a..=b]))
-        .ok_or_else(|| "模型未返回 JSON".to_string())?;
-    let v: Value = serde_json::from_str(js).map_err(|e| format!("JSON 解析失败:{e}"))?;
-    let name = v.get("recipe").and_then(|x| x.as_str()).unwrap_or("none");
-    if name == "none" {
-        return Err("模型判断没有配方能服务这些推想".into());
+        .find('[')
+        .and_then(|a| r.rfind(']').map(|b| &r[a..=b]))
+        .ok_or_else(|| "模型未返回 JSON 数组".to_string())?;
+    let arr: Vec<Value> = serde_json::from_str(js).map_err(|e| format!("JSON 解析失败:{e}"))?;
+    let mut plans = Vec::new();
+    for v in arr {
+        let name = v.get("recipe").and_then(|x| x.as_str()).unwrap_or("");
+        // Exact match only — a hallucinated name must never become a real cell.
+        let Some(recipe) = RECIPES.iter().find(|r| r.name == name) else { continue };
+        let mut slots = std::collections::BTreeMap::new();
+        let mut ok = true;
+        for s in recipe.slots {
+            let raw = v.get("slots").and_then(|x| x.get(s)).and_then(|x| x.as_str()).unwrap_or("");
+            match sanitize_slot(raw) {
+                Some(c) => {
+                    slots.insert(s.to_string(), c);
+                }
+                None => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if !ok {
+            continue;
+        }
+        plans.push(DerivePlan {
+            recipe,
+            slots,
+            conj_id: v.get("conj").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            entity: v.get("entity").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        });
     }
-    // Exact match only — a fuzzy match would let a hallucinated name silently become a real cell.
-    let recipe = RECIPES
-        .iter()
-        .find(|r| r.name == name)
-        .ok_or_else(|| format!("模型给出的配方名 `{name}` 不在配方表中"))?;
-    let mut slots = std::collections::BTreeMap::new();
-    for s in recipe.slots {
-        let raw = v.get("slots").and_then(|x| x.get(s)).and_then(|x| x.as_str()).unwrap_or("");
-        let clean = sanitize_slot(raw).ok_or_else(|| {
-            format!(
-                "槽位 `{s}` 的值「{}」无法接受(实体名含非 ASCII 字符或为空,配方槽位只接受 ASCII 标识符)",
-                raw.chars().take(40).collect::<String>()
-            )
-        })?;
-        slots.insert(s.to_string(), clean);
-    }
-    Ok(DerivePlan {
-        recipe,
-        slots,
-        conj_id: v.get("conj").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-        entity: v.get("entity").and_then(|x| x.as_str()).unwrap_or("").to_string(),
-    })
+    Ok(plans)
 }
 
 // ── ledger ────────────────────────────────────────────────────────────────────────────────────────
@@ -547,19 +566,22 @@ mod tests {
     }
 
     #[test]
-    fn relevance_gate_requires_the_entity_to_be_named_in_the_conjecture() {
+    fn relevance_gate_requires_the_entity_in_the_substantive_claim() {
         let rep = "### C1: 抗原提呈通路完整性决定应答\n- **锚点**：[S1] TAP1 与 B2M 参与提呈\n\
+                   - **现在就能算**：用 string_neighborhood 算 CD274 的网络密度\n\
                    ### C2: 别的机制\n- **锚点**：[S2]\n";
-        // Entity named in C1's body → relevant.
+        // Entity named in C1's SUBSTANTIVE claim (锚点) → relevant.
         assert!(plan_is_relevant(&plan("string_neighborhood", "C1", "TAP1"), rep));
-        // ADVERSARIAL: entity NOT in the target conjecture → the panel's failure mode → must reject.
-        assert!(!plan_is_relevant(&plan("string_neighborhood", "C1", "KRAS"), rep),
-            "推想没提到的实体,算出来也不相关,必须拦");
-        // Entity present but in a DIFFERENT conjecture than the one claimed → reject (per-conjecture).
+        // ADVERSARIAL (the panel's exact failure): CD274 appears ONLY in the 现在就能算 line, not in the
+        // hypothesis itself → computing on it is circular/irrelevant → must reject.
+        assert!(!plan_is_relevant(&plan("string_neighborhood", "C1", "CD274"), rep),
+            "只在「现在就能算」里出现的实体,算出来与主张不相关,必须拦(否则闸门被绕成循环论证)");
+        // Entity not in the conjecture at all → reject.
+        assert!(!plan_is_relevant(&plan("string_neighborhood", "C1", "KRAS"), rep));
+        // Entity present but in a DIFFERENT conjecture than claimed → reject (per-conjecture).
         assert!(!plan_is_relevant(&plan("gwas_target_evidence", "C2", "TAP1"), rep));
-        // Empty / trivial entity → reject (can't anchor).
+        // Empty entity / unknown conjecture → reject, never silently pass.
         assert!(!plan_is_relevant(&plan("string_neighborhood", "C1", ""), rep));
-        // Unknown conjecture id → reject, never silently pass.
         assert!(!plan_is_relevant(&plan("string_neighborhood", "C9", "TAP1"), rep));
     }
 
@@ -603,9 +625,9 @@ mod tests {
 
     #[test]
     fn fulfillment_banner_is_per_conjecture_not_suppressed_by_one_success() {
-        // ADVERSARIAL: one honoured claim must NOT silence the other four.
-        let rep = "### C1: 甲\n- **现在就能算**：用 ChEMBL 算效价分布\n\
-                   ### C2: 乙\n- **现在就能算**：用 GWAS 算关联\n";
+        // ADVERSARIAL: one honoured claim must NOT silence the other. Claims must name a real recipe.
+        let rep = "### C1: 甲\n- **现在就能算**：用 chembl_potency_spread 算效价分布\n\
+                   ### C2: 乙\n- **现在就能算**：用 gwas_target_evidence 算关联\n";
         let d = vec![Derived { conj_id: "C1: 甲".into(), ok: true, ..Default::default() }];
         let out = append_fulfillment_banner(rep, &d, true);
         assert!(out.contains("尚未兑现"), "只兑现一条不能压掉警告: {out}");
@@ -613,12 +635,14 @@ mod tests {
 
     #[test]
     fn no_fallback_fabrication_when_nothing_matches() {
-        // ADVERSARIAL, core: when no recipe applies the system must produce a banner, never a real but
-        // irrelevant number wearing a fingerprint.
-        let rep = "### C1: 甲\n- **现在就能算**：用某种方法算\n";
-        let out = append_derived_results(rep, &[]);
-        assert_eq!(out, rep, "无自算结果时不得凭空生成台账");
-        assert!(append_fulfillment_banner(rep, &[], true).contains("尚未兑现"));
+        // ADVERSARIAL, core: when a recipe was declared but nothing was computed, the banner fires;
+        // a "现在就能算" that names no recipe isn't even a computable claim → no banner, no fabrication.
+        let named = "### C1: 甲\n- **现在就能算**：用 chembl_potency_spread 算效价\n";
+        assert_eq!(append_derived_results(named, &[]), named, "无自算结果时不得凭空生成台账");
+        assert!(append_fulfillment_banner(named, &[], true).contains("尚未兑现"));
+        // A vague claim that names no recipe is not "unfulfilled" — it's not a platform computation.
+        let vague = "### C1: 甲\n- **现在就能算**：用某种方法算\n";
+        assert!(!append_fulfillment_banner(vague, &[], true).contains("尚未兑现"));
     }
 
     #[test]
@@ -644,12 +668,16 @@ mod tests {
     }
 
     #[test]
-    fn computable_claims_skips_abandoned_and_empty() {
-        let rep = "### C1: 甲\n- **现在就能算**：用 ChEMBL 算效价\n\
-                   ### C2（已放弃）: 乙\n- **现在就能算**：用 GWAS 算\n- **反驳**：锚点不成立\n\
-                   ### C3: 丙\n- **现在就能算**：无\n";
+    fn computable_claims_requires_a_named_recipe_and_skips_abandoned() {
+        // The trigger is mechanical: the field must NAME a platform recipe. This skips abandoned
+        // conjectures, "无"-style claims, AND the panel's failure — a "无沾边配方…" declaration whose
+        // length alone used to sneak it through and misfire the derive slot.
+        let rep = "### C1: 甲\n- **现在就能算**：用 chembl_potency_spread 算 KRAS 效价\n\
+                   ### C2（已放弃）: 乙\n- **现在就能算**：用 gwas_target_evidence 算\n- **反驳**：锚点不成立\n\
+                   ### C3: 丙\n- **现在就能算**：无沾边配方,与本推想无因果关联\n\
+                   ### C4: 丁\n- **现在就能算**：用某种方法算个先验\n";
         let c = computable_claims(rep);
-        assert_eq!(c.len(), 1, "已放弃与「无」都不该进兑现清单: {c:?}");
+        assert_eq!(c.len(), 1, "只有点名了配方且未放弃的才算可执行声明: {c:?}");
         assert!(c[0].0.contains("C1"));
     }
 }

@@ -2219,92 +2219,100 @@ pub async fn run_coding_agent_steered(
                 ));
                 continue;
             }
-            // DERIVED SLOT. A conjecture's 「现在就能算」 field is, today, only checked for EXISTENCE —
-            // writing "可以用 ChEMBL 算" satisfies the structure gate without anything being computed.
-            // That is `quant_claim_count` one level up. So the harness stops believing the sentence and
-            // COMPUTES IT: it picks a fixed recipe, sanitises the slots, assembles the cell itself, runs
-            // it, hashes the code IT holds, registers the result, and writes it into the report.
-            // Bounded to ONE model call per run, and disabled under an evidence cutoff (the recipes hit
-            // live databases, which would leak past the holdout boundary).
+            // DERIVED SLOT. The conjectures' 「现在就能算」 fields now DECLARE which recipe on which
+            // entity (the recipe menu is injected when they are written). The harness does not re-guess
+            // — the panel showed an independent pick misfiring onto an already-abandoned conjecture —
+            // it EXTRACTS each declaration, gates it on relevance, RUNS it itself, hashes the code it
+            // holds, and writes the fingerprinted result in. Model's inline numbers become verified,
+            // re-runnable ones. ONE model call (extraction) + N cheap kernel execs. Disabled under an
+            // evidence cutoff (recipes hit live databases, which would leak past the holdout boundary).
             if nudge_ok && n + 2 < budget.max_steps && pause.delegate_encouraged() && kernel.is_some()
                 && derive_passes < 1 && n >= 3 && evidence_cutoff_year().is_none()
                 && !derived::computable_claims(&f).is_empty()
             {
                 derive_passes += 1;
                 let claims = derived::computable_claims(&f);
-                match derived::plan_derivation(goal, &claims, model, cancel).await {
-                    Ok(plan) if !derived::plan_is_relevant(&plan, &f) => {
-                        // RELEVANCE GATE (panel-driven). The plan names an entity not found in its
-                        // target conjecture → the number would be a fingerprinted-but-irrelevant fact.
-                        // Refuse to compute it; the fulfillment banner will report it as unmet. Do NOT
-                        // run a kernel cell for an irrelevant computation.
-                        let why = format!(
-                            "平台自算已规避:配方 `{}` 声称要算的实体「{}」未在对应推想({})正文中出现,\
-                             算出来也与该推想不相关,故不执行(避免带指纹的不相干数)。",
-                            plan.recipe.name, plan.entity, plan.conj_id
-                        );
-                        derived_out.push(derived::Derived {
-                            recipe: plan.recipe.name.into(),
-                            conj_id: plan.conj_id.clone(),
-                            ok: false,
-                            error: Some(why.clone()),
-                            ..Default::default()
-                        });
-                        on_step(CodingStepRec {
-                            n,
-                            tool: "derive".into(),
-                            detail: "平台自算 · 相关性闸门拦截".into(),
-                            observation: why,
-                            input: String::new(),
-                            reasoning: String::new(),
-                            figures: Vec::new(),
-                        });
-                    }
-                    Ok(plan) => {
-                        let code = derived::build_cell(plan.recipe, &plan.slots);
-                        let (obs, ok) = match &kernel {
-                            Some(k) => {
-                                let kc = k.clone();
-                                let c2 = code.clone();
-                                let to = Duration::from_secs(budget.cell_timeout_s.clamp(60, 240));
-                                match tokio::task::spawn_blocking(move || kc.exec(&c2, to)).await {
-                                    Ok(Ok(cell)) => (cell.stdout, true),
-                                    Ok(Err(e)) => (format!("ERROR: {e}"), false),
-                                    Err(e) => (format!("ERROR: join failed: {e}"), false),
-                                }
+                match derived::extract_derivations(&claims, model, cancel).await {
+                    Ok(plans) => {
+                        let mut computed = 0usize;
+                        let mut new_nums = String::new();
+                        for plan in plans.into_iter().take(3) {
+                            if !derived::plan_is_relevant(&plan, &f) {
+                                // Relevance gate: the entity is not in the conjecture's SUBSTANTIVE
+                                // claim (only in its computation-declaration, or absent). A correct but
+                                // irrelevant fingerprinted number is negative value — skip it.
+                                let why = format!(
+                                    "平台自算已规避:`{}` 声称要算的实体「{}」未出现在推想({})的实质主张里,\
+                                     不执行以避免带指纹的不相干数。",
+                                    plan.recipe.name, plan.entity, plan.conj_id
+                                );
+                                derived_out.push(derived::Derived {
+                                    recipe: plan.recipe.name.into(),
+                                    conj_id: plan.conj_id.clone(),
+                                    ok: false,
+                                    error: Some(why.clone()),
+                                    ..Default::default()
+                                });
+                                on_step(CodingStepRec {
+                                    n,
+                                    tool: "derive".into(),
+                                    detail: "平台自算 · 相关性闸门拦截".into(),
+                                    observation: why,
+                                    input: String::new(),
+                                    reasoning: String::new(),
+                                    figures: Vec::new(),
+                                });
+                                continue;
                             }
-                            None => ("ERROR: 无内核".to_string(), false),
-                        };
-                        let ctx = derived::DeriveCtx {
-                            recipe: plan.recipe.name,
-                            conj_id: &plan.conj_id,
-                            code: &code,
-                            volatile: plan.recipe.volatile,
-                        };
-                        let obs = if ok {
-                            derived::capture_derived(&obs, &ctx, &mut derived_out, &mut sources, &mut src_n)
-                        } else {
-                            derived_out.push(derived::Derived {
-                                recipe: plan.recipe.name.into(),
-                                conj_id: plan.conj_id.clone(),
-                                ok: false,
-                                error: Some(obs.chars().take(200).collect()),
-                                ..Default::default()
+                            let code = derived::build_cell(plan.recipe, &plan.slots);
+                            let (obs, ok) = match &kernel {
+                                Some(k) => {
+                                    let kc = k.clone();
+                                    let c2 = code.clone();
+                                    let to = Duration::from_secs(budget.cell_timeout_s.clamp(60, 240));
+                                    match tokio::task::spawn_blocking(move || kc.exec(&c2, to)).await {
+                                        Ok(Ok(cell)) => (cell.stdout, true),
+                                        Ok(Err(e)) => (format!("ERROR: {e}"), false),
+                                        Err(e) => (format!("ERROR: join failed: {e}"), false),
+                                    }
+                                }
+                                None => ("ERROR: 无内核".to_string(), false),
+                            };
+                            let ctx = derived::DeriveCtx {
+                                recipe: plan.recipe.name,
+                                conj_id: &plan.conj_id,
+                                code: &code,
+                                volatile: plan.recipe.volatile,
+                            };
+                            let before = derived_out.len();
+                            let obs = if ok {
+                                derived::capture_derived(&obs, &ctx, &mut derived_out, &mut sources, &mut src_n)
+                            } else {
+                                derived_out.push(derived::Derived {
+                                    recipe: plan.recipe.name.into(),
+                                    conj_id: plan.conj_id.clone(),
+                                    ok: false,
+                                    error: Some(obs.chars().take(200).collect()),
+                                    ..Default::default()
+                                });
+                                obs
+                            };
+                            if derived_out[before..].iter().any(|d| d.ok) {
+                                computed += 1;
+                                new_nums.push_str(&format!("\n{}", obs.trim()));
+                            }
+                            on_step(CodingStepRec {
+                                n,
+                                tool: "derive".into(),
+                                detail: format!("平台自算 · {} · {}", plan.recipe.name, plan.conj_id),
+                                observation: obs.chars().take(2000).collect(),
+                                input: code,
+                                reasoning: String::new(),
+                                figures: Vec::new(),
                             });
-                            obs
-                        };
-                        on_step(CodingStepRec {
-                            n,
-                            tool: "derive".into(),
-                            detail: format!("平台自算 · {} · {}", plan.recipe.name, plan.conj_id),
-                            observation: obs.chars().take(2000).collect(),
-                            input: code,
-                            reasoning: String::new(),
-                            figures: Vec::new(),
-                        });
-                        // Verify by RE-RUNNING in a fresh namespace. Costs one kernel exec, no model
-                        // call, and is the only check that distinguishes "we computed this" from "we
-                        // can compute this again" — the ledger prints whichever answer comes back.
+                        }
+                        // Verify EVERY fresh derived by re-running it in a clean namespace (no model
+                        // call): the only check separating "computed this" from "can compute again".
                         if let Some(k) = &kernel {
                             for i in 0..derived_out.len() {
                                 if !derived_out[i].ok || derived_out[i].rerun != derived::RerunStatus::NotAttempted {
@@ -2330,29 +2338,20 @@ pub async fn run_coding_agent_steered(
                                 derived_out[i].rerun = st;
                             }
                         }
-                        if derived_out.iter().any(|d| d.ok) {
+                        if computed > 0 {
                             transcript.push_str(&format!(
-                                "\n[system] 系统已【替你真算】了一个数(不是检索、不是估计,代码与指纹已登记):\n{}\n\
-                                 把它折回对应推想的「现在就能算」里,并明说这个结果是**支持**还是**削弱**该推想。\
-                                 ⚠️ 它证明的是可复现,不是正确 —— 若你认为方法有问题(例如单位口径),请直接指出。\n",
-                                obs.trim()
+                                "\n[system] 系统已【替你真算并盖指纹】了 {computed} 个数(代码+输入+输出哈希已登记,可原样复算):{new_nums}\n\
+                                 把这些数折回对应推想的「现在就能算」里,并逐个明说是**支持**还是**削弱**该推想。\
+                                 ⚠️ 指纹证明可复现、不证明正确——若方法有问题(如单位口径)请直接指出。\n"
                             ));
                             continue;
                         }
                     }
                     Err(why) => {
-                        // NO FALLBACK RECIPE. Computing something irrelevant and shipping it with a
-                        // blake3 fingerprint would read MORE rigorous while being meaningless. The
-                        // honest output is the shortfall banner, which finalize_report adds.
-                        derived_out.push(derived::Derived {
-                            ok: false,
-                            error: Some(why.clone()),
-                            ..Default::default()
-                        });
                         on_step(CodingStepRec {
                             n,
                             tool: "derive".into(),
-                            detail: "平台自算 · 未匹配到可用配方".into(),
+                            detail: "平台自算 · 声明提取失败".into(),
                             observation: why,
                             input: String::new(),
                             reasoning: String::new(),
