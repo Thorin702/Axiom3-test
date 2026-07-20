@@ -339,7 +339,11 @@ fn system_prompt(mode: SandboxMode, has_kernel: bool, can_delegate: bool) -> Str
              alphafold / interpro(domains) / protein_atlas(expression) (protein/structure); scidb.pubchem / chembl / chembl_activity (chemistry); scidb.gene / \
              ensembl / geo / entrez_search (genomics); scidb.kegg / reactome / string_db (pathways); \
              scidb.opentargets(gene) (target→disease scores); scidb.clinvar / gnomad(variant_id) / \
-             gwas_catalog(gene) (clinical variants/genetics); scidb.clinical_trials(query); scidb.blast(seq); \
+             gwas_catalog(gene) (clinical variants/genetics); scidb.clinical_trials(query) 只给试验\
+             【登记元数据】,返回里的 has_results 为 true 时,**必须再调 scidb.trial_results(nct_id) 取真实读出**\
+             (实际入组、各臂结局值+95%CI、主/次要终点、严重不良事件率)——人体疗效数字在这里,\
+             别拿「该试验在招募中」当结论,也别用记忆里的数字代替它;未公布结果会明确返回 error,如实说明即可; \
+             scidb.blast(seq); \
              and scidb.rest(url, params) for ANY other public REST DB (provenance-tracked). Run \
              `scidb.catalog()` once to see them all. Prefer a real scidb record over a remembered fact.\n\
              **溯源铁律:要在报告里用 [Sn] 引用一条 scidb 取到的记录,必须先用 `scidb.cite(记录)` 登记 \
@@ -1255,6 +1259,54 @@ fn ensure_reference_list(summary: &str, sources: &[Source]) -> String {
 /// The harness checks only that the structure is present — it never judges whether the idea is right.
 const CONJ_FIELDS: &[&str] = &["锚点", "缺口", "方法路径", "现在就能算", "证伪条件", "时间尺度"];
 
+/// RETRIEVAL-SURFACE COVERAGE (control flow, not persuasion). A clinical topic whose evidence contains
+/// no trial READOUT is stuck on the preclinical literature surface — benchmarking showed exactly this:
+/// the reference model's decisive numbers (n=500, HR=0.40, ORR 82%) came from trial results, while this
+/// pipeline reported "the trial is recruiting". Adding a `trial_results` connector was NOT enough: a
+/// smoke test showed the model called it zero times, repeating the "tool the model may ignore" failure.
+/// So the harness DETECTS the gap mechanically and hands over a ready-to-run cell — the model no longer
+/// decides whether or what to fetch, it just executes.
+fn clinical_topic(goal: &str) -> bool {
+    let g = goal.to_lowercase();
+    ["抑制剂", "疗法", "治疗", "临床", "药物", "药", "试验", "患者", "适应症",
+     "inhibitor", "therapy", "treatment", "clinical", "drug", "trial", "patient"]
+        .iter()
+        .any(|k| g.contains(k))
+}
+
+/// Build a ClinicalTrials.gov query from a (usually Chinese) goal. The registry is English-only, so
+/// passing the goal verbatim returns zero hits — the first harness-executed backfill failed exactly
+/// this way (`registered trials: 0`). The searchable content of a biomedical topic is its ASCII
+/// tokens: gene/drug/modality names (KRAS G12D, PROTAC, tau, CAR-T, cGAS-STING, MASH). Extract those.
+fn trials_query(goal: &str) -> String {
+    let mut toks: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for ch in goal.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' {
+            cur.push(ch);
+        } else {
+            if cur.len() >= 2 {
+                toks.push(cur.clone());
+            }
+            cur.clear();
+        }
+    }
+    if cur.len() >= 2 {
+        toks.push(cur);
+    }
+    toks.dedup();
+    toks.truncate(6);
+    toks.join(" ")
+}
+
+/// Is any registered source an actual trial READOUT (not just registry metadata)?
+fn has_trial_readout(sources: &[Source]) -> bool {
+    sources.iter().any(|s| {
+        s.excerpt.contains("ClinicalTrials.gov (results)")
+            || (s.url.contains("clinicaltrials.gov") && s.excerpt.contains("outcomes"))
+    })
+}
+
 /// ADVERSARIAL ADJUDICATION (agent layer). Every audit of this pipeline found the same defect: the
 /// report lists 2-3 hypotheses and concludes they are all "worth watching" — none is ever killed. The
 /// cause is structural, not attitudinal: one agent plays both athlete and referee, so asking it to "be
@@ -1371,6 +1423,30 @@ fn conjecture_issues(s: &str, n_sources: usize) -> Vec<String> {
         }
     }
     issues
+}
+
+/// Append a machine-verified trial-readout section. The harness already fetches these readouts itself
+/// (see the clinical-evidence slot gate) and registers them as sources — but registration is not use:
+/// smoke testing showed the model still left them uncited while writing NCT ids from memory. Retrieval
+/// without guaranteed inclusion is worthless, so the LAST step of the "ask → instruct → hand over code →
+/// execute" escalation is that the harness WRITES IT IN. Deterministic, clearly labelled as verified
+/// backfill, and a no-op when no trial readout was registered.
+fn append_verified_trials(summary: &str, sources: &[Source]) -> String {
+    let trials: Vec<&Source> = sources
+        .iter()
+        .filter(|s| s.excerpt.contains("ClinicalTrials.gov (results)"))
+        .collect();
+    if trials.is_empty() || summary.contains("已核实的试验读出") {
+        return summary.to_string();
+    }
+    let mut sec = String::from("\n\n## 已核实的试验读出(系统自动回填,非模型记忆)\n\n");
+    sec.push_str("> 下列数据由平台直接从 ClinicalTrials.gov 结果模块取回并登记,可点击溯源。\
+                  报告正文中未出现在此表的 NCT 号均未经回填核实。\n\n");
+    for s in trials.iter().take(8) {
+        let e: String = s.excerpt.chars().take(600).collect();
+        sec.push_str(&format!("- **[S{}] {}**\n  - {}\n", s.id, s.title.trim(), e.trim()));
+    }
+    format!("{}{}", summary.trim_end(), sec)
 }
 
 /// Capture sources the model registered via `scidb.cite(...)` (which prints a `#AXIOM_CITE#<json>` line):
@@ -1547,6 +1623,7 @@ pub async fn run_coding_agent_steered(
     let mut dangling_nudged = false; // whether the ONE-time "you cited [Sn] beyond the sources you retrieved" gate has fired
     let mut breadth_nudged = false; // whether the ONE-time "too few sources for a deep report" gate has fired
     let mut depth_nudges = 0u32;
+    let mut clinical_slot_nudged = false; // ONE-time: clinical topic with no trial readout in evidence
     let mut refuted = false; // whether the ONE-time adversarial refutation pass over conjectures has run // "many sources but no numbers extracted" gate — bounded to 2 passes
     let mut last_compact_len = 0usize; // transcript length at the last context-compaction (avoid re-compacting every step)
     let mut recent_errs: Vec<String> = Vec::new(); // last few error signatures — nudge on a repeat of the SAME failure
@@ -1885,6 +1962,72 @@ pub async fn run_coding_agent_steered(
             // gap, with a method path, the steps OUR kernel can already run, a falsifier, and a horizon.
             // (Replaces the retired quantitative-density gate, which measured a proxy that rewarded
             // padding with background numbers and was shown by audit to drive PADDING, not depth.)
+            // CLINICAL-EVIDENCE SLOT GATE (retrieval-surface control flow). Fires ONCE, before the
+            // adversarial pass, when the topic is clinical yet nothing in the evidence is an actual trial
+            // readout. Rather than asking the model to "search better" (it ignored the tool entirely in
+            // testing), hand it the exact cell to run — detection and the command are both the harness's.
+            if nudge_ok && pause.delegate_encouraged() && !clinical_slot_nudged && n >= 3
+                && clinical_topic(goal) && !has_trial_readout(&sources)
+            {
+                clinical_slot_nudged = true;
+                // HARNESS EXECUTES IT. Handing the model a ready-to-run cell was tried and failed: it
+                // listed 35 NCT ids from memory and fetched zero real readouts (worse — unverified ids).
+                // Asking, instructing, and even pre-writing the code are all still "the model must
+                // choose to act". So the harness runs the retrieval on the kernel itself; scidb.cite's
+                // #AXIOM_CITE# lines are captured into the provenance list by the normal python path.
+                let q: String = trials_query(goal);
+                let code = format!(
+                    "import scidb\n\
+                     _ts = scidb.clinical_trials(\"{q}\", limit=20)\n\
+                     _tr = (_ts or {{}}).get('trials', []) if isinstance(_ts, dict) else []\n\
+                     _hit = [t for t in _tr if t.get('has_results')][:5]\n\
+                     print('registered trials:', len(_tr), '| with posted results:', len(_hit))\n\
+                     for _t in _hit:\n\
+                     \x20   _r = scidb.trial_results(_t['nct_id'])\n\
+                     \x20   if isinstance(_r, dict) and not _r.get('error'):\n\
+                     \x20       scidb.cite(_r)\n\
+                     \x20       print('==', _r['nct_id'], _r.get('phase'), 'n=', _r.get('enrollment'), _r.get('arms'))\n\
+                     \x20       for _o in (_r.get('outcomes') or [])[:3]:\n\
+                     \x20           print('  ', _o.get('type'), (_o.get('title') or '')[:70], (_o.get('values') or [])[:4])\n\
+                     \x20   else:\n\
+                     \x20       print('==', _t['nct_id'], 'no posted results')\n"
+                );
+                let obs = match &kernel {
+                    Some(k) => {
+                        let kc = k.clone();
+                        let c2 = code.clone();
+                        match tokio::task::spawn_blocking(move || kc.exec(&c2, Duration::from_secs(180))).await {
+                            Ok(Ok(cell)) => capture_cited_sources(&cell.stdout, &mut sources, &mut src_n),
+                            Ok(Err(e)) => format!("ERROR: {e}"),
+                            Err(e) => format!("ERROR: join failed: {e}"),
+                        }
+                    }
+                    None => "ERROR: 无内核,无法执行试验结果回填".to_string(),
+                };
+                // Surface it as a real step: a harness-executed retrieval that is invisible in the trace
+                // cannot be debugged or trusted — and this gate has already failed twice in ways that
+                // were only distinguishable by seeing whether it ran at all.
+                on_step(CodingStepRec {
+                    n,
+                    tool: "trial_backfill".into(),
+                    detail: format!("harness 自动回填试验读出 · {}", q.chars().take(40).collect::<String>()),
+                    observation: obs.chars().take(2000).collect(),
+                    input: code.clone(),
+                    reasoning: String::new(),
+                    figures: Vec::new(),
+                });
+                transcript.push_str(&format!(
+                    "\n[system] 证据槽位检查:这是临床相关课题,但你的证据里【没有一条真实试验读出】。\
+                     系统已【替你执行】了 ClinicalTrials.gov 结果检索,下面是**真实回填**的读出\
+                     (已登记为可引用来源,直接用这些 [Sn]):\n{}\n\
+                     把上面的臂级数字(入组 n、各臂结局值与区间、主要终点、严重不良事件)写进正文并挂对应 [Sn]。\
+                     ⚠️ **正文里出现的每个 NCT 号,必须来自上面这份真实回填**;不在其中的 NCT 号一律删掉或\
+                     显式标注「未经回填核实」——凭记忆写 NCT 号和试验臂是本产品最严重的错误之一。\
+                     若上面显示没有任何试验公布结果,就如实写明「该方向尚无已公布的人体疗效读出」。\n",
+                    if obs.trim().is_empty() { "(检索未返回结果)" } else { obs.trim() }
+                ));
+                continue;
+            }
             // ADVERSARIAL PASS: conjectures are structurally complete but have never been attacked. The
             // harness itself runs a refuter over them (objective: kill each one using the evidence already
             // gathered) and forces the writer to answer with an explicit 裁决. Fires ONCE, only when the
@@ -2002,6 +2145,9 @@ pub async fn run_coding_agent_steered(
             // unlisted source (with its URL) to the reference section — closes the "[S91] cited but the
             // bibliography only lists 30 entries" hole AND gives entries a real URL to click.
             let summary = ensure_reference_list(&summary, &sources);
+            // Harness-verified trial readouts are appended unconditionally: fetching them is useless if
+            // the writer can silently drop them (smoke-tested — it did).
+            let summary = append_verified_trials(&summary, &sources);
             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
             return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }

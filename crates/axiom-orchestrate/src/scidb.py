@@ -131,7 +131,8 @@ def cite(records):
         items.append({
             "title": str(title)[:300],
             "url": str(url),
-            "excerpt": ("[%s] %s" % (r.get("source_db") or r.get("db") or "", str(r)))[:600],
+            "excerpt": ("[%s] %s" % (r.get("source_db") or r.get("db") or "",
+                                     r.get("summary") or str(r)))[:600],
         })
     if items:
         import json as _json
@@ -666,11 +667,93 @@ def clinical_trials(query, limit=10):
         im = p.get("armsInterventionsModule") or {}
         nct = idm.get("nctId")
         out.append({"nct_id": nct, "title": idm.get("briefTitle"),
+                    "has_results": bool(s.get("hasResults")),
                     "phase": ";".join(dm.get("phases") or []), "status": st.get("overallStatus"),
                     "conditions": cm.get("conditions") or [],
                     "interventions": [i.get("name") for i in (im.get("interventions") or [])],
                     "url": "https://clinicaltrials.gov/study/%s" % nct if nct else None, "source_db": "ClinicalTrials.gov"})
     return {"trials": out, "source_db": "ClinicalTrials.gov"}
+
+
+def trial_results(nct_id):
+    """ClinicalTrials.gov (API v2) — the RESULTS of a trial, not just its registration metadata.
+    `clinical_trials()` can only tell you a trial exists and is 'RECRUITING'; THIS returns what it
+    actually measured: real enrollment, arm-level participant flow, every primary/secondary OUTCOME
+    MEASURE with its measured values per arm (median PFS/OS, response rates, with dispersion/CI), and
+    serious/other adverse-event rates. This is where human efficacy numbers live — always prefer a
+    number from here over one remembered from a paper's abstract. Returns {"error":…} if the trial has
+    posted no results (many have not; that is a real answer, not a failure — say so rather than guess).
+    Usage:  r = scidb.cite(scidb.trial_results("NCT01764633"))"""
+    nct = str(nct_id).strip().upper()
+    j = _http("https://clinicaltrials.gov/api/v2/studies/%s" % nct, {"format": "json"})
+    if isinstance(j, dict) and j.get("error"):
+        return j
+    p = j.get("protocolSection") or {}
+    res = j.get("resultsSection") or {}
+    idm = p.get("identificationModule") or {}
+    dm = p.get("designModule") or {}
+    url = "https://clinicaltrials.gov/study/%s" % nct
+    if not res:
+        return {"nct_id": nct, "title": idm.get("briefTitle"), "url": url,
+                "source_db": "ClinicalTrials.gov",
+                "error": "该试验尚未公布结果(no posted results)——这是真实情况,不要据此编造疗效数字"}
+    # arm/group labels, so outcome values can be attributed to the right arm
+    flow = res.get("participantFlowModule") or {}
+    groups = {g.get("id"): g.get("title") for g in (flow.get("groups") or [])}
+    om = (res.get("outcomeMeasuresModule") or {}).get("outcomeMeasures") or []
+    outcomes = []
+    for o in om[:12]:
+        rows = []
+        # Each outcome carries its OWN group ids (OG###), distinct from the participant-flow ids
+        # (FG###). Map per-outcome or the values come back as "OG000=3.11" — a number with no arm,
+        # which is worse than useless in a report.
+        og = {g.get("id"): g.get("title") for g in (o.get("groups") or [])}
+        for cls in (o.get("classes") or [])[:6]:
+            for cat in (cls.get("categories") or [])[:6]:
+                for m in (cat.get("measurements") or []):
+                    val = m.get("value")
+                    if val is None:
+                        continue
+                    lo, hi = m.get("lowerLimit"), m.get("upperLimit")
+                    ci = " (%s–%s)" % (lo, hi) if lo and hi else ""
+                    gid = m.get("groupId")
+                    arm = og.get(gid) or groups.get(gid) or gid
+                    label = cat.get("title") or cls.get("title") or ""
+                    rows.append("%s%s=%s%s" % (("%s " % label) if label else "", arm, val, ci))
+        outcomes.append({
+            "type": o.get("type"), "title": o.get("title"),
+            "param": o.get("paramType"), "unit": o.get("unitOfMeasure"),
+            "time_frame": o.get("timeFrame"),
+            "values": rows[:12],
+        })
+    ae = res.get("adverseEventsModule") or {}
+    def _ae(key):
+        out = []
+        for e in (ae.get(key) or [])[:8]:
+            st = (e.get("stats") or [{}])[0]
+            out.append("%s: %s/%s" % (e.get("term"), st.get("numAffected"), st.get("numAtRisk")))
+        return out
+    _parts = ["%s" % (";".join(dm.get("phases") or []) or "phase n/a")]
+    _en = (dm.get("enrollmentInfo") or {}).get("count")
+    if _en: _parts.append("n=%s" % _en)
+    if groups: _parts.append("臂: " + " / ".join(list(groups.values())[:4]))
+    for _o in outcomes[:2]:
+        if _o.get("values"):
+            _parts.append("%s「%s」: %s" % (_o.get("type") or "", (_o.get("title") or "")[:44],
+                                           "; ".join(_o["values"][:3])))
+    _sae = _ae("seriousEvents")
+    if _sae: _parts.append("严重AE: " + "; ".join(_sae[:2]))
+    return {
+        "nct_id": nct, "title": idm.get("briefTitle"),
+        "summary": " · ".join(_parts),
+        "phase": ";".join(dm.get("phases") or []),
+        "enrollment": ((dm.get("enrollmentInfo") or {}).get("count")),
+        "arms": list(groups.values()),
+        "outcomes": outcomes,
+        "serious_adverse_events": _ae("seriousEvents"),
+        "other_adverse_events": _ae("otherEvents"),
+        "url": url, "source_db": "ClinicalTrials.gov (results)",
+    }
 
 
 def blast(sequence, program="blastp", database="swissprot", hitlist_size=10, max_wait=90):
