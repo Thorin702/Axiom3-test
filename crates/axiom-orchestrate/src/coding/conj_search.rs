@@ -8,21 +8,22 @@
 //! four adversarial model calls per run and threw the entire signal away. Parsing it turns a cost we
 //! were already paying into the reward function of a search.
 //!
-//! ## Honest scope
-//! The tree reuses `search::select_node` (Thompson sampling over Beta posteriors, GO-WIDE vs GO-DEEP).
-//! At the default budget each arm sees 0-2 observations, where Beta(1+s,1+f) is nearly Uniform(0,1) —
-//! so branch choice is close to random and this is closer to a candidate tournament than to a
-//! meaningfully adaptive search. That is stated in the ledger rather than papered over, and
-//! `AXIOM_CONJ_SEARCH_RANDOM=1` runs a uniform-random control so the difference can be MEASURED
-//! instead of asserted.
+//! ## Why NOT a tree (measured, not assumed)
+//! This used to be an AB-MCTS tree (Thompson sampling over Beta posteriors deciding GO-WIDE vs
+//! GO-DEEP). A 16-run controlled measurement (Thompson vs uniform-random selection, same topics)
+//! showed IDENTICAL champion-score distributions — the adaptive selection added nothing over random,
+//! because at a 3-8 call budget each arm sees 0-2 observations (Beta ≈ Uniform) and `finish()` ranks
+//! by candidate score, never by the posteriors. So the bandit was ripped out.
+//!
+//! What the SAME measurement showed had value: the DEEP-REFINE action. When every seed is judged
+//! Fatal (score 0.25), refining the best against its refutation rescued the topic to a survivable
+//! 0.51-0.76 (deep won 5/16, always beating its all-fatal seeds). So selection is now a DETERMINISTIC
+//! verdict-driven rule — refine a weak best, widen a decent one — with a ≤1-refine-per-lineage cap.
+//! No Thompson, no arms, no backprop; the choice is a pure function of the refuter's verdict.
 
 use super::{bigram_novelty, block_issues, conjecture_blocks, is_abandoned, refute_one, CodingModel, Source};
-use crate::search::{combine_lens, select_node, Arm, Branchable, SelectTrace};
+use crate::search::combine_lens;
 use axiom_runtime::supervisor::Cancel;
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 
 /// How badly the refuter says a conjecture is hurt. `Unparsed` and `Insufficient` are NOT failures to
 /// be optimistic about — see `survival_lens`.
@@ -219,6 +220,10 @@ pub(super) enum StopReason {
     Deadline,
     Cancelled,
     NoCandidates,
+    /// A candidate survived a well-evidenced attack (Unrefuted) — nothing left to improve.
+    Ceiling,
+    /// Two consecutive wide candidates were junk (≤0.45) — no survivable conjecture exists here.
+    Futile,
 }
 
 impl StopReason {
@@ -229,6 +234,8 @@ impl StopReason {
             StopReason::Deadline => "时间上限",
             StopReason::Cancelled => "用户取消",
             StopReason::NoCandidates => "无可扩展候选",
+            StopReason::Ceiling => "已有候选扛住攻击(提前停)",
+            StopReason::Futile => "连续加宽无存活候选(止损)",
         }
     }
 }
@@ -240,26 +247,10 @@ struct ConjNode {
     severity: Severity,
     lens: [f64; 3],
     score: f64,
-    children: Vec<usize>,
+    /// 0 = a seed or a fresh wide candidate (refinable once); 1 = a deep-refine of one (never refined
+    /// again — this is the ≤1-refine-per-lineage cap, done by depth alone, no tree needed).
     depth: usize,
     origin: Origin,
-    subtree: Arm,
-    gen_arm: Arm,
-}
-
-impl Branchable for ConjNode {
-    fn children(&self) -> &[usize] {
-        &self.children
-    }
-    fn depth(&self) -> usize {
-        self.depth
-    }
-    fn subtree(&self) -> &Arm {
-        &self.subtree
-    }
-    fn gen_arm(&self) -> &Arm {
-        &self.gen_arm
-    }
 }
 
 #[derive(Clone)]
@@ -285,7 +276,6 @@ pub(super) struct ConjSearchOutcome {
     pub elapsed_s: u64,
     pub stop: StopReason,
     pub sev_hist: [usize; 6],
-    pub random_select: bool,
     pub expansions_cfg: u32,
     pub winners: Vec<ConjWinner>,
 }
@@ -303,7 +293,6 @@ impl Default for ConjSearchOutcome {
             elapsed_s: 0,
             stop: StopReason::NoCandidates,
             sev_hist: [0; 6],
-            random_select: false,
             expansions_cfg: 0,
             winners: Vec::new(),
         }
@@ -313,28 +302,20 @@ impl Default for ConjSearchOutcome {
 pub(super) struct ConjSearchCfg {
     pub expansions: u32,
     pub max_calls: usize,
-    pub max_depth: usize,
     pub top_k: usize,
     pub secs: u64,
-    pub seed: u64,
-    pub random_select: bool,
 }
 
 impl ConjSearchCfg {
-    /// Env-tunable so the control experiment and the escape hatch need no rebuild.
+    /// Env-tunable so the escape hatch needs no rebuild.
     /// `AXIOM_CONJ_SEARCH_EXPANSIONS=0` disables the search entirely (falls back to the plain refuter).
-    pub(super) fn from_env(goal: &str) -> Self {
+    pub(super) fn from_env(_goal: &str) -> Self {
         let ev = |k: &str, d: u64| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
-        let mut h = DefaultHasher::new();
-        goal.hash(&mut h);
         Self {
             expansions: ev("AXIOM_CONJ_SEARCH_EXPANSIONS", 3).min(8) as u32,
             max_calls: 12,
-            max_depth: 3,
             top_k: 3,
             secs: ev("AXIOM_CONJ_SEARCH_SECS", 480),
-            seed: h.finish(),
-            random_select: ev("AXIOM_CONJ_SEARCH_RANDOM", 0) == 1,
         }
     }
 }
@@ -405,37 +386,17 @@ pub(super) async fn search_conjectures(
 ) -> ConjSearchOutcome {
     let t0 = std::time::Instant::now();
     let deadline = t0 + std::time::Duration::from_secs(cfg.secs);
-    let mut out = ConjSearchOutcome {
-        random_select: cfg.random_select,
-        expansions_cfg: cfg.expansions,
-        ..Default::default()
-    };
+    let mut out = ConjSearchOutcome { expansions_cfg: cfg.expansions, ..Default::default() };
     let seeds = conjecture_blocks(draft);
     if seeds.is_empty() {
         return out;
     }
     out.ran = true;
-    let mut rng = StdRng::seed_from_u64(cfg.seed);
     let ev: String = transcript.chars().rev().take(12000).collect::<String>().chars().rev().collect();
     let mut nodes: Vec<ConjNode> = Vec::new();
 
-    // Root: the draft itself. Never a winner; only a branch point.
-    nodes.push(ConjNode {
-        heading: String::new(),
-        body: String::new(),
-        refutation: String::new(),
-        severity: Severity::Unparsed,
-        lens: [0.0; 3],
-        score: 0.0,
-        children: Vec::new(),
-        depth: 0,
-        origin: Origin::Seed,
-        subtree: Arm::default(),
-        gen_arm: Arm::default(),
-    });
-
-    // ── seeds: refute what the model already wrote. NOT new cost — the refuter gate spent these
-    // calls anyway; the difference is that the verdict is now parsed instead of discarded.
+    // ── seeds: refute what the model already wrote (depth 0). NOT new cost — the refuter gate spent
+    // these calls anyway; the difference is that the verdict is now parsed into a score.
     for (id, body) in seeds.iter().take(3) {
         if cancel.is_cancelled() {
             out.stop = StopReason::Cancelled;
@@ -448,7 +409,7 @@ pub(super) async fn search_conjectures(
         out.model_calls += 1;
         let sev = r.as_deref().map(refutation_severity).unwrap_or(Severity::Unparsed);
         let (lens, score) = score_candidate(id, body, sev, sources);
-        commit(&mut nodes, 0, id.clone(), body.clone(), r.unwrap_or_default(), sev, lens, score, Origin::Seed);
+        push_node(&mut nodes, id.clone(), body.clone(), r.unwrap_or_default(), sev, lens, score, 0, Origin::Seed);
         out.seeds += 1;
         out.sev_hist[sev.idx()] += 1;
         on_step(
@@ -457,12 +418,12 @@ pub(super) async fn search_conjectures(
             format!("结构 {:.2} / 新颖 {:.2} / 存活 {:.2}", lens[0], lens[1], lens[2]),
         );
     }
-    if nodes.len() == 1 {
+    if nodes.is_empty() {
         out.stop = StopReason::NoCandidates;
         return finish(out, nodes, t0, cfg);
     }
 
-    // ── expansion loop ────────────────────────────────────────────────────────────────────────
+    // ── expansion loop: DETERMINISTIC verdict-driven selection (no bandit) ───────────────────────
     out.stop = StopReason::BudgetDone;
     let dig: String = sources
         .iter()
@@ -470,6 +431,7 @@ pub(super) async fn search_conjectures(
         .map(|s| format!("[S{}] {}", s.id, s.title.chars().take(60).collect::<String>()))
         .collect::<Vec<_>>()
         .join("\n");
+    let mut futile_wides = 0u32;
 
     for _ in 0..cfg.expansions {
         if cancel.is_cancelled() {
@@ -486,32 +448,39 @@ pub(super) async fn search_conjectures(
             break;
         }
 
-        let (target, trace) = if cfg.random_select {
-            (uniform_expandable(&nodes, cfg.max_depth, &mut rng), SelectTrace { target: 0, went_deep: false, hops: Vec::new() })
-        } else {
-            select_node(&nodes, cfg.max_depth, &mut rng)
-        };
-        let deep = target != 0;
-        let parent_txt = if deep {
-            format!("{}\n{}", nodes[target].heading, nodes[target].body)
-        } else {
-            String::new()
-        };
-        let user = if deep {
-            format!(
-                "【课题】{goal}\n\n【已检索来源】\n{dig}\n\n【证据节选】\n{ev}\n\n\
-                 【要深化的推想】\n{parent_txt}\n\n【它遭到的反驳】\n{}\n\n\
-                 针对这条反驳改进它:要么修正主张使其能扛住,要么把缺口说得更准。不要换题目,输出一条完整推想:",
-                nodes[target].refutation
+        let best = argmax(&nodes);
+        // S1 ceiling: the best already survived a well-evidenced attack — nothing to improve. Stop.
+        if nodes[best].severity == Severity::Unrefuted {
+            out.stop = StopReason::Ceiling;
+            break;
+        }
+        // Deterministic decision (the measured value): if the best is WEAK (survival ≤ 0.45) and is a
+        // depth-0 candidate with a real refutation, REFINE it against that refutation — the 16-run
+        // control showed this rescues all-fatal topics. Otherwise WIDEN (a decent best diversifies; an
+        // already-refined one is not refined again → the ≤1-refine-per-lineage cap).
+        let refine = nodes[best].lens[2] <= 0.45
+            && nodes[best].depth == 0
+            && !nodes[best].refutation.trim().is_empty();
+
+        let (user, deep) = if refine {
+            (
+                format!(
+                    "【课题】{goal}\n\n【已检索来源】\n{dig}\n\n【证据节选】\n{ev}\n\n\
+                     【要深化的推想】\n{}\n{}\n\n【它遭到的反驳】\n{}\n\n\
+                     针对这条反驳改进它:要么修正主张使其能扛住,要么把缺口说得更准。不要换题目,输出一条完整推想:",
+                    nodes[best].heading, nodes[best].body, nodes[best].refutation
+                ),
+                true,
             )
         } else {
-            let taken: Vec<String> =
-                nodes.iter().skip(1).map(|n| n.heading.chars().take(40).collect()).collect();
-            format!(
-                "【课题】{goal}\n\n【已检索来源】\n{dig}\n\n【证据节选】\n{ev}\n\n\
-                 【已有推想(不要重复)】\n{}\n\n\
-                 提出一条与上述都不同角度的新推想,大胆但要够得着:",
-                taken.join("\n")
+            let taken: Vec<String> = nodes.iter().map(|n| n.heading.chars().take(40).collect()).collect();
+            (
+                format!(
+                    "【课题】{goal}\n\n【已检索来源】\n{dig}\n\n【证据节选】\n{ev}\n\n\
+                     【已有推想(不要重复)】\n{}\n\n提出一条与上述都不同角度的新推想,大胆但要够得着:",
+                    taken.join("\n")
+                ),
+                false,
             )
         };
 
@@ -519,7 +488,6 @@ pub(super) async fn search_conjectures(
         out.model_calls += 1;
         let Some(cand) = gen.filter(|s| !s.is_empty()) else {
             out.failed += 1;
-            nodes[target].gen_arm.update(0.0); // generating here didn't work; discourage it
             on_step("conj_gen".into(), "候选生成失败".into(), String::new());
             continue;
         };
@@ -527,15 +495,12 @@ pub(super) async fn search_conjectures(
             Some(hb) => hb,
             None => {
                 out.failed += 1;
-                nodes[target].gen_arm.update(0.0);
                 on_step("conj_gen".into(), "候选不成推想块".into(), cand.chars().take(80).collect());
                 continue;
             }
         };
-        let text = format!("{h}\n{b}");
-        if is_dupe(&text, &nodes[1..]) {
+        if is_dupe(&format!("{h}\n{b}"), &nodes) {
             out.dupes += 1;
-            nodes[target].gen_arm.update(0.0); // fake breadth is a failed expansion
             on_step("conj_dupe".into(), format!("{h} 与已有候选近似,丢弃"), String::new());
             continue;
         }
@@ -544,81 +509,54 @@ pub(super) async fn search_conjectures(
         out.model_calls += 1;
         let sev = r.as_deref().map(refutation_severity).unwrap_or(Severity::Unparsed);
         let (lens, score) = score_candidate(&h, &b, sev, sources);
-        let origin = if deep { Origin::Deep } else { Origin::Wide };
-        commit(&mut nodes, target, h.clone(), b, r.unwrap_or_default(), sev, lens, score, origin);
+        let (origin, depth) = if deep { (Origin::Deep, 1) } else { (Origin::Wide, 0) };
+        push_node(&mut nodes, h.clone(), b, r.unwrap_or_default(), sev, lens, score, depth, origin);
         if deep {
             out.deep += 1;
         } else {
             out.wide += 1;
+            // S4 futile: widening keeps producing junk → nothing survivable exists, stop wasting budget.
+            if lens[2] <= 0.45 {
+                futile_wides += 1;
+            } else {
+                futile_wides = 0;
+            }
         }
         out.sev_hist[sev.idx()] += 1;
-        let hops = trace.hops.len();
         on_step(
             "conj_expand".into(),
             format!("{} {h} · {} · {:.2}", origin.label(), sev.label(), score),
-            format!(
-                "结构 {:.2} / 新颖 {:.2} / 存活 {:.2}(下降 {hops} 跳{})",
-                lens[0], lens[1], lens[2],
-                if cfg.random_select { ",随机对照" } else { "" }
-            ),
+            format!("结构 {:.2} / 新颖 {:.2} / 存活 {:.2}", lens[0], lens[1], lens[2]),
         );
+        if futile_wides >= 2 {
+            out.stop = StopReason::Futile;
+            break;
+        }
     }
     finish(out, nodes, t0, cfg)
 }
 
-fn uniform_expandable(nodes: &[ConjNode], max_depth: usize, rng: &mut StdRng) -> usize {
-    let cands: Vec<usize> =
-        (0..nodes.len()).filter(|&i| nodes[i].depth < max_depth).collect();
-    if cands.is_empty() {
-        return 0;
-    }
-    cands[rng.gen_range(0..cands.len())]
+fn argmax(nodes: &[ConjNode]) -> usize {
+    (0..nodes.len())
+        .max_by(|&a, &b| nodes[a].score.partial_cmp(&nodes[b].score).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0)
 }
 
-/// Attach a scored candidate and backpropagate. The asymmetry is deliberate and mirrors `search.rs`:
-/// `gen_arm` credits ONLY the node we generated at (did generating HERE pay off?), while `subtree`
-/// propagates to the root (is this whole branch worth descending into?). ⚠️ Do not merge them.
+/// Push a scored candidate into the flat pool. No backprop, no arms — the tree measurement showed the
+/// posteriors were never read; ranking is by `score` alone.
 #[allow(clippy::too_many_arguments)]
-fn commit(
+fn push_node(
     nodes: &mut Vec<ConjNode>,
-    parent: usize,
     heading: String,
     body: String,
     refutation: String,
     severity: Severity,
     lens: [f64; 3],
     score: f64,
+    depth: usize,
     origin: Origin,
 ) {
-    let depth = nodes[parent].depth + 1;
-    nodes.push(ConjNode {
-        heading,
-        body,
-        refutation,
-        severity,
-        lens,
-        score,
-        children: Vec::new(),
-        depth,
-        origin,
-        subtree: Arm::default(),
-        gen_arm: Arm::default(),
-    });
-    let idx = nodes.len() - 1;
-    nodes[parent].children.push(idx);
-    nodes[parent].gen_arm.update(score);
-    let mut cur = idx;
-    loop {
-        nodes[cur].subtree.update(score);
-        if cur == 0 {
-            break;
-        }
-        // walk up via the first parent that lists `cur` as a child
-        match (0..nodes.len()).find(|&i| nodes[i].children.contains(&cur)) {
-            Some(p) => cur = p,
-            None => break,
-        }
-    }
+    nodes.push(ConjNode { heading, body, refutation, severity, lens, score, depth, origin });
 }
 
 fn finish(
@@ -628,7 +566,7 @@ fn finish(
     cfg: &ConjSearchCfg,
 ) -> ConjSearchOutcome {
     out.elapsed_s = t0.elapsed().as_secs();
-    let mut ranked: Vec<&ConjNode> = nodes.iter().skip(1).collect();
+    let mut ranked: Vec<&ConjNode> = nodes.iter().collect();
     ranked.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     out.winners = ranked
         .into_iter()
@@ -691,19 +629,12 @@ pub(super) fn append_conjecture_search(summary: &str, oc: Option<&ConjSearchOutc
         "本节由系统自动写入,记录推想是怎么被挑出来的。评分全部来自机械信号(结构完整度 / 词汇新颖度 / 抗反驳存活度),\
          **没有任何一步是问模型「这个好不好」**。\n\n",
     );
-    // The single most important honesty clause: at small budgets this is a tournament, not a search.
-    if oc.expansions_cfg < 6 {
-        out.push_str(&format!(
-            "> ⚠️ **本次扩展预算为 {} 次,每个分支只有 0-2 个观测**,此时 Beta 后验与均匀分布几乎无差别 —— \
-             即分支选择接近随机。本次实际起作用的是「多候选 + 机械排序」,请勿理解为预算被智能分配。\n\n",
-            oc.expansions_cfg
-        ));
-    }
-    if oc.random_select {
-        out.push_str("> 🔬 本次运行开启了 **均匀随机对照**(AXIOM_CONJ_SEARCH_RANDOM=1),分支不由 Thompson 采样决定。\n\n");
-    }
+    out.push_str(
+        "> 选点是**确定性**的:反驳者把最好的候选判为弱(致命/严重)时就精修它、判为够好时就换个新角度;\
+         没有随机、没有抛硬币的自适应分支(经 16 组对照实测,那套 Thompson 树对冠军质量零贡献,已删)。\n\n",
+    );
     out.push_str(&format!(
-        "**过程**:初稿 {} 条 → 新分支 {} 条 / 深化 {} 条;丢弃重复 {} 条、生成失败 {} 条;\
+        "**过程**:初稿 {} 条 → 新角度 {} 条 / 精修 {} 条;丢弃重复 {} 条、生成失败 {} 条;\
          模型调用 {} 次,耗时 {}s,终止原因:{}。\n\n",
         oc.seeds, oc.wide, oc.deep, oc.dupes, oc.failed, oc.model_calls, oc.elapsed_s, oc.stop.label()
     ));
@@ -901,10 +832,14 @@ mod tests {
     }
 
     #[test]
-    fn ledger_confesses_when_the_bandit_is_effectively_random() {
+    fn ledger_states_selection_is_deterministic_not_random() {
+        // The bandit was removed after the 16-run control showed it added nothing. The ledger must now
+        // describe the DETERMINISTIC verdict-driven selection, and must NOT resurrect the old
+        // "接近随机 / Thompson" framing.
         let oc = ConjSearchOutcome { ran: true, seeds: 2, expansions_cfg: 3, ..Default::default() };
         let out = append_conjecture_search("正文", Some(&oc), true);
-        assert!(out.contains("接近随机"), "小预算下必须承认分支选择接近随机,不得吹成智能分配");
+        assert!(out.contains("确定性"), "台账必须说明选点是确定性的");
+        assert!(!out.contains("接近随机"), "不得再把选点说成接近随机(旧 bandit 叙事): {out}");
     }
 
     #[test]
@@ -989,8 +924,7 @@ mod tests {
             heading: "C1: 肠道菌群代谢产物经迷走神经调控衰老细胞的免疫清除效率".into(),
             body: "- **锚点**：[S1] 已知内容".into(),
             refutation: String::new(), severity: Severity::Minor, lens: [0.0; 3], score: 0.5,
-            children: vec![], depth: 1, origin: Origin::Seed,
-            subtree: Arm::default(), gen_arm: Arm::default(),
+            depth: 0, origin: Origin::Seed,
         };
         let nodes = vec![node];
         // ADVERSARIAL: a near-reword is fake breadth and must be rejected…
