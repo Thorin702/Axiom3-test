@@ -1593,9 +1593,14 @@ fn finalize_report(
     let s = clean_summary(summary, sources.len());
     let s = ensure_reference_list(&s, sources);
     let s = append_verified_trials(&s, sources);
+    // Rescue FIRST: if the body dropped the searched conjectures, write them in before anything
+    // downstream (the ledger's adoption check, the fulfilment tally, the computable-claim scan) reads
+    // the report — otherwise they all correctly report "nothing there" about work that was really done.
+    let s = conj_search::append_rescued_conjectures(&s, conj, research);
     let s = conj_search::append_conjecture_search(&s, conj, research);
     let s = derived::append_derived_results(&s, derived);
     let s = derived::append_fulfillment_banner(&s, derived, research);
+    let s = derived::append_self_report_notice(&s, derived, research);
     if !research || is_fallback_report(&s) {
         return s;
     }
@@ -2068,7 +2073,17 @@ pub async fn run_coding_agent_steered(
             // re-synthesized with a leaked ===AXIOM3_FINAL=== marker + a dangling [S7]). So on the last
             // step, skip the nudges and ACCEPT the report — the accept-path guard + clean_summary below
             // still sanitize it. (nudge_ok = there is budget for another turn.)
-            let nudge_ok = n < budget.max_steps;
+            // BUDGET SPLIT INTO TWO PHYSICAL POOLS. The general nudges below stop `SETTLE_RESERVE`
+            // steps early so the settlement pool always survives. Without this, the DERIVED settlement
+            // was a probabilistic event in a budget race and lost it essentially every run: the
+            // conjectures only name a runnable recipe near the END (the structure nudge is what teaches
+            // them to), and by then no budget remained. Reserving turns the settlement from "maybe" into
+            // "a mandatory node in the state machine".
+            const SETTLE_RESERVE: u32 = 3;
+            let nudge_ok = n + SETTLE_RESERVE < budget.max_steps;
+            // The settlement pool: usable ONLY by the settlement step below, and invisible to the
+            // general nudges above.
+            let settle_ok = n < budget.max_steps;
             // In write mode, don't accept "done" until the agent has actually RUN a
             // build/test command at least once — nudge it once, like Codex verifying.
             if nudge_ok && sandbox.mode() == SandboxMode::ReadWrite && !ran_command && !nudged {
@@ -2226,7 +2241,8 @@ pub async fn run_coding_agent_steered(
             // holds, and writes the fingerprinted result in. Model's inline numbers become verified,
             // re-runnable ones. ONE model call (extraction) + N cheap kernel execs. Disabled under an
             // evidence cutoff (recipes hit live databases, which would leak past the holdout boundary).
-            if nudge_ok && n + 2 < budget.max_steps && pause.delegate_encouraged() && kernel.is_some()
+            // Runs off the RESERVED pool (`settle_ok`), not the general one — see SETTLE_RESERVE above.
+            if settle_ok && pause.delegate_encouraged() && kernel.is_some()
                 && derive_passes < 1 && n >= 3 && evidence_cutoff_year().is_none()
                 && !derived::computable_claims(&f).is_empty()
             {

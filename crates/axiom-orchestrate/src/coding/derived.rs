@@ -38,7 +38,9 @@ impl RerunStatus {
     fn label(&self, volatile: bool) -> String {
         match self {
             RerunStatus::NotAttempted => "未复算".into(),
-            RerunStatus::Match => "复算一致 ✅".into(),
+            // No green checkmark, by design: a ✅ next to a number reads as "verified correct", which is
+            // precisely what a rerun does NOT establish (it re-runs the same code, right or wrong).
+            RerunStatus::Match => "同一代码同一输入重跑,得到相同输出".into(),
             RerunStatus::Mismatch(_) if volatile => "复算不一致(上游活库已更新,数值随之变化)".into(),
             RerunStatus::Mismatch(g) => format!("⚠️ 复算不一致(本次得到 {g})"),
             RerunStatus::ContextDependent => "无法独立复算(代码依赖上下文)".into(),
@@ -449,22 +451,47 @@ pub(super) async fn extract_derivations(
 
 // ── ledger ────────────────────────────────────────────────────────────────────────────────────────
 
+/// The badge's NEGATIVE clauses — verbatim, non-severable, and printed BEFORE the hashes.
+///
+/// Design rule (from the independent review that overturned this feature's goal): guarantee exactly
+/// what the audit can verify, and print what it cannot. "Unforgeable correctness" is a category error —
+/// verifying that code computes the quantity a natural-language claim names would need a decider that
+/// maps arbitrary prose to formal specs. Three of this feature's four failures came from chasing it.
+/// So the badge claims only tamper-EVIDENT execution, and the shortfall is part of the badge itself.
+///
+/// ⚠️ This build has NO airgapped sandbox / data-access layer / ablation battery (deferred to the next
+/// major version alongside local-compute infrastructure). Until those ship we may NOT claim the output
+/// provably depends on the fetched data — that disclaimer is load-bearing and must not be trimmed.
+const BADGE_NEGATIVE: &str = "\
+    > **本徽章证明**:此数由平台配方代码,以所示参数、对实际取得的数据算出,可凭下方代码原样复跑。\n\
+    > **本徽章不证明**:代码正确实现了所称指标;数据源本身无误;查询参数的选择公允;\
+    此数在取数时间之后仍成立;**该数支持本条主张**。\n\
+    > **本版尚未部署断网沙箱与消融审计**,故亦不担保「输出真实依赖所取数据」\
+    (防篡改审计随下个大版本的本地算力基建一起落地)。\n\n";
+
 /// Write every derived result into the report. Harness-written, because registration is not use: the
 /// measured escalation says the model leaves registered facts uncited about half the time.
+///
+/// Badge = tier label + scope + negative clauses, three-in-one and non-severable. Deliberately NO
+/// "已验证"/"verified" wording and NO green checkmark: the cryptographic authority of three hashes is
+/// itself a source of over-trust that has to be managed, so the negatives come first and the hashes
+/// are folded away last.
 pub(super) fn append_derived_results(summary: &str, derived: &[Derived]) -> String {
     if derived.is_empty() || summary.contains("## 本平台自算结果") {
         return summary.to_string();
     }
-    let mut out = String::from("\n\n---\n\n## 本平台自算结果(DERIVED)\n\n");
+    let mut out = String::from("\n\n---\n\n## 本平台自算结果\n\n");
     out.push_str(
-        "下列数值由本平台在本次运行中**直接计算得到**,不是检索来的、也不是估计的;每条附完整代码与三段指纹,可原样复跑。\n\n\
-         > ⚠️ **指纹证明的是「可复现」,不是「正确」**:一段把 IC50 当 nM(实为 µM)的代码,三段哈希全对、复算一致,\
-         数值仍然错一千倍。且数据源为公开库的实时快照,复跑结果可能随上游更新而变化。\n\n",
+        "下列数值由本平台在本次运行中**直接计算**,不是检索来的、也不是估计的。每条都附**担保范围**与\
+         **不担保项** —— 请务必连同「本徽章不证明」那几行一起读。\n\n\
+         > **本产物中不带徽章的一切数字,均为模型陈述,未经平台计算。**\n\n",
     );
     for d in derived.iter().filter(|d| d.ok) {
         out.push_str(&format!(
-            "### [S{}] {}{}\n\n- **结果**:`{}`{}\n- **方法**:{}\n- **输入**:`{}`\n- **配方**:`{}`\n\
-             - **指纹(blake3)**:代码 `{}` · 输入 `{}` · 输出 `{}`\n- **复算状态**:{}\n\n```python\n{}```\n\n",
+            "### [S{}] {}{}\n\n**已计算 · 平台配方 · 平台执行**\n\n\
+             - **结果(全精度)**:`{}`{}\n- **方法**:{}\n- **输入**:`{}`\n- **配方**:`{}`\n- **复算**:{}\n\n{}\
+             <details><summary>指纹与可复跑代码(blake3)</summary>\n\n\
+             代码 `{}` · 输入 `{}` · 输出 `{}`\n\n```python\n{}```\n\n</details>\n\n",
             d.source_id,
             d.label,
             if d.conj_id.is_empty() { String::new() } else { format!(" — 对应 {}", d.conj_id) },
@@ -473,16 +500,17 @@ pub(super) fn append_derived_results(summary: &str, derived: &[Derived]) -> Stri
             d.method,
             canon(&d.inputs),
             d.recipe,
+            d.rerun.label(d.volatile),
+            BADGE_NEGATIVE,
             d.code_hash,
             d.input_hash,
             d.output_hash,
-            d.rerun.label(d.volatile),
             d.code
         ));
     }
     for d in derived.iter().filter(|d| !d.ok) {
         out.push_str(&format!(
-            "> ⚠️ 平台尝试自算但未成功{}:{}\n\n",
+            "> ⊘ 平台尝试自算但未兑现{}:{}\n\n",
             if d.recipe.is_empty() { String::new() } else { format!("(配方 `{}`)", d.recipe) },
             d.error.as_deref().unwrap_or("未知原因")
         ));
@@ -490,8 +518,43 @@ pub(super) fn append_derived_results(summary: &str, derived: &[Derived]) -> Stri
     format!("{summary}{out}")
 }
 
-/// Per-conjecture fulfilment banner. Deliberately NOT suppressed by one success: a report where 1 of 5
-/// "现在就能算" claims was actually computed must not read as if all five were.
+/// Label computations the MODEL says it performed but which no platform badge backs.
+///
+/// The measured failure this addresses: the model really does compute relevant things inline (a real
+/// run wrote "已执行:HLA-A 有 20 条 GWAS 关联,关联 1,138 种疾病") — numbers that LOOK computed and
+/// carry no marker saying nobody verified them. Issuing a weak badge for these would be wrong: without
+/// an ablation audit we cannot rule out a hardcoded constant, and a forgeable badge outranking a real
+/// citation is worse than no badge. So they get a warning label instead, never a badge. Upgrading them
+/// to a real tier waits on the sandbox/data-layer/ablation work deferred to the next major version.
+///
+/// ⚠️ Detection is a closed phrase list and is THEREFORE LEAKY — wording can be rewritten without
+/// limit ("经数据核算…"), so this is a monitoring aid, NOT a complete gate. The actual backstop is the
+/// no-badge default convention: any number without a badge is a model statement. Do not present this
+/// as a defence line.
+pub(super) fn append_self_report_notice(summary: &str, derived: &[Derived], research: bool) -> String {
+    if !research || summary.contains("模型自述计算") {
+        return summary.to_string();
+    }
+    const PHRASES: &[&str] =
+        &["已执行", "已计算", "经计算", "计算得到", "算得", "本平台计算", "据平台计算", "我们计算"];
+    if !PHRASES.iter().any(|p| summary.contains(p)) {
+        return summary.to_string();
+    }
+    let has_badge = derived.iter().any(|d| d.ok);
+    let body = if has_badge {
+        "> ⚠️ **正文含「已计算/已执行」类表述**:**除【本平台自算结果】一节列出的条目外**,正文中的一切\
+         计算与数字均为**模型自述计算** —— 平台未执行、未验证,不构成计算证据。\n"
+    } else {
+        "> ⚠️ **正文含「已计算/已执行」类表述,但本次平台未执行任何计算**:这些都是**模型自述计算**,\
+         平台未执行、未验证,不构成计算证据。请作为模型陈述对待。\n"
+    };
+    format!("{summary}\n\n{body}")
+}
+
+/// Per-conjecture fulfilment ledger. T0 ("declared computable, NOT delivered") is a FIRST-CLASS
+/// output, never hidden and never suppressed by a success elsewhere: a report where 1 of 5
+/// "现在就能算" claims was actually computed must not read as if all five were. Closes with a
+/// machine-generated tally so the ratio is visible at a glance rather than inferred.
 pub(super) fn append_fulfillment_banner(summary: &str, derived: &[Derived], research: bool) -> String {
     if !research || summary.contains("尚未兑现") {
         return summary.to_string();
@@ -505,15 +568,26 @@ pub(super) fn append_fulfillment_banner(summary: &str, derived: &[Derived], rese
         .filter(|(id, _)| !derived.iter().any(|d| d.ok && d.conj_id == *id))
         .map(|(id, _)| id.chars().take(24).collect())
         .collect();
+    let met = claims.len() - unmet.len();
     if unmet.is_empty() {
-        return summary.to_string();
+        // Everything declared was delivered — still print the tally, so "all fulfilled" is a stated
+        // fact rather than the reader's guess.
+        return format!(
+            "{summary}\n\n**自算兑现汇总**:可算声明 {} 条 → 已兑现 {} 条、未兑现 0 条。\n",
+            claims.len(),
+            met
+        );
     }
     format!(
-        "{summary}\n\n> ⚠️ **「现在就能算」尚未兑现**:{} 条推想声称现在就能算,其中 {} 条本次并未真的算出来({})。\
-         这些是**声称**,不是已完成的计算 —— 请勿把它们当作已有结果读。\n",
+        "{summary}\n\n> ⊘ **「现在就能算」尚未兑现**:{} 条推想声称现在就能算,其中 {} 条本次并未真的算出来({})。\
+         这些是**声称**,不是已完成的计算 —— 请作为模型陈述对待,勿当作已有结果读。\n\n\
+         **自算兑现汇总**:可算声明 {} 条 → 已兑现 {} 条、未兑现 {} 条。\n",
         claims.len(),
         unmet.len(),
-        unmet.join("、")
+        unmet.join("、"),
+        claims.len(),
+        met,
+        unmet.len()
     )
 }
 
@@ -646,15 +720,76 @@ mod tests {
     }
 
     #[test]
+    fn model_self_reported_computation_is_labelled_never_badged() {
+        // The measured case: the model computes inline and writes "已执行:…20 条关联". Those numbers
+        // look computed but nobody verified them. Without an ablation audit we cannot rule out a
+        // hardcoded constant, so they must get a WARNING, never a badge.
+        let claimed = "## 正文\n- **现在就能算**：用 gwas_target_evidence 算 TP53——已执行:20 条关联\n";
+        let out = append_self_report_notice(claimed, &[], true);
+        assert!(out.contains("模型自述计算"), "自述计算必须被标注: {out}");
+        assert!(out.contains("平台未执行任何计算"), "无平台计算时要说清这一点");
+        // Idempotent, and silent when the report makes no computation claim.
+        assert_eq!(append_self_report_notice(&out, &[], true), out, "不得重复追加");
+        assert_eq!(append_self_report_notice("## 正文\n普通叙述,没有计算主张。", &[], true).as_str(),
+                   "## 正文\n普通叙述,没有计算主张。", "没有计算主张就不该加噪音");
+        // With a real platform badge present, the notice must scope itself to everything OUTSIDE the
+        // ledger — not deny the ledger's own entries.
+        let d = vec![Derived { ok: true, ..Default::default() }];
+        let with_badge = append_self_report_notice(claimed, &d, true);
+        assert!(with_badge.contains("除【本平台自算结果】"), "有徽章时要划清范围: {with_badge}");
+    }
+
+    #[test]
+    fn self_report_detection_is_leaky_by_design_and_backstopped() {
+        // HONEST LIMIT, asserted so nobody later mistakes this for a complete gate: a reworded claim
+        // escapes the phrase list. That is expected — the real backstop is the no-badge default
+        // convention in the derived ledger, which is what this test pins.
+        let reworded = "## 正文\n该指标经数据核算后为 0.75。\n";
+        assert_eq!(append_self_report_notice(reworded, &[], true), reworded,
+            "改写措辞会绕过——这是设计上的已知泄漏,不假装是完备门");
+        // …and the backstop: whenever a badge ledger renders, it states the default convention.
+        let d = vec![Derived { source_id: 1, label: "x".into(), value: serde_json::json!(1), ok: true, ..Default::default() }];
+        assert!(append_derived_results("正文", &d).contains("不带徽章"),
+            "兜底约定(无章数字=模型陈述)必须在场");
+    }
+
+    #[test]
     fn ledger_prints_rerun_status_verbatim_and_is_idempotent() {
         let d = vec![Derived {
             source_id: 1, label: "x".into(), value: serde_json::json!(1), ok: true,
             rerun: RerunStatus::ContextDependent, code: "c\n".into(), ..Default::default()
         }];
         let once = append_derived_results("正文", &d);
-        assert!(once.contains("无法独立复算"), "复算状态必须逐字印出,不能只印 ✅");
-        assert!(once.contains("不是「正确」"), "免责必须在导语里");
+        assert!(once.contains("无法独立复算"), "复算状态必须逐字印出");
         assert_eq!(append_derived_results(&once, &d), once, "重复调用不得重复追加");
+    }
+
+    #[test]
+    fn badge_is_three_in_one_and_never_claims_verification() {
+        // The badge must carry its NEGATIVE clauses inseparably, print them BEFORE the hashes, and
+        // never wear "verified"/✅ — the authority of three hashes is itself an over-trust risk, and
+        // this build has no sandbox/ablation audit, so the shortfall is part of the badge.
+        let d = vec![Derived {
+            source_id: 7, label: "某分布".into(), value: serde_json::json!({"median": 12.5}),
+            ok: true, rerun: RerunStatus::Match, code: "print(1)\n".into(),
+            code_hash: "aaa".into(), input_hash: "bbb".into(), output_hash: "ccc".into(),
+            ..Default::default()
+        }];
+        let out = append_derived_results("正文", &d);
+        // Negative clauses present, verbatim, and covering the load-bearing disclaimers.
+        assert!(out.contains("本徽章不证明"), "负面条款必须在场");
+        assert!(out.contains("该数支持本条主张"), "必须明写不担保「支持本条主张」");
+        assert!(out.contains("尚未部署断网沙箱"), "没有防篡改审计就必须明说,不得冒充已审计");
+        // Negatives come BEFORE the hashes.
+        let neg = out.find("本徽章不证明").unwrap();
+        let hash = out.find("aaa").unwrap();
+        assert!(neg < hash, "负面条款必须排在哈希之前(哈希的权威感需要先被限定)");
+        // Banned: verification wording and the green checkmark.
+        for banned in ["已验证", "verified", "✅"] {
+            assert!(!out.contains(banned), "徽章禁用「{banned}」这类暗示已核实正确的表述: {out}");
+        }
+        // The no-badge default convention must be stated, or the ABSENCE of a badge is unreadable.
+        assert!(out.contains("不带徽章"), "必须声明「无章数字=模型陈述」的默认约定");
     }
 
     #[test]

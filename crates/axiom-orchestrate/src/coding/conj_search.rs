@@ -186,9 +186,16 @@ fn novelty_lens(text: &str, sources: &[Source]) -> f64 {
 /// that isn't a conjecture — but since it too is ~1.0 for well-formed candidates, real ranking is
 /// survival-driven, which the ledger now says plainly instead of claiming "three-axis selection".
 fn score_candidate(heading: &str, body: &str, sev: Severity, sources: &[Source]) -> ([f64; 3], f64) {
+    // ⚠️ LOAD-BEARING — the "badge zero-value" wall. A platform-computed (DERIVED) result is registered
+    // as a Source, so leaving it in would let PRODUCING A BADGE raise a candidate's score (more
+    // sources ⇒ an anchor's [Sn] resolves ⇒ higher structure). The moment a badge is worth score,
+    // every downstream gate gets farmed — that is the iron law, and it is exactly how the retired
+    // `quant_claim_count` and the `lit_trend` farming both happened. Badges must buy NOTHING.
+    // Locked by `badge_has_zero_score_weight`. Do not "optimise" this filter away.
+    let scoring: Vec<Source> = sources.iter().filter(|s| s.kind != "derived").cloned().collect();
     let text = format!("{heading}\n{body}");
-    let structure = structure_lens(heading, body, sources.len());
-    let novelty = novelty_lens(&text, sources); // display only
+    let structure = structure_lens(heading, body, scoring.len());
+    let novelty = novelty_lens(&text, &scoring); // display only
     let survival = survival_lens(sev, has_concrete_falsifier(body));
     let s = combine_lens(&[structure, survival]);
     ([structure, novelty, survival], if s.is_finite() { s.clamp(0.0, 1.0) } else { 0.5 })
@@ -605,6 +612,41 @@ fn adopted(w: &ConjWinner, summary: &str) -> bool {
     hit * 3 >= toks.len()
 }
 
+/// GUARANTEE the searched conjectures reach the deliverable.
+///
+/// Measured failure this fixes: the search produced a genuinely good conjecture (six fields, a
+/// concrete falsifier, a named computable first step) and the model then wrote a polished literature
+/// review that simply OMITTED it. The conjecture survived only as a line inside the audit ledger, and
+/// `finalize_report` correctly but uselessly reported "no conjectures produced". Everything downstream
+/// (fulfilment tally, computable-claim settlement) was starved because the body had nothing to read.
+///
+/// This is the ask→execute spectrum applied one more time: nudging the model to keep its conjectures
+/// is an ASK and loses a large fraction of runs; the harness writing them in is the only level that
+/// holds. Fires ONLY when the body has no conjecture blocks at all — if the model kept its own, they
+/// stand and this is a no-op.
+pub(super) fn append_rescued_conjectures(
+    summary: &str,
+    oc: Option<&ConjSearchOutcome>,
+    research: bool,
+) -> String {
+    if !research || !conjecture_blocks(summary).is_empty() {
+        return summary.to_string();
+    }
+    let Some(oc) = oc else { return summary.to_string() };
+    let live: Vec<&ConjWinner> =
+        oc.winners.iter().filter(|w| w.severity != Severity::Fatal).collect();
+    if live.is_empty() {
+        return summary.to_string();
+    }
+    let mut out = String::from(
+        "\n\n---\n\n## 推想与验证路径\n\n         > 本节由系统写入:正文未收录本次搜索产出的推想,故在此如实呈现,以免最有价值的产出丢失。         每条都经过对抗反驳,裁决与评分见下方【推想搜索台账】。\n\n",
+    );
+    for w in &live {
+        out.push_str(&format!("### {}\n\n{}\n\n- **反驳裁决**:{}\n\n", w.heading, w.body.trim(), w.severity.label()));
+    }
+    format!("{summary}{out}")
+}
+
 /// Write the search's own audit trail into the report. This is the whole point of the ASK → EXECUTE
 /// spectrum: the harness does not ask the model to report what the search found, it writes it in.
 /// A search that never ran produces a VISIBLE notice, never silence.
@@ -829,6 +871,75 @@ mod tests {
         let once = append_conjecture_search(rep, Some(&oc), true);
         assert!(once.starts_with(rep), "台账绝不能吃掉正文");
         assert_eq!(append_conjecture_search(&once, Some(&oc), true), once, "重复调用不得重复追加");
+    }
+
+    #[test]
+    fn badge_has_zero_score_weight() {
+        // THE LOAD-BEARING WALL (independent review called it "拆墙则全塌"). A platform-computed
+        // DERIVED result is registered as a Source; if it moved the score at all, producing badges
+        // would become a way to rank higher and every gate below would get farmed. So: the score must
+        // be BIT-IDENTICAL with and without derived sources present.
+        let real = Source { id: 1, kind: "paper".into(), title: "已知机制".into(),
+            url: String::new(), excerpt: "衰老细胞上调 BCL-2 抗凋亡蛋白".into() };
+        let derived = Source { id: 2, kind: "derived".into(), title: "[本平台自算] 某分布".into(),
+            url: String::new(), excerpt: "结论:中位数 12.5;方法:分位数;可复跑代码…".into() };
+        let body = "- **锚点**：[S1] 已知\n- **缺口**：未知\n- **方法路径**：X\n\
+                    - **现在就能算**：用 chembl_potency_spread 算\n- **证伪条件**：若 AUC ≥ 0.8\n- **时间尺度**：6 月\n";
+
+        for sev in [Severity::Minor, Severity::Insufficient, Severity::Fatal] {
+            let (_, without) = score_candidate("C1: 主张", body, sev, &[real.clone()]);
+            let (_, with_badge) = score_candidate("C1: 主张", body, sev, &[real.clone(), derived.clone()]);
+            assert_eq!(without, with_badge, "{sev:?}: 有无自算徽章的总分必须完全相同 —— 徽章不得值分");
+        }
+        // …and a candidate whose anchor points AT the derived source must not gain from it either:
+        // [S2] resolves only if the derived source is counted, which is exactly what is forbidden.
+        let anchored = "- **锚点**：[S2] 平台自算\n- **缺口**：未知\n- **方法路径**：X\n\
+                        - **现在就能算**：算\n- **证伪条件**：若 AUC ≥ 0.8\n- **时间尺度**：6 月\n";
+        let (_, a) = score_candidate("C1: 主张", anchored, Severity::Minor, &[real.clone()]);
+        let (_, b) = score_candidate("C1: 主张", anchored, Severity::Minor, &[real, derived]);
+        assert_eq!(a, b, "把锚点指向自算结果也不得换来更高分");
+    }
+
+    #[test]
+    fn rescued_conjectures_are_written_in_when_the_body_drops_them() {
+        // REGRESSION (2-topic validation): the search produced a full six-field conjecture and the
+        // model then shipped a literature review without it — the best output survived only as a line
+        // in the audit ledger. Nudging the model to keep it is an ASK; the harness writing it in is
+        // the only level that holds.
+        let w = ConjWinner {
+            heading: "C9: 用靶点效价分布跨度预测类器官毒性".into(),
+            body: "- **锚点**：[S1] 已知\n- **现在就能算**：用 chembl_potency_spread 算 HERG\n                   - **证伪条件**：若两组 p > 0.05 则不成立".into(),
+            refutation: "最强反驳: 略\n致命程度: 严重".into(),
+            score: 0.51, lens: [1.0, 1.0, 0.35], severity: Severity::Serious, origin: "深化", depth: 1,
+        };
+        let oc = ConjSearchOutcome { ran: true, seeds: 1, expansions_cfg: 3, winners: vec![w], ..Default::default() };
+        let body = "# 报告\n## 一、背景\n正文是一篇没有推想章节的综述。\n";
+        let out = append_rescued_conjectures(body, Some(&oc), true);
+        // The conjecture is now IN the deliverable, and parseable — so everything downstream can read it.
+        assert!(!conjecture_blocks(&out).is_empty(), "救回的推想必须是可解析的推想块: {out}");
+        assert!(out.contains("chembl_potency_spread"), "「现在就能算」的声明必须一并进正文");
+        assert!(out.contains("本节由系统写入"), "必须如实说明这是系统补写的,不冒充模型自己写的");
+
+        // NO-OP when the model kept its own conjectures — never duplicate or override the author.
+        let kept = "# 报告\n### C1: 模型自己写的推想\n- **锚点**：[S1]\n";
+        assert_eq!(append_rescued_conjectures(kept, Some(&oc), true), kept, "正文已有推想时不得插手");
+        // Nothing to rescue / not research mode → untouched.
+        assert_eq!(append_rescued_conjectures(body, None, true), body);
+        assert_eq!(append_rescued_conjectures(body, Some(&oc), false), body);
+    }
+
+    #[test]
+    fn rescue_skips_conjectures_the_refuter_killed() {
+        // ADVERSARIAL: rescuing a FATAL conjecture would push a refuted claim into the deliverable —
+        // the opposite of the point. Only survivors get written in.
+        let dead = ConjWinner {
+            heading: "C1: 已被杀死的推想".into(), body: "- **锚点**：[S1]".into(),
+            refutation: "致命程度: 致命".into(), score: 0.25, lens: [1.0, 1.0, 0.0],
+            severity: Severity::Fatal, origin: "初稿", depth: 0,
+        };
+        let oc = ConjSearchOutcome { ran: true, seeds: 1, expansions_cfg: 3, winners: vec![dead], ..Default::default() };
+        let body = "# 报告\n没有推想。\n";
+        assert_eq!(append_rescued_conjectures(body, Some(&oc), true), body, "被判致命的推想不得补进正文");
     }
 
     #[test]
