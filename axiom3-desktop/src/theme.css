@@ -316,11 +316,25 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
   /* Bound to the 100vh grid row so the session list (.ax-side-scroll, flex:1 overflow-y:auto) scrolls
      inside it and the tools/account footer stay pinned. Without min-height:0 the grid item defaults to
      min-height:auto, grows past the viewport with many sessions, and clips the footer out of the app. */
-  min-height: 0; height: 100%; overflow: hidden;
+  min-height: 0; height: 100%;
+  /* `auto`, not `hidden`: when the window is so short that even the pinned rows don't fit, hidden
+     clips the account row out of existence. Scrolling keeps it reachable, and `.ax-side-foot` sticks
+     to the bottom so it stays on screen. Tall windows never see this scrollbar — `.ax-side-scroll`
+     absorbs the slack first. */
+  overflow-y: auto; overflow-x: hidden;
 }
 .ax-brand { font-family: var(--ax-serif); font-size: 21px; color: var(--ax-ink); }
 .ax-brand small { display: block; margin-top: 3px; font-family: var(--ax-sans); font-size: 11px; color: var(--ax-ink-faint); line-height: 1.4; }
-.ax-side-foot { display: flex; gap: 6px; align-items: center; }
+/* The account row must NEVER be the thing that gets cut off.
+   `.ax-side-scroll` giving up its space only covers the "many sessions" case. In a SHORT window even
+   the pinned rows (top + new + tools + foot) can exceed the height on their own; `flex: none` then
+   correctly refuses to shrink, and the sidebar's `overflow: hidden` silently clips the LAST child —
+   which is exactly this one (observed: the account pushed out of the window entirely).
+   So: the sidebar scrolls as a last resort (see `.ax-sidebar` overflow below) and the account sticks
+   to the bottom of the visible area, staying reachable at any window height. */
+.ax-side-foot { display: flex; gap: 6px; align-items: center;
+  position: sticky; bottom: 0; z-index: 1;
+  background: var(--ax-surface-2); padding-top: 6px; }
 .ax-proj { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ax-ink); margin-top: 10px; }
 .ax-proj__name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
