@@ -1808,6 +1808,14 @@ pub async fn run_coding_agent_steered(
     let (needs_struct, needs_mol, needs_gene) = figure_needs(goal);
     let (mut loaded_struct, mut loaded_mol, mut loaded_gene) = (false, false, false);
     let mut figure_nudges = 0u32;
+    // ANY-FIGURE GATE state. The engine gate above only covers three SPECIFIC figure kinds
+    // (structure / molecule / gene-context). A topic that spells out "①画出时间线图 ②画出森林图
+    // ③画出反弹曲线" matches none of them, so nothing checked that the report contained ANY figure at
+    // all — and a real run shipped with ZERO figures against exactly that request while a sibling run
+    // on the same day drew two. This gate is the general backstop: the goal explicitly asked for
+    // figures, the draft has none, say so once.
+    let wants_figure = goal_demands_figure(goal);
+    let mut any_fig_nudged = false;
     let mut reflected = false; // whether the ONE-time self-critique gate has fired before finalizing
     let mut cite_nudged = false; // whether the ONE-time "you gathered sources but cited none" gate has fired
     let mut dangling_nudged = false; // whether the ONE-time "you cited [Sn] beyond the sources you retrieved" gate has fired
@@ -2119,6 +2127,26 @@ pub async fn run_coding_agent_steered(
                     continue;
                 }
             }
+            // ANY-FIGURE GATE. The user's topic spelled out figures to draw and the draft has none.
+            // Fires once, and ONLY when the goal used an imperative ("画出…"), so it can't nag a topic
+            // that never asked. Un-farmable in the harmful direction: the only way to satisfy it is to
+            // actually emit a figure, which is exactly the work that was requested.
+            if nudge_ok && wants_figure && !any_fig_nudged && kernel.is_some()
+                && !has_any_figure(&f, all_figures.len())
+            {
+                any_fig_nudged = true;
+                transcript.push_str(
+                    "\n[system] 先别收尾:**这个课题明确要求画图,但你的报告里一张图都没有。**\n\
+                     请把要求的图真的画出来再交:\n\
+                     · 统计/趋势/对比/时间线/森林图/散点 → 用 python 出图(matplotlib),或内联 ```chart 块\n\
+                     · 机制通路/流程/关系 → ```mermaid 块\n\
+                     · 相互作用网络 → ```network 块\n\
+                     · 三维结构展示 → ```protein 块(秒出、免安装)\n\
+                     图必须由**本次真实取到的数据**画,不许照着记忆编数;数据不足就画你确实有的那部分,\
+                     并在图注里写明缺了什么。画完再收尾。\n",
+                );
+                continue;
+            }
             // CITATION GATE: the run gathered real sources but the report cites NONE of them ([Sn]=0).
             // Push once to thread the markers in — a report making claims with zero clickable provenance
             // defeats the product's core promise (observed: an 84-source PCSK9 report with 0 [Sn]).
@@ -2418,12 +2446,21 @@ pub async fn run_coding_agent_steered(
                 };
                 if !refs.is_empty() {
                     let mut msg = String::from(
+                        // ⚠️ NO FORCED-DOWNGRADE QUOTA. This used to say "**必须至少有一条被降级或放弃**".
+                        // Measured harm: a run's three conjectures came back 100% 「降级」, one labelled
+                        // 「无证据编造风险」, while the ledger simultaneously judged that same one
+                        // 「证据不足以反驳 / 存活 0.68 / 这正是本平台想要的产出」. A quota forces a verdict
+                        // the evidence does not support, and it lands hardest on the NOVEL conjecture —
+                        // the one thing this product exists to produce. The refuter's verdict already
+                        // decides survival mechanically; the writer must report it, not fill a quota.
                         "\n[system] 独立【反驳者】已对你的每条推想发起攻击(它只用本次已检索到的证据,目标就是杀死它们)。\
                          下面是攻击结果。你必须逐条回应,在每个推想块里补两行:\n\
                          - 反驳: <把反驳者的最强攻击如实写进来,不许淡化>\n\
-                         - 裁决: 采信 / 降级 / 放弃 —— 并说明理由。**必须至少有一条被降级或放弃**,\
-                         除非你能用已检索证据正面驳倒反驳者;三条推想全部「采信」是不可接受的。\n\
-                         若某条被判「致命」,就老实放弃它,换一条更站得住的——放弃一条错的推想比硬撑有价值。\n",
+                         - 裁决: 按反驳的实际力度如实判定,并说明理由。\n\
+                         ⚠️ 判定只依据证据,**没有任何配额** —— 不必为了「显得严格」而硬降级一条站得住的推想。\
+                         反过来,若反驳确实致命,就老实放弃它,换一条更站得住的:放弃一条错的推想比硬撑有价值。\n\
+                         特别注意:一条推想「在已检索证据里找不到直接支持」**不是**编造、也不是缺陷——\
+                         推想按定义就不需要来源,它要交的是证伪条件。请勿因此降级或指控它编造。\n",
                     );
                     for (id, r) in &refs {
                         msg.push_str(&format!("\n——【反驳 {id}】——\n{r}\n"));
@@ -2447,7 +2484,15 @@ pub async fn run_coding_agent_steered(
                     continue;
                 }
             }
-            if nudge_ok && pause.delegate_encouraged() && depth_nudges < 2 && n >= 3 {
+            // Budget: 3 pushes when the report has NO conjecture at all, 2 when they merely need
+            // fixing. Rationale from a measured run: 53 steps and 113 sources delivered a pure review
+            // — the two pushes were spent and it shipped with only the shortfall notice. A missing
+            // conjecture is not a formatting slip, it is the product's whole reason for existing, and
+            // the rescue path cannot help here (the search only runs once conjectures already parse,
+            // so zero conjectures means zero winners to write back in).
+            let none_yet = conjecture_blocks(&f).is_empty();
+            let push_cap = if none_yet { 3 } else { 2 };
+            if nudge_ok && pause.delegate_encouraged() && depth_nudges < push_cap && n >= 3 {
                 let issues = conjecture_issues(&f, sources.len());
                 if !issues.is_empty() {
                     depth_nudges += 1;
@@ -2471,6 +2516,14 @@ pub async fn run_coding_agent_steered(
                         "\n【本平台现在就能跑的配方表】\n{}\n",
                         derived::recipe_menu()
                     ));
+                    // Final push carries more weight than a repeat of the same ask: by now the model
+                    // has ignored the request twice, so name the cost plainly and point at the report's
+                    // own gaps as raw material. Still a nudge — never fabricate a conjecture for it.
+                    if none_yet && depth_nudges >= push_cap {
+                        transcript.push_str(
+                            "\n[system] ⚠️ 这是最后一次提醒。你已经检索了大量资料却仍未给出任何推想——                             那样交付的只是一篇综述,而**综述不是本平台的产物**,报告会被明确标注                             「仅相当于文献综述,未达研究模式交付要求」。\n                             你不需要额外检索:就用你在正文里已经写出的**争议点、矛盾数据、或明说「尚不清楚 /                             机制未明 / 缺乏证据」的地方**当锚点,那些正是缺口。挑其中 1-2 个写成推想块即可。                             推想不需要来源,写不出证据支持是正常的——把「缺口」如实写出来才是它的价值。\n",
+                        );
+                    }
                     continue;
                 }
             }
@@ -3572,6 +3625,27 @@ fn sanitize_json_strings(s: &str) -> String {
 
 /// Snapshot every regular file under `root` as path→size (bounded), skipping VCS/build/cache
 /// dirs and dotfiles. Two snapshots (before/after a run) diff to the files the agent produced.
+/// Did the GOAL explicitly ask for a figure to be drawn? Deliberately narrow — only imperative
+/// requests ("画出…" / "绘制…" / "作图") count, so merely discussing a diagram in prose does not arm
+/// the gate. This backstops `figure_needs`, which only recognises three specific engines and therefore
+/// missed a topic demanding a timeline, a forest plot and a rebound curve.
+fn goal_demands_figure(goal: &str) -> bool {
+    ["画出", "画一张", "绘制", "作图", "画个", "给出图", "输出图", "配图"]
+        .iter()
+        .any(|k| goal.contains(k))
+}
+
+/// Does this draft actually carry a figure? Counts every renderable block the pipeline supports plus
+/// a raw base64 PNG (matplotlib output is embedded that way). Purely mechanical: the only way to
+/// satisfy it is to really emit a figure.
+fn has_any_figure(s: &str, captured: usize) -> bool {
+    captured > 0
+        || ["```pyfig", "```chart", "```mermaid", "```network", "```protein", "```smiles", "```dna_"]
+            .iter()
+            .any(|k| s.contains(k))
+        || s.contains("iVBORw0KGgo") // raw base64 PNG
+}
+
 /// Which publication figure engine(s) a GOAL explicitly demands: (structure, molecule, gene-context).
 /// Keyword lists are deliberately SPECIFIC so a casual mention ("含突变") doesn't force a heavy engine
 /// install — the gate only fires when the topic clearly names the kind of figure it wants.
@@ -4132,6 +4206,28 @@ mod tests {
         assert!(restated < 0.6, "复述的新颖度应偏低: {restated:.2}");
         // Too-short claims are not judged (avoids noise on fragments).
         assert_eq!(novelty_score("衰老", &srcs), 0.0);
+    }
+
+    #[test]
+    fn figure_gate_arms_only_on_an_explicit_request_and_reads_every_block_kind() {
+        // A measured run answered a topic that spelled out "①画出时间线图 ②画出森林图 ③画出反弹曲线"
+        // with ZERO figures: the existing gate only knew three engine kinds and none matched, so
+        // nothing checked that a figure existed at all.
+        assert!(goal_demands_figure("要求:①画出各适应症关键试验的时间线图;②画出森林图"));
+        assert!(goal_demands_figure("请绘制通路机制图"));
+        // ADVERSARIAL: merely discussing figures must NOT arm the gate — a topic that never asked for
+        // one would otherwise get nagged into drawing something pointless.
+        assert!(!goal_demands_figure("综述该领域的研究进展与图谱数据库现状"));
+        assert!(!goal_demands_figure("分析耐药突变谱与通路重激活机制"));
+
+        // Every renderable block counts as a figure, including raw base64 PNG from matplotlib —
+        // missing that would nag a report that DID draw one.
+        for blk in ["```pyfig\nx", "```chart\nx", "```mermaid\nx", "```network\nx", "```protein\nx"] {
+            assert!(has_any_figure(blk, 0), "{blk} 应算作图");
+        }
+        assert!(has_any_figure("![](iVBORw0KGgoAAAA)", 0), "裸 base64 PNG 应算作图");
+        assert!(has_any_figure("完全没有图块", 3), "已捕获的图应算数");
+        assert!(!has_any_figure("# 报告\n只有文字,没有任何图。", 0));
     }
 
     #[test]
