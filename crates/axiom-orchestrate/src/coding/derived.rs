@@ -488,7 +488,7 @@ pub(super) fn append_derived_results(summary: &str, derived: &[Derived]) -> Stri
     );
     for d in derived.iter().filter(|d| d.ok) {
         out.push_str(&format!(
-            "### [S{}] {}{}\n\n**已计算 · 平台配方 · 平台执行**\n\n\
+            "### [S{}] {}{}\n\n**平台自算 · 平台配方 · 平台执行**\n\n\
              - **结果(全精度)**:`{}`{}\n- **方法**:{}\n- **输入**:`{}`\n- **配方**:`{}`\n- **复算**:{}\n\n{}\
              <details><summary>指纹与可复跑代码(blake3)</summary>\n\n\
              代码 `{}` · 输入 `{}` · 输出 `{}`\n\n```python\n{}```\n\n</details>\n\n",
@@ -537,7 +537,12 @@ pub(super) fn append_self_report_notice(summary: &str, derived: &[Derived], rese
     }
     const PHRASES: &[&str] =
         &["已执行", "已计算", "经计算", "计算得到", "算得", "本平台计算", "据平台计算", "我们计算"];
-    if !PHRASES.iter().any(|p| summary.contains(p)) {
+    // Scan the PROSE ONLY. The derived ledger below is harness-written and legitimately full of
+    // computation wording, so scanning the whole document made this warning fire on every run that
+    // produced a badge — turning a signal that means "the model claimed a computation nobody checked"
+    // into a constant, and printing a false statement about the report itself.
+    let prose = summary.split("## 本平台自算结果").next().unwrap_or(summary);
+    if !PHRASES.iter().any(|p| prose.contains(p)) {
         return summary.to_string();
     }
     let has_badge = derived.iter().any(|d| d.ok);

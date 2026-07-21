@@ -152,11 +152,11 @@ fn has_concrete_falsifier(body: &str) -> bool {
 /// once — with `combine_lens`'s min term, a permanently-zero axis pinned every score to ~0.3 and the
 /// ranking became noise. The unit test that missed it fed a full `### C1:` document, a shape this
 /// call path never sees.
-fn structure_lens(heading: &str, body: &str, n_sources: usize) -> f64 {
+fn structure_lens(heading: &str, body: &str, valid: &std::collections::BTreeSet<u32>) -> f64 {
     if body.trim().is_empty() {
         return 0.0;
     }
-    let issues = block_issues(heading, body, n_sources).len();
+    let issues = block_issues(heading, body, valid).len();
     (1.0 - issues as f64 / 7.0).clamp(0.0, 1.0) // 6 CONJ_FIELDS + anchor-resolves
 }
 
@@ -194,7 +194,9 @@ fn score_candidate(heading: &str, body: &str, sev: Severity, sources: &[Source])
     // Locked by `badge_has_zero_score_weight`. Do not "optimise" this filter away.
     let scoring: Vec<Source> = sources.iter().filter(|s| s.kind != "derived").cloned().collect();
     let text = format!("{heading}\n{body}");
-    let structure = structure_lens(heading, body, scoring.len());
+    // Anchor validity is an id-SET question, not a count — see `anchor_ids`. Passing `scoring.len()`
+    // here silently re-armed the very leak this filter exists to close.
+    let structure = structure_lens(heading, body, &super::anchor_ids(sources));
     let novelty = novelty_lens(&text, &scoring); // display only
     let survival = survival_lens(sev, has_concrete_falsifier(body));
     let s = combine_lens(&[structure, survival]);
@@ -638,11 +640,31 @@ pub(super) fn append_rescued_conjectures(
     if live.is_empty() {
         return summary.to_string();
     }
+    // ⚠️ No leading spaces after a blank line: 4+ spaces make Markdown render the whole thing as an
+    // indented CODE BLOCK. This paragraph is the ONLY place the report admits a section was written by
+    // the harness rather than the model, so having it show up as grey monospace (with a literal ">")
+    // in the panel and in the Word/PDF export defeats its entire purpose.
     let mut out = String::from(
         "\n\n---\n\n## 推想与验证路径\n\n         > 本节由系统写入:正文未收录本次搜索产出的推想,故在此如实呈现,以免最有价值的产出丢失。         每条都经过对抗反驳,裁决与评分见下方【推想搜索台账】。\n\n",
     );
-    for w in &live {
-        out.push_str(&format!("### {}\n\n{}\n\n- **反驳裁决**:{}\n\n", w.heading, w.body.trim(), w.severity.label()));
+    for (i, w) in live.iter().enumerate() {
+        // NORMALISE the heading to `C<n>: …`. `parse_candidate`'s fallback accepts headings like
+        // "C: 某主张" or "候选三:…", and writing those back verbatim leaves the section unparseable by
+        // `conjecture_blocks` — so finalize_report would print "⚠️ 本报告未产出「推想与验证路径」"
+        // directly BELOW the conjectures it just wrote in, and the fulfilment tally would read nothing.
+        let claim = w
+            .heading
+            .split_once([':', '：'])
+            .map(|(head, rest)| if head.trim_start().starts_with('C') { rest.trim() } else { w.heading.as_str() })
+            .unwrap_or(w.heading.as_str())
+            .trim();
+        out.push_str(&format!(
+            "### C{}: {}\n\n{}\n\n- **反驳裁决**:{}\n\n",
+            i + 1,
+            if claim.is_empty() { w.heading.trim() } else { claim },
+            w.body.trim(),
+            w.severity.label()
+        ));
     }
     format!("{summary}{out}")
 }
@@ -755,6 +777,95 @@ mod tests {
         Source { id: 1, kind: "paper".into(), title: t.into(), url: String::new(), excerpt: e.into() }
     }
 
+    // ── 扩展循环的行为测试 ────────────────────────────────────────────────────────────────
+    // 这是本轮最重要的测试缺口:确定性选点与两个新停止条件此前【零覆盖】,
+    // 只能靠跑真实模型才能发现(例如 refine 判据把 <=0.45 写成 >=0.45 这类反向错误)。
+    struct Script(std::sync::Mutex<Vec<String>>);
+    impl CodingModel for Script {
+        fn complete(&self, _s: &str, _u: &str, _c: &Cancel)
+            -> impl std::future::Future<Output = anyhow::Result<String>> + Send {
+            let n = { let mut v = self.0.lock().unwrap(); if v.is_empty() { None } else { Some(v.remove(0)) } };
+            async move { n.ok_or_else(|| anyhow::anyhow!("script exhausted")) }
+        }
+    }
+    fn script<S: AsRef<str>>(v: &[S]) -> Script { Script(std::sync::Mutex::new(v.iter().map(|s| s.as_ref().to_string()).collect())) }
+    fn verdict(level: &str) -> String { format!("最强反驳: 略\n依据: [S1] 某证据\n致命程度: {level}") }
+    /// 六字段齐全的推想正文。**每条必须是实质不同的文字** —— `is_dupe` 用字符二元组比对,
+    /// 只换个别名词、框架句照抄的候选仍会(正确地)被判为伪多样性丢弃。第一版夹具就栽在这里两次:
+    /// 先是三条共用同一段正文,后是只替换 tag、其余逐字相同,两次 wide/deep 都恒为 0。
+    fn body6(i: usize) -> String {
+        let v = [
+            "- **锚点**：[S1] 该激酶在耐药株中持续磷酸化\n- **缺口**：下游底物谱从未在人体样本里测过\n- **方法路径**：配对活检做磷酸化蛋白质组,比较用药前后\n- **现在就能算**：用 gwas_target_evidence 算 TP53\n- **证伪条件**：若配对样本磷酸化位点富集 p > 0.05 则不成立\n- **时间尺度**：9 个月",
+            "- **锚点**：[S1] 膜转运体表达与摄取速率正相关\n- **缺口**：肿瘤内异质性导致的局部浓度差无人量化\n- **方法路径**：质谱成像逐层测组织内药物分布梯度\n- **现在就能算**：用 string_neighborhood 算 SLC 家族互作\n- **证伪条件**：若核心区与边缘区浓度比 < 1.5 倍则推翻\n- **时间尺度**：半年",
+            "- **锚点**：[S1] 免疫浸润评分与预后呈负相关\n- **缺口**：究竟是浸润驱动预后,还是二者同受第三因素支配\n- **方法路径**：孟德尔随机化,以遗传变异作工具变量\n- **现在就能算**：用 chembl_potency_spread 算候选靶点效价\n- **证伪条件**：若工具变量的 F 统计量 < 10 则该设计失效\n- **时间尺度**：3 个月",
+            "- **锚点**：[S1] 线粒体膜电位在处理后 4 小时塌陷\n- **缺口**：塌陷是死亡的原因还是伴随现象,顺序未知\n- **方法路径**：活细胞成像做时序追踪,配合钙螯合剂干预\n- **现在就能算**：用 variant_frequency 算相关变异人群频率\n- **证伪条件**：若螯合剂处理后死亡率下降 < 20% 则否定因果\n- **时间尺度**：4 个月",
+            "- **锚点**：[S1] 该转录因子结合位点在增强子区富集\n- **缺口**：结合是否真的改变了三维染色质接触未验证\n- **方法路径**：敲降后做 Hi-C,看拓扑关联域边界是否移动\n- **现在就能算**：用 structure_coverage 算结构域覆盖\n- **证伪条件**：若边界位移 < 10 kb 则该模型不成立\n- **时间尺度**：一年",
+        ];
+        v[i % v.len()].to_string()
+    }
+    fn draft(n: usize) -> String {
+        (1..=n).map(|i| format!("### C{i}: 关于机制{i}的主张\n{}\n", body6(i - 1))).collect::<Vec<_>>().join("\n")
+    }
+    fn cfg(expansions: u32) -> ConjSearchCfg {
+        ConjSearchCfg { expansions, max_calls: 24, top_k: 3, secs: 600 }
+    }
+    fn run(model: &Script, draft: &str, cfg: &ConjSearchCfg) -> ConjSearchOutcome {
+        let src = vec![Source { id: 1, kind: "paper".into(), title: "T".into(), url: String::new(), excerpt: "E".into() }];
+        let mut steps: Vec<(String, String, String)> = Vec::new();
+        let mut on = |t: String, d: String, o: String| steps.push((t, d, o));
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(
+            search_conjectures("某课题", draft, model, "证据节选", &src, &Cancel::new(), cfg, &mut on),
+        )
+    }
+
+    #[test]
+    fn ceiling_stop_fires_when_a_seed_survives_and_spends_no_expansion() {
+        // S1:种子被判「无法反驳」(扛住了攻击)→ 立刻停,不该再烧扩展预算。
+        let m = script(&[verdict("无法反驳")]);
+        let out = run(&m, &draft(1), &cfg(3));
+        assert_eq!(out.stop, StopReason::Ceiling, "扛住攻击就该提前停");
+        assert_eq!(out.wide + out.deep, 0, "天花板停不得消耗任何扩展");
+        assert_eq!(out.model_calls, 1, "只该花掉那一次种子裁决");
+    }
+
+    #[test]
+    fn futile_stop_fires_after_two_junk_wide_candidates() {
+        // S4:种子够好(不触发精修)→ 走加宽;连续两条加宽都是垃圾 → 止损。
+        let m = script(&[
+            verdict("轻微"),                                   // 种子 0.70,够好 → 加宽
+            format!("### C2: 关于甲通路的新角度\n{}", body6(1)), verdict("致命"),   // wide #1 垃圾
+            format!("### C3: 关于乙受体的新角度\n{}", body6(2)), verdict("致命"),   // wide #2 垃圾
+        ]);
+        let out = run(&m, &draft(1), &cfg(5));
+        assert_eq!(out.stop, StopReason::Futile, "连续两条加宽全是垃圾就该止损");
+        assert_eq!(out.wide, 2, "止损前正好两次加宽");
+    }
+
+    #[test]
+    fn weak_best_is_refined_and_a_lineage_is_refined_at_most_once() {
+        // 确定性选点的核心:best 弱(致命/严重)→ 精修它;精修产物(depth 1)不再被精修 → 改加宽。
+        // 这条同时钉死判据方向:若把 <=0.45 写反成 >=0.45,第一次就会走加宽,断言立刻失败。
+        let m = script(&[
+            verdict("致命"),                                    // 种子全灭 → 该精修
+            format!("### C2: 精修后的丙靶点主张\n{}", body6(3)), verdict("严重"),   // deep #1 → 0.51,仍弱但已 depth1
+            format!("### C3: 关于丁通道的新角度\n{}", body6(4)), verdict("严重"),   // 不再精修同一血统 → 加宽
+        ]);
+        let out = run(&m, &draft(1), &cfg(2));
+        assert_eq!(out.deep, 1, "初稿全灭时第一步必须是精修(判据写反会变成加宽)");
+        assert_eq!(out.wide, 1, "已精修过的血统不得再精修,应改走加宽");
+    }
+
+    #[test]
+    fn abandoned_seeds_are_skipped_and_an_all_abandoned_draft_stops_clean() {
+        // 已被判「放弃」的推想不该再花裁决调用;全放弃时干净退出而不是空转。
+        let draft = format!("### C1（已放弃）: 死掉的主张\n{}\n- **反驳**：锚点不成立\n", body6(0));
+        let m = script::<&str>(&[]);
+        let out = run(&m, &draft, &cfg(3));
+        assert_eq!(out.model_calls, 0, "放弃的推想不得再消耗裁决调用");
+        assert_eq!(out.stop, StopReason::NoCandidates);
+        assert!(out.winners.is_empty());
+    }
+
     #[test]
     fn severity_strips_its_own_label() {
         // The label CONTAINS 「致命」. A naive contains() on the whole line marks every verdict Fatal —
@@ -802,11 +913,11 @@ mod tests {
         // full `### C1:` document — a shape this call path never receives.
         let body = "- **锚点**：[S1] 已知\n- **缺口**：未知部分\n- **方法路径**：做法\n\
                     - **现在就能算**：用 ChEMBL 算 IC50 分布\n- **证伪条件**：若 X 不成立\n- **时间尺度**：6 个月\n";
-        let full = structure_lens("C1: 主张", body, 3);
+        let full = structure_lens("C1: 主张", body, &(1..=3).collect());
         assert!(full > 0.9, "六字段齐全的候选结构分必须接近 1.0,实得 {full:.2}");
         // A candidate missing most fields scores low, and an empty one scores 0.
-        assert!(structure_lens("C1: 主张", "- **锚点**：[S1] 已知\n", 3) < 0.4);
-        assert_eq!(structure_lens("C1: 主张", "  ", 3), 0.0);
+        assert!(structure_lens("C1: 主张", "- **锚点**：[S1] 已知\n", &(1..=3).collect()) < 0.4);
+        assert_eq!(structure_lens("C1: 主张", "  ", &(1..=3).collect()), 0.0);
     }
 
     #[test]

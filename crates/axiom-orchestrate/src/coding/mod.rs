@@ -1503,12 +1503,12 @@ fn is_abandoned(id: &str, body: &str) -> bool {
 /// Mechanically list what is STRUCTURALLY missing from the report's conjectures. Content is never
 /// judged — only presence of each required field (with non-trivial content) and that `锚点` cites at
 /// least one [Sn] that actually resolves to a registered source.
-fn conjecture_issues(s: &str, n_sources: usize) -> Vec<String> {
+fn conjecture_issues(s: &str, valid: &std::collections::BTreeSet<u32>) -> Vec<String> {
     let blocks = conjecture_blocks(s);
     if blocks.is_empty() {
         return vec!["报告里没有任何「### C1: …」形式的推想块".to_string()];
     }
-    blocks.iter().flat_map(|(id, body)| block_issues(id, body, n_sources)).collect()
+    blocks.iter().flat_map(|(id, body)| block_issues(id, body, valid)).collect()
 }
 
 /// Read one labelled field's VALUE out of a conjecture body (`- **现在就能算**：…` → `…`). The
@@ -1527,7 +1527,19 @@ fn field_value(body: &str, field: &str) -> Option<String> {
 
 /// Structural issues of ONE conjecture block. Split out of `conjecture_issues` so the search layer can
 /// score a single candidate without re-parsing a whole report. Content is never judged — only presence.
-fn block_issues(id: &str, body: &str, n_sources: usize) -> Vec<String> {
+/// The `[Sn]` ids a conjecture's 锚点 may legitimately point at: every REAL retrieved source, and
+/// never a platform-computed (derived) one — a badge must not buy passage through a GATE any more
+/// than it buys score (see `badge_has_zero_score_weight`).
+///
+/// ⚠️ Must be an id SET, not a count. Once derived sources are filtered out the "count == highest id"
+/// invariant breaks, and a count then fails BOTH ways: a real source with a high id reads as a
+/// dangling anchor (penalising the report), while a derived id below the count reads as valid
+/// (letting a badge satisfy the gate) — exactly backwards.
+pub(crate) fn anchor_ids(sources: &[Source]) -> std::collections::BTreeSet<u32> {
+    sources.iter().filter(|s| s.kind != "derived").map(|s| s.id).collect()
+}
+
+fn block_issues(id: &str, body: &str, valid: &std::collections::BTreeSet<u32>) -> Vec<String> {
     let mut issues = Vec::new();
     // A conjecture the REFUTER killed (状态/裁决: 放弃) legitimately has no forward path — demanding
     // 方法路径/现在就能算/时间尺度 for a dead hypothesis is asking the model to plan work it just
@@ -1546,7 +1558,7 @@ fn block_issues(id: &str, body: &str, n_sources: usize) -> Vec<String> {
     }
     // 锚点 must point at a source that actually exists.
     if let Some(line) = body.lines().find(|l| l.contains("锚点")) {
-        let ok = cited_ids(line).iter().any(|n| *n as usize <= n_sources && *n > 0);
+        let ok = cited_ids(line).iter().any(|n| valid.contains(n));
         if !ok {
             issues.push(format!("{id} 的「锚点」没有可解析的 [Sn](推想可以大胆,但要说清它站在哪些已知之上)"));
         }
@@ -1626,7 +1638,7 @@ fn finalize_report(
             s.trim_end()
         );
     }
-    let issues = conjecture_issues(&s, sources.len());
+    let issues = conjecture_issues(&s, &anchor_ids(sources));
     if !issues.is_empty() {
         return format!(
             "{}\n\n> ⚠️ **推想结构不完整**({})—— 缺失字段意味着该推想「够不够得着」无法判断:\
@@ -2409,7 +2421,7 @@ pub async fn run_coding_agent_steered(
             // gathered) and forces the writer to answer with an explicit 裁决. Fires ONCE, only when the
             // structure is already sound — so it costs a turn only on reports that got that far.
             if nudge_ok && pause.delegate_encouraged() && !refuted
-                && conjecture_issues(&f, sources.len()).is_empty()
+                && conjecture_issues(&f, &anchor_ids(&sources)).is_empty()
                 && !f.contains("反驳")
             {
                 refuted = true;
@@ -2493,7 +2505,7 @@ pub async fn run_coding_agent_steered(
             let none_yet = conjecture_blocks(&f).is_empty();
             let push_cap = if none_yet { 3 } else { 2 };
             if nudge_ok && pause.delegate_encouraged() && depth_nudges < push_cap && n >= 3 {
-                let issues = conjecture_issues(&f, sources.len());
+                let issues = conjecture_issues(&f, &anchor_ids(&sources));
                 if !issues.is_empty() {
                     depth_nudges += 1;
                     transcript.push_str(&format!(
@@ -3635,14 +3647,24 @@ fn goal_demands_figure(goal: &str) -> bool {
         .any(|k| goal.contains(k))
 }
 
-/// Does this draft actually carry a figure? Counts every renderable block the pipeline supports plus
-/// a raw base64 PNG (matplotlib output is embedded that way). Purely mechanical: the only way to
-/// satisfy it is to really emit a figure.
+/// THE ONE list of renderable figure blocks. ⚠️ Single source of truth on purpose: the system prompt
+/// teaches ~27 block kinds while an earlier hard-coded copy of this check knew only 7, so a report
+/// that legitimately drew ```forest + ```heatmap was judged "没有任何图" and the model was handed a
+/// factually WRONG instruction to draw figures it had already drawn. Every new renderer must be added
+/// HERE; `figure_blocks_match_the_prompt` fails the build if the prompt drifts ahead of this list.
+/// Excludes ```json / ```math / ```python / ```fence — those are data, formulae and code, not figures.
+pub(crate) const FIGURE_BLOCKS: &[&str] = &[
+    "band", "chart", "confusion", "dist", "dose", "dotplot", "field", "forest", "heatmap",
+    "manhattan", "mermaid", "msa", "network", "protein", "pyfig", "quiver", "reaction", "roc",
+    "rxn", "sankey", "seqlogo", "slope", "smiles", "spectrum", "track", "tree", "volcano",
+];
+
+/// Does this draft actually carry a figure? Counts every renderable block plus a raw base64 PNG
+/// (matplotlib output is embedded that way). Purely mechanical: the only way to satisfy it is to
+/// really emit a figure.
 fn has_any_figure(s: &str, captured: usize) -> bool {
     captured > 0
-        || ["```pyfig", "```chart", "```mermaid", "```network", "```protein", "```smiles", "```dna_"]
-            .iter()
-            .any(|k| s.contains(k))
+        || FIGURE_BLOCKS.iter().any(|k| s.contains(&format!("```{k}")))
         || s.contains("iVBORw0KGgo") // raw base64 PNG
 }
 
@@ -3773,6 +3795,10 @@ fn truncate(s: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 1..=n as a valid-anchor id SET. Tests used to pass a bare count, which is exactly the bug
+    /// `anchor_ids` fixes — keep them on the set so they exercise the real code path.
+    fn ids(n: u32) -> std::collections::BTreeSet<u32> { (1..=n).collect() }
     use std::sync::Mutex;
 
     #[test]
@@ -4209,6 +4235,64 @@ mod tests {
     }
 
     #[test]
+    fn figure_block_list_stays_in_sync_with_the_system_prompt() {
+        // The defect this locks: the prompt taught ~27 renderable blocks while the gate's hard-coded
+        // copy knew 7, so a report that really drew ```forest + ```heatmap was told it had drawn
+        // nothing. Any new renderer must land in FIGURE_BLOCKS or this fails — the drift can no longer
+        // survive to a real run.
+        // Read THIS source file and collect every ```block the prompts mention. Source-scanning beats
+        // a hand-written list: a renderer added anywhere still gets caught.
+        let src = include_str!("mod.rs");
+        let mut in_prompt: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        let mut rest = src;
+        while let Some(i) = rest.find("```") {
+            rest = &rest[i + 3..];
+            let name: String = rest.chars().take_while(|c| c.is_ascii_lowercase() || *c == '_').collect();
+            if name.len() >= 2 { in_prompt.insert(name); }
+        }
+        // Blocks that are not figures (code / data / formulae / this test's own fixtures).
+        let not_figures = ["json", "math", "python", "fence", "text", "bash", "sh", "rust", "md", "markdown", "yaml", "toml", "csv", "sql", "js", "ts", "html", "css", "diff", "xml", "block", "xxx"];
+        let missing: Vec<&String> = in_prompt
+            .iter()
+            .filter(|k| !FIGURE_BLOCKS.contains(&k.as_str()) && !not_figures.contains(&k.as_str()))
+            .collect();
+        assert!(missing.is_empty(),
+            "这些 ```块在源码里出现但不在 FIGURE_BLOCKS 中——图门会把画了它们的合格报告判成「一张图都没有」:{missing:?}");
+        // Non-figures must NOT count, or a report of pure code/data would satisfy the gate.
+        for k in ["json", "math", "python", "fence"] {
+            assert!(!FIGURE_BLOCKS.contains(&k), "```{k} 不是图,不该算数");
+        }
+        assert!(!has_any_figure("```python\nprint(1)\n```", 0), "只有代码块不算画了图");
+    }
+
+    #[test]
+    fn a_derived_badge_buys_no_gate_passage_either() {
+        // Sibling of `badge_has_zero_score_weight`, on the GATE side. The wall was built into the
+        // scorer but not here: passing a COUNT let an anchor pointing at a derived id resolve, so
+        // producing a badge bought the structure gate. Ids are deliberately NON-CONTIGUOUS to catch
+        // the count-as-max-id assumption.
+        let real = |id| Source { id, kind: "paper".into(), title: "T".into(), url: String::new(), excerpt: "E".into() };
+        let derived = |id| Source { id, kind: "derived".into(), title: "[本平台自算] x".into(), url: String::new(), excerpt: "E".into() };
+        let plain = vec![real(1), real(2)];
+        let mixed = vec![real(1), derived(2), real(3)];
+
+        // An anchor on a REAL source resolves in both — adding a badge must change nothing.
+        let good = "### C1: 主张\n- **锚点**：[S1] 有据\n- **缺口**：未知\n- **方法路径**：X\n                    - **现在就能算**：算\n- **证伪条件**：若 p > 0.05\n- **时间尺度**：6 月\n";
+        assert_eq!(conjecture_issues(good, &anchor_ids(&plain)), conjecture_issues(good, &anchor_ids(&mixed)),
+            "有无自算来源,结构门判定必须逐字相同");
+
+        // ADVERSARIAL: an anchor pointing AT the derived source must NOT resolve.
+        let on_badge = good.replace("[S1] 有据", "[S2] 平台自算");
+        assert!(conjecture_issues(&on_badge, &anchor_ids(&mixed)).iter().any(|i| i.contains("锚点")),
+            "锚点指向自算结果不得算作可解析——那等于产徽章换到门的通过权");
+
+        // …and a REAL source with a high id still resolves (the count would have called it dangling).
+        let on_high = good.replace("[S1] 有据", "[S3] 真来源");
+        assert!(!conjecture_issues(&on_high, &anchor_ids(&mixed)).iter().any(|i| i.contains("锚点")),
+            "id 高于非 derived 来源数量的真来源不得被误判悬空");
+    }
+
+    #[test]
     fn figure_gate_arms_only_on_an_explicit_request_and_reads_every_block_kind() {
         // A measured run answered a topic that spelled out "①画出时间线图 ②画出森林图 ③画出反弹曲线"
         // with ZERO figures: the existing gate only knew three engine kinds and none matched, so
@@ -4273,20 +4357,20 @@ mod tests {
             - 现在就能算: 先用 GEO 公开数据算该酶在衰老签名中的富集先验\n\
             - 证伪条件: 敲低后清除效率无变化即证伪\n\
             - 时间尺度: 约 3-6 个月\n";
-        assert!(conjecture_issues(good, 5).is_empty(), "完整推想块不应报错: {:?}", conjecture_issues(good, 5));
+        assert!(conjecture_issues(good, &ids(5)).is_empty(), "完整推想块不应报错: {:?}", conjecture_issues(good, &ids(5)));
         // Missing fields are reported precisely, by id.
         let missing = "## 推想\n### C1: 某新机制\n- 锚点: [S1] 有据\n- 缺口: 未知\n";
-        let iss = conjecture_issues(missing, 5);
+        let iss = conjecture_issues(missing, &ids(5));
         assert!(iss.iter().any(|s| s.contains("方法路径")), "应报缺方法路径: {iss:?}");
         assert!(iss.iter().any(|s| s.contains("证伪条件")), "应报缺证伪条件: {iss:?}");
         assert!(iss.iter().any(|s| s.contains("现在就能算")), "应报缺自算路径: {iss:?}");
         // No conjecture at all → flagged (a pure literature summary is not the deliverable).
-        assert!(!conjecture_issues("# 只有综述\n正文。", 5).is_empty());
+        assert!(!conjecture_issues("# 只有综述\n正文。", &ids(5)).is_empty());
         // 锚点 must resolve to a real source — an anchor citing [S99] with 5 sources is unanchored.
         let bad_anchor = good.replace("[S2]", "[S99]");
-        assert!(conjecture_issues(&bad_anchor, 5).iter().any(|s| s.contains("锚点")), "应报锚点不可解析");
+        assert!(conjecture_issues(&bad_anchor, &ids(5)).iter().any(|s| s.contains("锚点")), "应报锚点不可解析");
         // Boldness is NOT penalised: a conjecture whose claim has no citation of its own still passes.
-        assert!(conjecture_issues(good, 5).is_empty(), "推想本身无来源不应被判失败");
+        assert!(conjecture_issues(good, &ids(5)).is_empty(), "推想本身无来源不应被判失败");
     }
 
     #[test]
@@ -4392,16 +4476,16 @@ mod tests {
     fn abandoned_conjecture_needs_no_forward_path_but_must_record_the_kill() {
         // Refuter killed C1: only the reason is required, not 方法路径/时间尺度 for a dead hypothesis.
         let killed = "### C1: BCL-xL PROTAC 血小板保护\n- **锚点**：[S1] 提示体外选择性\n- **反驳**：[S1] 并不含血小板数据\n- **状态**：**放弃**。锚点不成立。\n";
-        assert!(conjecture_issues(killed, 3).is_empty(), "abandoned block should not demand a roadmap");
+        assert!(conjecture_issues(killed, &ids(3)).is_empty(), "abandoned block should not demand a roadmap");
 
         // …but an unexplained abandonment is still flagged.
         let silent = "### C1: 某推想\n- **锚点**：[S1] 某证据\n- **状态**：**放弃**。\n";
-        assert!(conjecture_issues(silent, 3).iter().any(|i| i.contains("没有记录")));
+        assert!(conjecture_issues(silent, &ids(3)).iter().any(|i| i.contains("没有记录")));
 
         // A LIVE conjecture that merely MENTIONS an abandoned program must still be fully checked —
         // this is the false-negative direction, and it must not open.
         let live = "### C1: 某推想\n- **锚点**：[S1] 某证据\n- 该公司已放弃同类项目，故窗口打开\n";
-        assert!(conjecture_issues(live, 3).len() >= 4, "prose 放弃 must not bypass the gate");
+        assert!(conjecture_issues(live, &ids(3)).len() >= 4, "prose 放弃 must not bypass the gate");
     }
 
 }
