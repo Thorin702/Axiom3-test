@@ -14,6 +14,7 @@ import { ArtifactProvenance } from "./ArtifactProvenance";
 import { ArtifactInspector } from "./ArtifactInspector";
 import { buildReportHtml, buildWordHtml, exportPdf } from "../lib/exportReport";
 import { toFindings, renderInlineMd } from "../lib/reviewText";
+import { feat } from "../lib/telemetry";
 
 type Tab = "artifact" | "messages" | "review" | "provenance";
 
@@ -62,17 +63,28 @@ export function ArtifactPane({
   const docTitle = () => task.title || task.goal || (zh ? "研究报告" : "Report");
   const docName = () => docTitle().slice(0, 40).replace(/[^\p{L}\p{N} _-]/gu, "").trim() || "report";
   const themeNow = () => document.documentElement.dataset.theme || "light";
-  function exportPdfDoc() {
-    if (artifactRef.current) exportPdf(artifactRef.current, docTitle(), themeNow());
+  // The artifact body is only mounted on its own tab, so `artifactRef.current` is null from 执行 /
+  // 审查 / 溯源 — where all three exports used to do NOTHING: no dialog, no file, no message. The
+  // user just sees the menu close. Switch to the artifact tab first and export once it has mounted.
+  function withArtifact(run: (el: HTMLDivElement) => void) {
     setExpMenu(false);
+    if (artifactRef.current) { run(artifactRef.current); return; }
+    setTab("artifact");
+    // Two frames: one for React to commit the tab switch, one for the DOM to be laid out.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      if (artifactRef.current) run(artifactRef.current);
+    }));
+  }
+  function exportPdfDoc() {
+    // PDF goes through the OS print dialog, which gives no completion signal back — so unlike
+    // Word/HTML (counted when the file lands) this one can only ever be counted as an intent.
+    withArtifact((el) => { feat("export_pdf"); exportPdf(el, docTitle(), themeNow()); });
   }
   function exportWordDoc() {
-    if (artifactRef.current && onSaveReport) onSaveReport(buildWordHtml(artifactRef.current, docTitle(), themeNow()), docName(), "doc");
-    setExpMenu(false);
+    withArtifact((el) => onSaveReport?.(buildWordHtml(el, docTitle(), themeNow()), docName(), "doc"));
   }
   function exportHtmlDoc() {
-    if (artifactRef.current && onSaveReport) onSaveReport(buildReportHtml(artifactRef.current, docTitle(), themeNow()), docName(), "html");
-    setExpMenu(false);
+    withArtifact((el) => onSaveReport?.(buildReportHtml(el, docTitle(), themeNow()), docName(), "html"));
   }
 
   // Version history: a follow-up iterates the artifact (v1 → v2 …). Default to the latest.

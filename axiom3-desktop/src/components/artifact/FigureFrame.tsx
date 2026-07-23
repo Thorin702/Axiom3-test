@@ -18,6 +18,18 @@ async function rasterize(el: HTMLElement): Promise<Blob | null> {
     clone.setAttribute("width", String(w));
     clone.setAttribute("height", String(h));
     if (!clone.getAttribute("xmlns")) clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    // Inline the theme variables before serializing. The renderers paint with `fill="var(--ax-surface)"`
+    // etc., which resolve against :root — but the clone is loaded as a STANDALONE image from a blob
+    // URL, a document where :root carries none of our variables. Every `var(--ax-…)` then falls back to
+    // the property's initial value, so the plot backdrop rasterized as solid BLACK and the hairline
+    // grid/axes disappeared entirely. Custom properties inherit, so defining them on the root <svg> of
+    // the clone is enough for the whole tree.
+    const probe = new XMLSerializer().serializeToString(clone);
+    const rootStyle = getComputedStyle(document.documentElement);
+    for (const name of new Set(probe.match(/--[a-zA-Z0-9-]+/g) ?? [])) {
+      const value = rootStyle.getPropertyValue(name).trim();
+      if (value) clone.style.setProperty(name, value);
+    }
     const str = new XMLSerializer().serializeToString(clone);
     const url = URL.createObjectURL(new Blob([str], { type: "image/svg+xml;charset=utf-8" }));
     try {

@@ -561,7 +561,7 @@ pub(super) fn append_self_report_notice(summary: &str, derived: &[Derived], rese
 /// "现在就能算" claims was actually computed must not read as if all five were. Closes with a
 /// machine-generated tally so the ratio is visible at a glance rather than inferred.
 pub(super) fn append_fulfillment_banner(summary: &str, derived: &[Derived], research: bool) -> String {
-    if !research || summary.contains("尚未兑现") {
+    if !research || summary.contains(super::MARK_DERIVED_UNMET) {
         return summary.to_string();
     }
     let claims = computable_claims(summary);
@@ -584,9 +584,10 @@ pub(super) fn append_fulfillment_banner(summary: &str, derived: &[Derived], rese
         );
     }
     format!(
-        "{summary}\n\n> ⊘ **「现在就能算」尚未兑现**:{} 条推想声称现在就能算,其中 {} 条本次并未真的算出来({})。\
+        "{summary}\n\n> ⊘ **「现在就能算」{}**:{} 条推想声称现在就能算,其中 {} 条本次并未真的算出来({})。\
          这些是**声称**,不是已完成的计算 —— 请作为模型陈述对待,勿当作已有结果读。\n\n\
          **自算兑现汇总**:可算声明 {} 条 → 已兑现 {} 条、未兑现 {} 条。\n",
+        super::MARK_DERIVED_UNMET,
         claims.len(),
         unmet.len(),
         unmet.join("、"),

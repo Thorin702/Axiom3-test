@@ -30,6 +30,7 @@ import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { ActivityRail } from "./components/ActivityRail";
 import { Splash } from "./components/Splash";
 import { AppBanner } from "./components/AppBanner";
+import { feat } from "./lib/telemetry";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, Database, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
@@ -531,7 +532,10 @@ function App() {
     for (const t of tasks) {
       // Persist BOTH clean successes and `no_report` runs (report failed but real figures/sources were
       // produced) — so an hour of computed work is never lost, even when the final write-up didn't land.
-      if (t.status !== "done" && t.status !== "no_report") continue;
+      // Any run that is no longer live and produced something gets a disk backup — including a
+      // CANCELLED one. Restricting this to done/no_report meant a user who stopped a long run kept
+      // its report only in localStorage, with no disk copy to restore from.
+      if (t.status === "running") continue;
       if (!t.synthesis && !(t.versions?.length)) continue;
       // `recap` is produced AFTER the run finishes — it MUST be part of the signature. Without it the
       // backup written moments earlier (recap-less) was never refreshed, so the library showed a
@@ -748,6 +752,7 @@ function App() {
   function forkSession(tk: Task) {
     if (!tk.goal) return;
     if (!confirmReplaceDraft()) return;
+    feat("fork"); // after the guards — backing out of the confirm dialog is not a fork
     setForkOrigin(tk.id);
     setNav("tasks");
     setView("home");
@@ -797,7 +802,12 @@ function App() {
           // the status:"running" JOURNAL stub (empty/lean synthesis) while the local copy is a finished
           // report. Taking disk wholesale there would WIPE the report text. So keep the local report
           // fields whenever disk is just a running stub (or has no report) and local is finished.
-          const localFinished = x.status === "done" || x.status === "no_report";
+          // A CANCELLED run counts as finished for this purpose. It used to be excluded, so stopping a
+          // run that had already produced a report and figures, then switching sessions and back, let
+          // the disk journal stub overwrite all of it — the artifact pane went to "无产物内容。" and the
+          // work was unrecoverable. Anything not still running that HAS a report is worth protecting;
+          // the condition below only ever fires when disk has nothing better to offer anyway.
+          const localFinished = x.status !== "running";
           const localHasReport = !!(x.synthesis && x.synthesis.trim());
           const diskHasReport = !!(disk.synthesis && disk.synthesis.trim());
           const keepLocalReport = (disk.status === "running" || !diskHasReport) && localFinished && localHasReport;
@@ -855,6 +865,9 @@ function App() {
   function confirmNewSession() {
     const dir = pickingDir;
     if (!dir) return;
+    // Counted HERE and not in `newTask()`: that one is also called programmatically by the
+    // project-directory gate (a user who merely submitted text), which would inflate this badly.
+    feat("new_task");
     setProjectDir(dir);
     localStorage.setItem("axiom3.projectDir", dir);
     setCodeWs(dir); // the agent works in the project directory
@@ -1194,6 +1207,7 @@ function App() {
   }
 
   async function cancelCheck() {
+    feat("cancel");
     await invoke("cancel_check");
   }
 
@@ -1237,7 +1251,9 @@ function App() {
     });
     if (typeof path === "string") {
       const ok = await run(() => invoke("save_report_html", { path, html }));
-      if (ok !== undefined) note(`${lang === "zh" ? "已导出" : "Exported"}: ${path.split(/[/\\]/).pop()}`);
+      // Counted at the LANDING point, not when the menu item was clicked: an export that the user
+      // backed out of in the save dialog is not an export.
+      if (ok !== undefined) { feat(isDoc ? "export_word" : "export_html"); note(`${lang === "zh" ? "已导出" : "Exported"}: ${path.split(/[/\\]/).pop()}`); }
     }
   }
 
@@ -1377,6 +1393,7 @@ function App() {
   function continueTask(tk: Task) {
     const g = (tk.goal ?? "").trim();
     if (!g) return;
+    feat("continue");
     if (tk.type === "research") runCoding(g, true, tk.id, true);
     else if (tk.type === "workflow") runWorkflow(g, tk.id);
     else runCoding(g, true, tk.id); // code / analysis
@@ -1529,8 +1546,10 @@ function App() {
                       <button
                         className={`ax-send ax-send--run ${isPaused ? "is-paused" : ""}`}
                         onClick={() => {
-                          if (isPaused) { invoke("resume_run", { runid: rid }).catch(() => {}); setPausedRids((s) => { const n = new Set(s); n.delete(rid); return n; }); }
-                          else { invoke("pause_run", { runid: rid }).catch(() => {}); setPausedRids((s) => new Set(s).add(rid)); }
+                          // One toggle, two interactions — report the branch actually taken, or
+                          // resuming would be counted as pausing.
+                          if (isPaused) { feat("resume_run"); invoke("resume_run", { runid: rid }).catch(() => {}); setPausedRids((s) => { const n = new Set(s); n.delete(rid); return n; }); }
+                          else { feat("pause"); invoke("pause_run", { runid: rid }).catch(() => {}); setPausedRids((s) => new Set(s).add(rid)); }
                         }}
                         title={isPaused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
                         aria-label={isPaused ? "resume" : "pause"}
@@ -2210,7 +2229,7 @@ function App() {
                           <ThreadActivity
                             run={liveRun}
                             lang={lang}
-                            onCancel={tk.status === "running" ? () => invoke("cancel_run", { runid: tk.liveRunId ?? tk.id }) : undefined}
+                            onCancel={tk.status === "running" ? () => { feat("cancel"); return invoke("cancel_run", { runid: tk.liveRunId ?? tk.id }); } : undefined}
                           />
                         ) : tk.steps && tk.steps.length > 0 ? (
                           <div className="ax-agents" style={{ marginTop: 12 }}>
@@ -2359,7 +2378,7 @@ function App() {
               note && note.trim() && setToast(lang === "zh" ? "已按批注改写并生成新版本" : "Revised and saved as a new version");
             }}
             expanded={artifactExpanded}
-            onToggleExpand={() => setArtifactExpanded((e) => !e)}
+            onToggleExpand={() => { if (!artifactExpanded) feat("expand_artifact"); setArtifactExpanded((e) => !e); }}
             onClose={() => {
               setRailOpen(false);
               setArtifactExpanded(false);

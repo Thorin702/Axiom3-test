@@ -143,7 +143,11 @@ export function AskingCard({ card, lang, busy, onSubmit }: {
       )}
 
       <div className="ax-ask__opts">
-        {(q.options ?? []).map((opt, i) => {
+        {/* Never render an option with no readable label: it draws as a blank radio the user can
+            click but cannot read, and selecting it sends an empty answer back to the agent. The
+            backend now repairs/drops these, but a card persisted by an older build can still carry
+            them. */}
+        {(q.options ?? []).filter((o) => o && typeof o.label === "string" && o.label.trim()).map((opt, i) => {
           const on = qSel.has(opt.label);
           return (
             <button key={i} className={`ax-ask-opt ${on ? "sel" : ""}`} onClick={() => toggle(opt.label)} disabled={locked}>

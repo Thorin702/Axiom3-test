@@ -50,18 +50,28 @@ type Kind =
   | "forest" | "heatmap" | "confusion" | "dist" | "volcano" | "manhattan"
   | "band" | "msa" | "rxn" | "field" | "quiver" | "network" | "track" | "tree"
   | "roc" | "seqlogo" | "sankey" | "spectrum" | "dose" | "slope" | "pyfig"
-  | "prisma" | "km" | "survival" | "funnel";
+  | "prisma" | "km" | "survival" | "funnel" | "reaction";
 type Seg = { t: "md"; body: string } | { t: Kind; body: string };
 
 // Split the text at native-figure fences; everything else is markdown.
 function segment(text: string): Seg[] {
-  const re = /```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|field|quiver|network|track|tree|roc|seqlogo|sankey|spectrum|dose|slope|pyfig|prisma|km|survival|funnel)[^\n]*\n([\s\S]*?)```/g;
+  // Both fences must own their line. Neither end was anchored before, so prose that merely NAMES a
+  // block — "统计结果用 ```chart 块呈现,见下图。" — opened a match, and the body then ran to the next
+  // ``` anywhere in the document: that whole stretch of report vanished into a bogus figure spec
+  // (rendered as a red "spec is not valid JSON"), and because scanning resumed past that borrowed
+  // fence, the NEXT real figure lost its opening fence and degraded into raw JSON too. One stray
+  // mention broke two things at once. `[^\n]*` after the name stays — it carries the info-string in
+  // ```chart bar.
+  const re = /(^|\n)[ \t]*```(smiles|mermaid|math|chart|protein|dotplot|forest|heatmap|confusion|dist|volcano|manhattan|band|msa|rxn|reaction|field|quiver|network|track|tree|roc|seqlogo|sankey|spectrum|dose|slope|pyfig|prisma|km|survival|funnel)[^\n]*\n([\s\S]*?)\n[ \t]*```/g;
   const segs: Seg[] = [];
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text))) {
-    if (m.index > last) segs.push({ t: "md", body: text.slice(last, m.index) });
-    segs.push({ t: m[1] as Kind, body: m[2].trim() });
+    // m[1] is the newline the fence sits after — it belongs to the markdown BEFORE the figure, not
+    // to the figure, so hand it back rather than swallowing it into the block.
+    const start = m.index + m[1].length;
+    if (start > last) segs.push({ t: "md", body: text.slice(last, start) });
+    segs.push({ t: m[2] as Kind, body: m[3].trim() });
     last = re.lastIndex;
   }
   if (last < text.length) segs.push({ t: "md", body: text.slice(last) });
@@ -198,6 +208,11 @@ export function ArtifactBody({ text, sources }: { text: string; sources?: CiteSo
           band: <Band spec={s.body} />,
           msa: <Alignment spec={s.body} />,
           rxn: <Reaction spec={s.body} />,
+          // The system prompt teaches ```reaction (coding/mod.rs:404), while this file
+          // only ever had ```rxn — so a chemistry report rendered its reaction scheme as
+          // a raw JSON code block, and the figure gate saw "a figure" and let it ship.
+          // Same renderer, both spellings.
+          reaction: <Reaction spec={s.body} />,
           field: <Field spec={s.body} />,
           quiver: <Quiver spec={s.body} />,
           network: <Network spec={s.body} />,

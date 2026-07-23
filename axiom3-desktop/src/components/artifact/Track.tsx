@@ -87,6 +87,10 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
   type VM = { pos: number; label: string; count: number; cls: string };
   const valid: VM[] = [];
   for (const m of markersIn) {
+    // A stray null inside a JSON array is still valid JSON, and reading `.pos` off it throws
+    // DURING RENDER — with no ErrorBoundary anywhere, that takes the whole app to a white screen
+    // rather than just breaking this one figure. (Manhattan.tsx guards the same way.)
+    if (!m || typeof m !== "object") continue;
     const pos = Number(m.pos);
     if (!isFinite(pos)) continue;
     const count = Math.max(0, Number(m.count) || 0);
@@ -184,6 +188,7 @@ export function Track({ spec: raw, caption }: { spec: string; caption?: string }
 
           {/* domains */}
           {domains.map((dm, i) => {
+            if (!dm || typeof dm !== "object") return null;
             const from = Number(dm.from);
             const to = Number(dm.to);
             if (!isFinite(from) || !isFinite(to) || to <= from) return null;

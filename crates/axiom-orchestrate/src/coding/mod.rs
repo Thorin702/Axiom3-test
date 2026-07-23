@@ -750,6 +750,57 @@ fn remap_cite_markers(s: &str, offset: u32) -> String {
     out
 }
 
+/// Content tokens of a research string, for comparing what two pieces of text are ABOUT.
+///
+/// Two kinds, because our topics are bilingual: ASCII runs of >=3 chars (gpx4, slc7a11, ferroptosis,
+/// icb, pd-1) and CJK BIGRAMS (铁死, 死亡, 诱导, 抑制). Bigrams rather than single characters because
+/// we have no segmenter and one Chinese character is far too common to tell topics apart — 「系」and
+/// 「化」would match nearly anything.
+fn topic_tokens(s: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let mut ascii = String::new();
+    let cjk: Vec<char> = s
+        .chars()
+        .filter(|c| ('\u{4E00}'..='\u{9FFF}').contains(c))
+        .collect();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            ascii.push(c.to_ascii_lowercase());
+        } else {
+            if ascii.chars().count() >= 3 {
+                out.insert(std::mem::take(&mut ascii));
+            } else {
+                ascii.clear();
+            }
+        }
+    }
+    if ascii.chars().count() >= 3 {
+        out.insert(ascii);
+    }
+    for w in cjk.windows(2) {
+        out.insert(w.iter().collect());
+    }
+    out
+}
+
+/// Is `angle` about the same thing as `reference`?
+///
+/// A rules-layer check — no model judgment, so it cannot be talked out of its verdict by the same
+/// model whose output it is policing. Fails OPEN when either side has too little content to judge:
+/// the cost of wrongly rejecting is only lost granularity (the caller falls back to the literal
+/// task), while wrongly accepting spends minutes of sub-agent work on the wrong subject entirely.
+pub fn shares_topic(angle: &str, reference: &str) -> bool {
+    let a = topic_tokens(angle);
+    let r = topic_tokens(reference);
+    if a.len() < 3 || r.len() < 3 {
+        return true; // not enough signal to make a call — don't block on a coin flip
+    }
+    let hits = a.intersection(&r).count();
+    // Two independent shared tokens, or a tenth of the angle's own content. One shared token is
+    // routinely incidental ("研究", "分析", "系统") and must not be enough to pass.
+    hits >= 2 || hits * 10 >= a.len()
+}
+
 pub async fn delegate_tooled(
     model: &impl CodingModel,
     sandbox: &Sandbox,
@@ -757,6 +808,11 @@ pub async fn delegate_tooled(
     sub_budget: &CodingBudget,
     cancel: &Cancel,
     task: &str,
+    // The USER's original topic. Sub-agents used to see only `task`, so the delegated branch was
+    // their entire universe: if it or its decomposition drifted, nothing on the sub-agent's side
+    // could tell. Carrying the real topic down gives both the relevance gate and the sub-agent
+    // itself an anchor that does not depend on the parent having phrased the branch well.
+    goal: &str,
     base: u32, // parent's current src_n — sub-agent sources are renumbered from base+1 upward
     // Lifecycle sink: emitted once per sub-agent as a sentinel step (tool "agent_spawn"/"agent_done",
     // `input` = a unique id, `detail` = a display name) so the shell can surface each delegated expert
@@ -771,13 +827,33 @@ pub async fn delegate_tooled(
         )
         .await
         .unwrap_or_default();
-    let mut angles: Vec<String> = decomp
+    let proposed: Vec<String> = decomp
         .lines()
         .map(|l| l.trim().trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, '-' | '*' | '·' | '.' | ')' | '(' | ' ' | '、')).trim().to_string())
         .filter(|l| l.chars().count() > 3)
         .take(2)
         .collect();
+    // RELEVANCE GATE. Whatever this call returns became the sub-agents' goals VERBATIM, with nothing
+    // anywhere checking it against the task it was supposed to be decomposing. Observed live: a
+    // ferroptosis/GPX4 branch came back decomposed into 「全球大规模低空交通管理(UATM/UTM)」 and
+    // 「低空经济适航审定标准」, and two sub-agents dutifully spent minutes researching eVTOL
+    // regulation. The parent noticed only afterwards, from the returned text.
+    //
+    // An angle has to be about either the branch or the user's actual topic. Whatever isn't, isn't
+    // worth a sub-team.
+    let rejected: Vec<String> = proposed
+        .iter()
+        .filter(|a| !shares_topic(a, task) && !shares_topic(a, goal))
+        .cloned()
+        .collect();
+    let mut angles: Vec<String> = proposed
+        .iter()
+        .filter(|a| shares_topic(a, task) || shares_topic(a, goal))
+        .cloned()
+        .collect();
     if angles.is_empty() {
+        // Fall back to the branch EXACTLY as the parent wrote it. It is on-topic by construction, so
+        // a run can lose decomposition granularity but can never lose the subject.
         angles.push(task.to_string());
     }
     let mut reports: Vec<String> = Vec::new();
@@ -806,7 +882,11 @@ pub async fn delegate_tooled(
         let sub_pause = Pause::new();
         sub_pause.disable_asks(); // headless sub-agent; delegate_allowed NOT set → cannot re-delegate
         let sub_goal = format!(
-            "你是深度研究团队里的一个专注子智能体,负责下面这一个子问题。请**用工具**(litsearch 找论文、web_search 找其它来源、web_fetch 读网页、python 计算/画图)去查证与深挖,不要只凭记忆:\n【子问题】{a}\n\n【总课题背景】{task}\n\n深入、有据、带引用地攻坚它,最后给出这一子问题的清晰结论。"
+            "你是深度研究团队里的一个专注子智能体,负责下面这一个子问题。请**用工具**(litsearch 找论文、web_search 找其它来源、web_fetch 读网页、python 计算/画图)去查证与深挖,不要只凭记忆:\n\
+             【用户的原始课题】{goal}\n\n【本次委派的研究分支】{task}\n\n【你负责的子问题】{a}\n\n\
+             这三者必须是同一个主题。如果【你负责的子问题】看起来和【用户的原始课题】不是一回事,\
+             那是任务分配出了错:请**不要**去研究那个跑偏的题目,直接就【用户的原始课题】里与本分支相关的部分展开,并在结论开头一句话说明你做了这个纠正。\n\n\
+             深入、有据、带引用地攻坚它,最后给出这一子问题的清晰结论。"
         );
         let mut log: Vec<String> = Vec::new();
         let mut on_s = |r: CodingStepRec| {
@@ -840,11 +920,23 @@ pub async fn delegate_tooled(
             figures: Vec::new(),
         });
     }
+    // The gate firing is a real event the parent must see: it means its branch was decomposed into
+    // something unrelated, which is worth knowing (and worth phrasing the next branch more concretely).
+    // Silence here would look identical to a normal delegation.
+    let gate_note = if rejected.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "[委派相关性闸门:拆解出的 {} 个角度与本课题无关,已丢弃并改用原任务本身 —— 被丢弃的是:{}]\n\n",
+            rejected.len(),
+            rejected.iter().map(|r| r.chars().take(30).collect::<String>()).collect::<Vec<_>>().join(" / ")
+        )
+    };
     if reports.is_empty() {
-        return ("[委派未产出结果 —— 请自己完成这个子任务]".to_string(), figs, merged);
+        return (gate_note + "[委派未产出结果 —— 请自己完成这个子任务]", figs, merged);
     }
     if reports.len() == 1 {
-        return (format!("[委派完成 · 1 个工具型子智能体]\n\n{}", reports[0]), figs, merged);
+        return (format!("{gate_note}[委派完成 · 1 个工具型子智能体]\n\n{}", reports[0]), figs, merged);
     }
     let body = reports.join("\n\n");
     let synth = model
@@ -855,7 +947,7 @@ pub async fn delegate_tooled(
         )
         .await
         .unwrap_or_else(|_| body.clone());
-    (format!("[委派完成 · {} 个工具型子智能体各攻一角度并综合]\n\n{}", reports.len(), synth.trim()), figs, merged)
+    (format!("{gate_note}[委派完成 · {} 个工具型子智能体各攻一角度并综合]\n\n{}", reports.len(), synth.trim()), figs, merged)
 }
 
 /// Salvage a proper report from everything gathered so far. Used BOTH at step-budget exhaustion and
@@ -1590,6 +1682,21 @@ fn append_verified_trials(summary: &str, sources: &[Source]) -> String {
     format!("{}{}", summary.trim_end(), sec)
 }
 
+// ─── Shortfall markers ────────────────────────────────────────────────────────────────────────────
+// The exact phrases the shortfall banners below are built from. They are `pub` so the shell can
+// detect "did this run fall short, and how" by scanning the finished report, WITHOUT the science
+// crate having to know anything about telemetry or Tauri.
+//
+// Why constants and not string literals at the reading end: a banner is prose, and prose gets
+// reworded. A reader matching a copy of the wording would silently start reporting zero shortfalls
+// the day someone improves the sentence — the metric would look like a fix. Going through a shared
+// const makes that a compile-time coupling instead. (Same failure mode as the FIGURE_BLOCKS drift.)
+pub const MARK_NO_SOURCES: &str = "本报告未检索到任何来源";
+pub const MARK_NO_CONJECTURE: &str = "本报告未产出「推想与验证路径」";
+pub const MARK_CONJ_INCOMPLETE: &str = "推想结构不完整";
+pub const MARK_DERIVED_UNMET: &str = "尚未兑现";
+pub const MARK_NO_FIGURE: &str = "本报告未产出所要求的图";
+
 /// THE single finalisation applied to every shipped report, from EVERY return path (accept, salvage,
 /// wrap-up, budget exhaustion). Regression testing caught the reason this must be one function: the
 /// verified-trials section and the conjecture-deficiency notice were wired only into the accept path,
@@ -1601,6 +1708,10 @@ fn finalize_report(
     research: bool,
     conj: Option<&conj_search::ConjSearchOutcome>,
     derived: &[derived::Derived],
+    // The goal asked for figures, and how many the kernel actually computed. Needed HERE because the
+    // verdict depends on the FINAL text (native figure fences count too), after every append above.
+    wants_figure: bool,
+    captured_figs: usize,
 ) -> String {
     let s = clean_summary(summary, sources.len());
     let s = ensure_reference_list(&s, sources);
@@ -1613,6 +1724,23 @@ fn finalize_report(
     let s = derived::append_derived_results(&s, derived);
     let s = derived::append_fulfillment_banner(&s, derived, research);
     let s = derived::append_self_report_notice(&s, derived, research);
+    // Figures were the ONE quality axis with no shortfall banner. The gate nudges exactly once; a model
+    // that replies "数据不足,无法出图" and re-submits the same figureless report was then accepted in
+    // silence, and the user had to notice the missing figure themselves. Every other axis — sources,
+    // conjecture, structure, derived — refuses to let its gap be invisible. This one now does too.
+    //
+    // Deliberately ABOVE the research-only early return: "画一张图" is just as much a request in
+    // analysis mode, and the gap is just as real there.
+    let s = if wants_figure && !has_any_figure(&s, captured_figs) {
+        format!(
+            "{}\n\n> ⚠️ **{MARK_NO_FIGURE}** —— 课题明确要求了图,但本报告里没有任何可渲染的图。\
+             可能原因:可用数据不足以作图,或预算耗尽提前收尾。请补充数据后重跑,\
+             或在正文中说明为什么这张图画不出来。\n",
+            s.trim_end()
+        )
+    } else {
+        s
+    };
     if !research || is_fallback_report(&s) {
         return s;
     }
@@ -1622,7 +1750,7 @@ fn finalize_report(
     // 2-step, 0-source "research report". Whatever else is true, the reader must be told.
     if sources.is_empty() {
         return format!(
-            "{}\n\n> ⚠️ **本报告未检索到任何来源** —— 全部内容出自模型既有知识,**未经任何检索核实**,\
+            "{}\n\n> ⚠️ **{MARK_NO_SOURCES}** —— 全部内容出自模型既有知识,**未经任何检索核实**,\
              其中的机制、数字与药名都可能有误。这不构成可依据的研究结论,请补充检索后重跑。\n",
             s.trim_end()
         );
@@ -1633,7 +1761,7 @@ fn finalize_report(
     let blocks = conjecture_blocks(&s);
     if blocks.is_empty() {
         return format!(
-            "{}\n\n> ⚠️ **本报告未产出「推想与验证路径」** —— 未达研究模式的交付要求,当前内容仅相当于一份\
+            "{}\n\n> ⚠️ **{MARK_NO_CONJECTURE}** —— 未达研究模式的交付要求,当前内容仅相当于一份\
              文献综述。可能原因:可用证据过薄,或预算耗尽提前收尾。建议补充检索后重跑。\n",
             s.trim_end()
         );
@@ -1641,7 +1769,7 @@ fn finalize_report(
     let issues = conjecture_issues(&s, &anchor_ids(sources));
     if !issues.is_empty() {
         return format!(
-            "{}\n\n> ⚠️ **推想结构不完整**({})—— 缺失字段意味着该推想「够不够得着」无法判断:\
+            "{}\n\n> ⚠️ **{MARK_CONJ_INCOMPLETE}**({})—— 缺失字段意味着该推想「够不够得着」无法判断:\
              没有锚点就不知它站在什么已知之上,没有证伪条件就无法被检验,没有「现在就能算」就不知道\
              本平台能为它做什么。使用前请自行补足这些环节。\n",
             s.trim_end(),
@@ -1649,6 +1777,50 @@ fn finalize_report(
         );
     }
     s
+}
+
+/// Repair what can be repaired in an `ask_user` card's options, and delete what cannot.
+///
+/// The UI renders `option.label`. A weaker model writes the same list several ways — a bare string
+/// (`["局部","全局"]`), or an object keyed `text` / `title` / `name` / `value` instead of `label` —
+/// and every one of those rendered as an EMPTY radio button, with the run parked behind a card the
+/// human could not answer. Observed live: one card with two blank options, another where only the
+/// first option was blank because the model mixed both shapes in a single list.
+///
+/// So: accept every reasonable spelling, then drop any option still without a readable label rather
+/// than showing a ghost the user can click but not read. The caller re-checks renderability after
+/// this and nudges the model when nothing survives — a visible failure instead of a silent hang.
+fn normalize_ask_options(questions: serde_json::Value) -> serde_json::Value {
+    const LABEL_KEYS: &[&str] = &["label", "text", "title", "name", "value", "option"];
+    let serde_json::Value::Array(qs) = questions else { return questions };
+    let fixed: Vec<serde_json::Value> = qs
+        .into_iter()
+        .map(|mut q| {
+            let Some(obj) = q.as_object_mut() else { return q };
+            let Some(opts) = obj.get("options").and_then(|o| o.as_array()).cloned() else { return q };
+            let kept: Vec<serde_json::Value> = opts
+                .into_iter()
+                .filter_map(|o| match o {
+                    // `options: ["A", "B"]` — promote the string to a labelled option.
+                    serde_json::Value::String(s) if !s.trim().is_empty() => {
+                        Some(serde_json::json!({ "label": s.trim() }))
+                    }
+                    serde_json::Value::Object(mut m) => {
+                        let label = LABEL_KEYS
+                            .iter()
+                            .find_map(|k| m.get(*k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()))
+                            .map(str::to_string)?;
+                        m.insert("label".into(), serde_json::Value::String(label));
+                        Some(serde_json::Value::Object(m))
+                    }
+                    _ => None,
+                })
+                .collect();
+            obj.insert("options".into(), serde_json::Value::Array(kept));
+            q
+        })
+        .collect();
+    serde_json::Value::Array(fixed)
 }
 
 /// Capture sources the model registered via `scidb.cite(...)` (which prints a `#AXIOM_CITE#<json>` line):
@@ -1928,7 +2100,7 @@ pub async fn run_coding_agent_steered(
                             // tail). The run ends gracefully with real content + its figures.
                             let _ = &e; // error is captured in the transcript; the salvage speaks for itself
                             let artifacts = collect_artifacts(sandbox.root(), &start_files);
-                            let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
+                            let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out, wants_figure, all_figures.len());
                             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                             return CodingResult { status: status.into(), summary, steps: n - 1, figures: all_figures, artifacts, sources: sources.clone() };
                         }
@@ -2038,7 +2210,7 @@ pub async fn run_coding_agent_steered(
                 // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
                 // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
                 // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
-                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
+                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out, wants_figure, all_figures.len());
                 let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                 return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
@@ -2072,7 +2244,7 @@ pub async fn run_coding_agent_steered(
                 // empty/JSON-only blob) as a `done` deliverable — salvage a real report, or mark
                 // `no_report` honestly. (Was: `if reply.is_empty() && n>=3` — too narrow; a truncated
                 // first-step plan echo slipped through as a 151KB "done" report that was 99% base64.)
-                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
+                let summary = finalize_report(&guard_done_summary(reply.trim().to_string(), model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out, wants_figure, all_figures.len());
                 let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
                 return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
             }
@@ -2601,7 +2773,7 @@ pub async fn run_coding_agent_steered(
             // BACKSTOP: never ship a leaked ===AXIOM3_FINAL=== marker or a dead provenance link. Strip a
             // residual marker + any DANGLING [Sn] (n > sources retrieved) that survived the nudge — claim
             // text stays, only the unbacked marker is dropped. No-op for a clean report / fallback banner.
-            let summary = finalize_report(&summary, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
+            let summary = finalize_report(&summary, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out, wants_figure, all_figures.len());
             let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
             return CodingResult { status: status.into(), summary, steps: n, figures: all_figures, artifacts: collect_artifacts(sandbox.root(), &start_files), sources: sources.clone() };
         }
@@ -3200,7 +3372,7 @@ pub async fn run_coding_agent_steered(
                         cmd_timeout_s: budget.cmd_timeout_s,
                         cell_timeout_s: budget.cell_timeout_s,
                     };
-                    let (obs, figs, merged) = delegate_tooled(model, sandbox, &kernel, &sub_budget, cancel, &task, src_n, &mut on_step).await;
+                    let (obs, figs, merged) = delegate_tooled(model, sandbox, &kernel, &sub_budget, cancel, &task, goal, src_n, &mut on_step).await;
                     step_figures = figs; // sub-agents' computed figures flow into the parent report (deduped downstream)
                     // Renumber-merge: the sub-agents' real sources come back in the parent's global [Sn]
                     // space (ids src_n+1…); adopt them so delegated findings are clickable in the report.
@@ -3448,13 +3620,23 @@ pub async fn run_coding_agent_steered(
                     if let Some(w) = v.get("why_it_matters") { q.insert("why_it_matters".into(), w.clone()); }
                     serde_json::Value::Array(vec![serde_json::Value::Object(q)])
                 };
-                // Refuse to park on a card the UI can't render (no question with text) — otherwise
-                // the run would hang behind an invisible card. Nudge the model instead of blocking.
+                let questions = normalize_ask_options(questions);
+                // Refuse to park on a card the UI can't render — otherwise the run hangs behind a card
+                // the human cannot act on. This used to check only that a QUESTION had text, so a card
+                // whose options carried no labels sailed through and rendered as blank, unclickable
+                // radio buttons with the run parked behind them. An option the reader cannot read is
+                // exactly as unanswerable as a missing question.
                 let renderable = questions.as_array().map(|qs| {
-                    qs.iter().any(|q| q.get("question").and_then(|s| s.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false))
+                    qs.iter().any(|q| {
+                        let has_text = q.get("question").and_then(|s| s.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+                        let opts = q.get("options").and_then(|o| o.as_array()).map(|a| a.len()).unwrap_or(0);
+                        let other = q.get("allowOther").and_then(|b| b.as_bool()).unwrap_or(false);
+                        // 2+ labelled options, or a single question answerable purely in free text.
+                        has_text && (opts >= 2 || (opts == 0 && other))
+                    })
                 }).unwrap_or(false);
                 if !renderable {
-                    ("ask_user".to_string(), "ERROR: ask_user needs at least one question with a non-empty \"question\" field (and 2-4 options). Re-emit a valid card, or proceed with sensible defaults and disclose them.".to_string())
+                    ("ask_user".to_string(), "ERROR: ask_user needs at least one question with a non-empty \"question\" field AND 2-4 options that each have a non-empty \"label\". Options must be objects like {\"label\":\"…\",\"description\":\"…\"} — a bare string is not enough. Re-emit a valid card, or proceed with sensible defaults and disclose them.".to_string())
                 } else {
                     let card = serde_json::json!({ "card_id": card_id, "questions": questions }).to_string();
                     on_ask(card_id.clone(), card); // shell emits AskUser → UI renders the card
@@ -3554,7 +3736,7 @@ pub async fn run_coding_agent_steered(
     // Budget exhausted without a {"final"}. Don't dump the raw transcript as the "report" — do ONE
     // wrap-up synthesis so the user still gets a proper writeup of what was actually computed + its
     // figures (falls back to a transcript tail on failure). Same salvage the model-error path uses.
-    let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out);
+    let summary = finalize_report(&synthesize_wrapup(model, &sys, &transcript, &sources, cancel).await, &sources, pause.delegate_encouraged(), conj_oc.as_ref(), &derived_out, wants_figure, all_figures.len());
     let status = if is_fallback_report(&summary) { "no_report" } else { "done" };
     CodingResult { status: status.into(), summary, steps: budget.max_steps, figures: all_figures, artifacts, sources }
 }
@@ -3641,7 +3823,7 @@ fn sanitize_json_strings(s: &str) -> String {
 /// requests ("画出…" / "绘制…" / "作图") count, so merely discussing a diagram in prose does not arm
 /// the gate. This backstops `figure_needs`, which only recognises three specific engines and therefore
 /// missed a topic demanding a timeline, a forest plot and a rebound curve.
-fn goal_demands_figure(goal: &str) -> bool {
+pub fn goal_demands_figure(goal: &str) -> bool {
     ["画出", "画一张", "绘制", "作图", "画个", "给出图", "输出图", "配图"]
         .iter()
         .any(|k| goal.contains(k))
@@ -3654,15 +3836,16 @@ fn goal_demands_figure(goal: &str) -> bool {
 /// HERE; `figure_blocks_match_the_prompt` fails the build if the prompt drifts ahead of this list.
 /// Excludes ```json / ```math / ```python / ```fence — those are data, formulae and code, not figures.
 pub(crate) const FIGURE_BLOCKS: &[&str] = &[
-    "band", "chart", "confusion", "dist", "dose", "dotplot", "field", "forest", "heatmap",
-    "manhattan", "mermaid", "msa", "network", "protein", "pyfig", "quiver", "reaction", "roc",
-    "rxn", "sankey", "seqlogo", "slope", "smiles", "spectrum", "track", "tree", "volcano",
+    "band", "chart", "confusion", "dist", "dose", "dotplot", "field", "forest", "funnel", "heatmap",
+    "km", "manhattan", "mermaid", "msa", "network", "prisma", "protein", "pyfig", "quiver",
+    "reaction", "roc", "rxn", "sankey", "seqlogo", "slope", "smiles", "spectrum", "survival",
+    "track", "tree", "volcano",
 ];
 
 /// Does this draft actually carry a figure? Counts every renderable block plus a raw base64 PNG
 /// (matplotlib output is embedded that way). Purely mechanical: the only way to satisfy it is to
 /// really emit a figure.
-fn has_any_figure(s: &str, captured: usize) -> bool {
+pub fn has_any_figure(s: &str, captured: usize) -> bool {
     captured > 0
         || FIGURE_BLOCKS.iter().any(|k| s.contains(&format!("```{k}")))
         || s.contains("iVBORw0KGgo") // raw base64 PNG
@@ -4234,21 +4417,131 @@ mod tests {
         assert_eq!(novelty_score("衰老", &srcs), 0.0);
     }
 
+    /// REGRESSION (real run): ask cards rendered with blank radio buttons and the run parked behind
+    /// them. `ask_user` is a HARD park, so an unreadable option is not a cosmetic bug — the human
+    /// cannot answer and the run cannot proceed.
+    /// REGRESSION (live run, ferroptosis/GPX4 topic): the delegate decomposition came back as
+    /// 「全球大规模低空交通管理(UATM/UTM)系统」 and 「低空经济关键适航审定标准(如eVTOL动力电池)」,
+    /// and two sub-agents spent minutes researching eVTOL regulation. Nothing between the branch and
+    /// the sub-agents' goals had ever compared the two.
+    #[test]
+    fn an_off_topic_decomposition_is_rejected() {
+        let goal = "铁死亡(ferroptosis)在实体瘤治疗抵抗中的作用:GPX4/SLC7A11 轴的可成药性、诱导剂的选择性窗口,以及与免疫治疗联用的证据强度";
+        let task = "深度研究分支: 铁死亡诱导剂与免疫检查点抑制剂(ICB)联用的全部证据梳理与矛盾权衡";
+        for bad in [
+            "全球大规模低空交通管理(UATM/UTM)系统的架构与标准",
+            "低空经济关键适航审定标准(如eVTOL动力电池)",
+        ] {
+            assert!(!shares_topic(bad, task), "应判为与分支无关: {bad}");
+            assert!(!shares_topic(bad, goal), "应判为与课题无关: {bad}");
+        }
+    }
+
+    /// The gate must not be so eager that it throws away real decompositions — that would silently
+    /// cost every delegation its granularity. Genuine angles reword heavily and still have to pass.
+    #[test]
+    fn genuine_decomposition_angles_survive_the_gate() {
+        let goal = "铁死亡(ferroptosis)在实体瘤治疗抵抗中的作用:GPX4/SLC7A11 轴的可成药性、诱导剂的选择性窗口,以及与免疫治疗联用的证据强度";
+        let task = "深度研究分支: 铁死亡诱导剂与免疫检查点抑制剂(ICB)联用的全部证据梳理与矛盾权衡";
+        for good in [
+            "铁死亡诱导剂联合 PD-1 抑制剂在实体瘤中的临床前证据",
+            "GPX4 抑制与肿瘤免疫微环境的相互作用机制",
+            "ICB 联用方案中诱导剂的剂量与毒性权衡",
+            "ferroptosis inducers combined with checkpoint blockade: clinical evidence",
+        ] {
+            assert!(
+                shares_topic(good, task) || shares_topic(good, goal),
+                "真实角度被误杀: {good}"
+            );
+        }
+    }
+
+    /// One incidental shared token is not topical overlap. Without this, boilerplate like 「系统梳理」
+    /// would let almost anything through and the gate would be decorative.
+    #[test]
+    fn a_single_incidental_token_is_not_enough_to_pass() {
+        let task = "铁死亡诱导剂与免疫检查点抑制剂联用的证据梳理";
+        // Shares only 「系统」-ish filler, nothing about the subject.
+        assert!(!shares_topic("低空经济产业链的系统性梳理与政策建议", task));
+        // Two real shared terms → passes.
+        assert!(shares_topic("免疫检查点抑制剂的耐药机制", task));
+    }
+
+    /// Fails open rather than blocking when there is nothing to judge on — a two-word angle carries
+    /// no evidence either way, and blocking on no evidence is the worse error here.
+    #[test]
+    fn the_gate_abstains_when_there_is_too_little_to_judge() {
+        assert!(shares_topic("综述", "铁死亡诱导剂与免疫检查点抑制剂联用的证据梳理"));
+        assert!(shares_topic("铁死亡诱导剂的选择性窗口", "x"));
+    }
+
+    #[test]
+    fn ask_options_are_repaired_when_possible_and_dropped_when_not() {
+        let raw = serde_json::json!([{
+            "question": "证据标准?",
+            "allowOther": true,
+            "options": [
+                "裸字符串选项",                                  // a bare string
+                {"text": "键名写成 text"},                        // a non-`label` key
+                {"title": "键名写成 title", "description": "d"},  // another
+                {"label": "  "},                                 // whitespace only → unreadable
+                {"description": "只有描述没有标签"},               // no label at all → unreadable
+                {"label": "正常选项", "description": "d"}
+            ]
+        }]);
+        let out = normalize_ask_options(raw);
+        let opts = out[0]["options"].as_array().unwrap();
+        let labels: Vec<&str> = opts.iter().map(|o| o["label"].as_str().unwrap()).collect();
+        assert_eq!(
+            labels,
+            vec!["裸字符串选项", "键名写成 text", "键名写成 title", "正常选项"],
+            "可修的要修好、修不了的必须丢掉,绝不能留下没有标签的选项"
+        );
+        // Repair must not cost the other fields.
+        assert_eq!(opts[2]["description"].as_str(), Some("d"));
+    }
+
+    /// The whole point of the repair pass is that what survives it is renderable. A card whose options
+    /// are ALL unlabelled must be refused, not shown — parking on it would hang the run behind a card
+    /// with nothing to click.
+    #[test]
+    fn an_ask_card_with_no_readable_option_survives_nothing() {
+        let raw = serde_json::json!([{
+            "question": "这题选项全是坏的",
+            "allowOther": false,
+            "options": [{"description": "无标签"}, {"label": ""}, 42]
+        }]);
+        let out = normalize_ask_options(raw);
+        assert!(out[0]["options"].as_array().unwrap().is_empty());
+        // Mirrors the caller's renderable check: no options and no free-text escape → not renderable.
+        let q = &out[0];
+        let has_text = q["question"].as_str().map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let opts = q["options"].as_array().map(|a| a.len()).unwrap_or(0);
+        let other = q["allowOther"].as_bool().unwrap_or(false);
+        assert!(!(has_text && (opts >= 2 || (opts == 0 && other))), "这张卡必须被判为不可渲染并退回模型");
+    }
+
     #[test]
     fn figure_block_list_stays_in_sync_with_the_system_prompt() {
         // The defect this locks: the prompt taught ~27 renderable blocks while the gate's hard-coded
         // copy knew 7, so a report that really drew ```forest + ```heatmap was told it had drawn
         // nothing. Any new renderer must land in FIGURE_BLOCKS or this fails — the drift can no longer
         // survive to a real run.
-        // Read THIS source file and collect every ```block the prompts mention. Source-scanning beats
-        // a hand-written list: a renderer added anywhere still gets caught.
-        let src = include_str!("mod.rs");
+        // Read the sources that TEACH block names and collect every one they mention. Source-scanning
+        // beats a hand-written list: a renderer added anywhere still gets caught.
+        //
+        // skills.rs is scanned too, and that is not optional: the evidence-synthesis skill card teaches
+        // ```prisma / ```km / ```funnel, none of which were in FIGURE_BLOCKS. Scanning only this file
+        // could not see them, so a systematic-review report that correctly drew a PRISMA flow and a KM
+        // curve was told "your report contains no figures at all" and made to redo it.
         let mut in_prompt: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        let mut rest = src;
-        while let Some(i) = rest.find("```") {
-            rest = &rest[i + 3..];
-            let name: String = rest.chars().take_while(|c| c.is_ascii_lowercase() || *c == '_').collect();
-            if name.len() >= 2 { in_prompt.insert(name); }
+        for src in [include_str!("mod.rs"), include_str!("../skills.rs")] {
+            let mut rest = src;
+            while let Some(i) = rest.find("```") {
+                rest = &rest[i + 3..];
+                let name: String = rest.chars().take_while(|c| c.is_ascii_lowercase() || *c == '_').collect();
+                if name.len() >= 2 { in_prompt.insert(name); }
+            }
         }
         // Blocks that are not figures (code / data / formulae / this test's own fixtures).
         let not_figures = ["json", "math", "python", "fence", "text", "bash", "sh", "rust", "md", "markdown", "yaml", "toml", "csv", "sql", "js", "ts", "html", "css", "diff", "xml", "block", "xxx"];
@@ -4263,6 +4556,35 @@ mod tests {
             assert!(!FIGURE_BLOCKS.contains(&k), "```{k} 不是图,不该算数");
         }
         assert!(!has_any_figure("```python\nprint(1)\n```", 0), "只有代码块不算画了图");
+    }
+
+    /// The OTHER direction, which the test above cannot see — and the direction that had actually
+    /// rotted.
+    ///
+    /// `FIGURE_BLOCKS` answers "did this report draw a figure". If a name is in that list but the UI
+    /// has no renderer for it, the gate is satisfied by something the reader never sees: the block
+    /// falls through to plain markdown and the user gets a wall of raw JSON where a diagram should be,
+    /// with nothing upstream noticing. That is exactly what ```reaction did — and it got INTO the
+    /// list in the first place because the one-directional test above demanded it, so the drift was
+    /// not merely undetected, it was manufactured by the fix. A list of renderable blocks is a claim
+    /// about the front end, so it has to be checked against the front end.
+    #[test]
+    fn every_figure_block_has_a_real_front_end_renderer() {
+        // The single place the UI decides what a fence renders as.
+        let ui = include_str!("../../../../axiom3-desktop/src/components/artifact/ArtifactBody.tsx");
+        let dispatch = ui
+            .split_once("function segment(")
+            .and_then(|(_, r)| r.split_once("```("))
+            .and_then(|(_, r)| r.split_once(')'))
+            .map(|(names, _)| names.to_string())
+            .expect("ArtifactBody.tsx must still dispatch fences via a ```(a|b|c) alternation");
+        let renderable: std::collections::BTreeSet<&str> = dispatch.split('|').map(str::trim).collect();
+
+        let orphans: Vec<&&str> = FIGURE_BLOCKS.iter().filter(|k| !renderable.contains(*k)).collect();
+        assert!(
+            orphans.is_empty(),
+            "这些块被图门算作「有图」,但前端没有渲染器——用户会看到一段裸 JSON,而门却放行了:{orphans:?}"
+        );
     }
 
     #[test]
@@ -4324,24 +4646,24 @@ mod tests {
                                  url: "https://doi.org/10.1/x".into(), excerpt: "e".into() }];
         // zero conjectures in research mode → shortfall must be visible
         // zero sources: the shortfall that bypasses every gate (a 2-step run never reaches n>=3)
-        let unsourced = finalize_report("# 报告\n全凭记忆写的正文。", &[], true, None, &[]);
+        let unsourced = finalize_report("# 报告\n全凭记忆写的正文。", &[], true, None, &[], false, 0);
         assert!(unsourced.contains("未检索到任何来源"), "0 来源必须显式标注: {unsourced}");
-        let none = finalize_report("# 报告\n正文 [S1]。", &srcs, true, None, &[]);
+        let none = finalize_report("# 报告\n正文 [S1]。", &srcs, true, None, &[], false, 0);
         assert!(none.contains("未产出「推想与验证路径」"), "零推想必须显式标注: {none}");
         // structurally incomplete conjecture → also visible, naming what is missing
-        let partial = finalize_report("# 报告\n\n### C1: 某新机制\n- 锚点: [S1] 有据\n", &srcs, true, None, &[]);
+        let partial = finalize_report("# 报告\n\n### C1: 某新机制\n- 锚点: [S1] 有据\n", &srcs, true, None, &[], false, 0);
         assert!(partial.contains("推想结构不完整"), "结构不全必须显式标注: {partial}");
         assert!(partial.contains("证伪条件"), "应点名缺失字段: {partial}");
         // a complete conjecture ships clean, with no scolding appended
         let good = "# 报告\n\n### C1: 新机制\n- 锚点: [S1] 支撑\n- 缺口: 未知\n- 方法路径: 做实验\n                    - 现在就能算: 先算先验\n- 证伪条件: 无变化即证伪\n- 时间尺度: 3 个月\n";
         // A structurally complete conjecture draws no STRUCTURE warning…
-        let ok = finalize_report(good, &srcs, true, None, &[]);
+        let ok = finalize_report(good, &srcs, true, None, &[], false, 0);
         assert!(!ok.contains("推想结构不完整"), "完整推想不应被加结构警示: {ok}");
         // …but with no search outcome it still gets the ledger's "search never ran" notice: shipping
         // conjectures that were never adjudicated, silently, is precisely the degradation we refuse.
         assert!(ok.contains("未执行推想搜索"), "未裁决必须可见: {ok}");
         // non-research mode is never asked for conjectures at all
-        assert!(!finalize_report("# 代码任务完成", &srcs, false, None, &[]).contains("⚠️"));
+        assert!(!finalize_report("# 代码任务完成", &srcs, false, None, &[], false, 0).contains("⚠️"));
     }
 
     #[test]

@@ -26,6 +26,11 @@ export function DotPlot({ spec: raw, caption }: { spec: string; caption?: string
   } catch {
     return <div className="ax-fig__err">点图规范不是有效 JSON</div>;
   }
+  // `JSON.parse("null")` succeeds and yields null, so the property reads below would throw during
+  // render and white-screen the app. Sibling renderers all have this front gate.
+  if (!spec || typeof spec !== "object") {
+    return <div className="ax-fig__err">点图规范为空</div>;
+  }
   if (!Array.isArray(spec.rows) || !Array.isArray(spec.cols) || !Array.isArray(spec.cells)) {
     return <div className="ax-fig__err">点图需要 rows / cols / cells</div>;
   }
