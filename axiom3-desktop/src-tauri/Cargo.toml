@@ -1,6 +1,6 @@
 [package]
 name = "axiom3-desktop"
-version = "1.49.0"
+version = "1.50.0"
 description = "Axiom3 desktop shell"
 edition = "2021"
 

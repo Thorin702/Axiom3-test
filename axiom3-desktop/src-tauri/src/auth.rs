@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::Manager;
 
-/// The website / account server. IP for now; switch to `https://<域名>` after ICP 备案 + 证书.
-pub const AUTH_BASE: &str = "http://39.96.27.187";
+/// The website / account server. HTTPS on the filed (ICP-备案) domain — passwords and licence
+/// tokens now cross the wire encrypted. The certificate is Let's Encrypt, auto-renewed by certbot,
+/// so nothing here needs touching when it rolls over.
+pub const AUTH_BASE: &str = "https://axiom3.cn";
 const HTTP_TIMEOUT_S: u64 = 8;
 
 /// Ed25519 public key matching `license_key.pem` on the account server. PUBLIC by design: it can only
@@ -392,5 +394,30 @@ mod tests {
             license: None,
         };
         assert_eq!(proven_expiry(&s), None);
+    }
+}
+
+#[cfg(test)]
+mod tls_probe {
+    /// 真实网络探针:确认 APP 的 TLS 栈(rustls + 其内置根证书)能验证账号服务器的证书。
+    ///
+    /// 存在的理由:证书链的根是 Let's Encrypt 2025 年的新根(ISRG Root YR)。浏览器和 curl 用的是
+    /// 系统根证书库,而 reqwest 在此处配了 rustls,带的是自己编译进去的一套根 —— 两者可能不一致。
+    /// 若这套根里没有该证书,所有登录/校验会在真机上直接失败,而本地 curl 一切正常,极易误判。
+    /// 默认 #[ignore],只在需要确认线上证书时手动跑。
+    #[tokio::test]
+    #[ignore]
+    async fn app_tls_stack_accepts_the_account_server_certificate() {
+        let c = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .expect("client");
+        let r = c
+            .get(format!("{}/api/notice", super::AUTH_BASE))
+            .send()
+            .await
+            .expect("TLS 握手或连接失败 —— APP 将无法登录");
+        assert!(r.status().is_success(), "HTTP {}", r.status());
+        eprintln!("  ✓ {} 证书通过 rustls 验证,HTTP {}", super::AUTH_BASE, r.status());
     }
 }
