@@ -14,7 +14,6 @@ import { ArtifactProvenance } from "./ArtifactProvenance";
 import { ArtifactInspector } from "./ArtifactInspector";
 import { buildReportHtml, buildWordHtml, exportPdf } from "../lib/exportReport";
 import { toFindings, renderInlineMd } from "../lib/reviewText";
-import { feat } from "../lib/telemetry";
 
 type Tab = "artifact" | "messages" | "review" | "provenance";
 
@@ -78,7 +77,7 @@ export function ArtifactPane({
   function exportPdfDoc() {
     // PDF goes through the OS print dialog, which gives no completion signal back — so unlike
     // Word/HTML (counted when the file lands) this one can only ever be counted as an intent.
-    withArtifact((el) => { feat("export_pdf"); exportPdf(el, docTitle(), themeNow()); });
+    withArtifact((el) => { exportPdf(el, docTitle(), themeNow()); });
   }
   function exportWordDoc() {
     withArtifact((el) => onSaveReport?.(buildWordHtml(el, docTitle(), themeNow()), docName(), "doc"));

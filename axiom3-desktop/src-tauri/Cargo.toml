@@ -1,6 +1,6 @@
 [package]
 name = "axiom3-desktop"
-version = "1.50.0"
+version = "1.51.0"
 description = "Axiom3 desktop shell"
 edition = "2021"
 
@@ -40,13 +40,6 @@ axiom-orchestrate = { path = "../../crates/axiom-orchestrate" }
 # Document text extraction (pdf / docx / txt-md) for upload-and-check.
 axiom-ingest = { path = "../../crates/axiom-ingest" }
 tokio = { version = "1.52.3", features = ["time"] }
-# Offline licence verification. The server signs the account's expiry with Ed25519; the app carries
-# ONLY the public key, so it can check a licence but never mint or edit one. `ring` is already in the
-# tree via rustls, so this adds no new compiled code — and `chrono`/`base64` likewise arrive with
-# existing dependencies.
-ring = "0.17"
-base64 = "0.22"
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Single-instance guard (desktop only) — prevents two processes racing first-run
 # DB-key creation for the same project (see axiom-secrets::get_or_create_db_key).

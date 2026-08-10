@@ -1538,37 +1538,3 @@ body { background: var(--ax-paper); color: var(--ax-ink); font-family: var(--ax-
 .ax-round__hint { color: var(--ax-accent); font-size: 11px; }
 .ax-round__body { margin-top: 6px; padding-left: 4px; border-left: 2px solid var(--ax-line); }
 
-/* ── Account login gate (the app requires an approved, in-date account before the workbench) ── */
-.ax-authgate { position: fixed; inset: 0; background: var(--ax-surface-2); }
-.ax-login { position: fixed; inset: 0; display: grid; place-items: center; background: var(--ax-surface-2); padding: 24px; }
-.ax-login__card { width: 344px; max-width: 100%; background: var(--ax-surface); border: 1px solid var(--ax-line);
-  border-radius: 16px; padding: 34px 30px 24px; box-shadow: 0 24px 60px -34px rgba(60,40,20,.45);
-  display: flex; flex-direction: column; gap: 12px; }
-.ax-login__brand { display: flex; align-items: center; gap: 10px; font-size: 27px; font-weight: 700; letter-spacing: -.02em; color: var(--ax-ink); }
-.ax-login__brand svg { flex: none; }
-.ax-login__sub { margin: -4px 0 8px; color: var(--ax-ink-soft); font-size: 13.5px; }
-.ax-login__field { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--ax-ink-soft); }
-.ax-login__field input { font-size: 14px; padding: 10px 12px; border: 1px solid var(--ax-line); border-radius: 9px;
-  background: var(--ax-surface-2); color: var(--ax-ink); outline: none; }
-.ax-login__field input:focus { border-color: var(--ax-accent); box-shadow: var(--ax-focus); }
-.ax-login__err { font-size: 12.5px; color: var(--ax-accent); background: var(--ax-accent-soft);
-  border: 1px solid var(--ax-accent); border-radius: 8px; padding: 8px 10px; }
-.ax-login__btn { margin-top: 6px; font-size: 14.5px; font-weight: 600; padding: 11px; border: none; border-radius: 10px;
-  background: var(--ax-accent); color: #fff; cursor: pointer; }
-.ax-login__btn:disabled { opacity: .5; cursor: default; }
-.ax-login__btn:not(:disabled):hover { filter: brightness(1.06); }
-.ax-login__hint { margin-top: 4px; font-size: 11.5px; color: var(--ax-ink-faint); line-height: 1.55; text-align: center; }
-.ax-menu__item--danger { color: var(--ax-accent); }
-
-/* ── In-app announcement popup (server-published, shown once per new id) ── */
-.ax-notice-scrim { position: fixed; inset: 0; z-index: 9000; display: grid; place-items: center;
-  background: rgba(20, 14, 8, 0.34); backdrop-filter: blur(2px); padding: 24px; }
-.ax-notice { width: 380px; max-width: 100%; background: var(--ax-surface); border: 1px solid var(--ax-line);
-  border-radius: 16px; padding: 22px 24px; box-shadow: 0 30px 70px -34px rgba(60, 40, 20, 0.5);
-  border-top: 3px solid var(--ax-accent); }
-.ax-notice--warn { border-top-color: #C4632E; }
-.ax-notice__head { font-size: 14px; font-weight: 700; color: var(--ax-ink); margin-bottom: 10px; }
-.ax-notice__body { font-size: 14px; line-height: 1.65; color: var(--ax-ink-soft); white-space: pre-wrap; word-break: break-word; }
-.ax-notice__btn { margin-top: 18px; width: 100%; font-size: 14px; font-weight: 600; padding: 10px; border: none;
-  border-radius: 10px; background: var(--ax-accent); color: #fff; cursor: pointer; }
-.ax-notice__btn:hover { filter: brightness(1.06); }

@@ -8,7 +8,6 @@ import { X, Boxes, Square, ChevronRight, ChevronDown, Pause, Play } from "lucide
 import type { Lang } from "../i18n";
 import type { RunView } from "../lib/types";
 import { runStore } from "../lib/runStore";
-import { feat } from "../lib/telemetry";
 
 const S = {
   zh: {
@@ -112,7 +111,6 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                           className="ax-iconbtn"
                           onClick={() => {
                             const p = !paused[r.id];
-                            feat(p ? "pause" : "resume_run");
                             invoke(p ? "pause_run" : "resume_run", { runid: r.id }).catch(() => {});
                             setPaused((o) => ({ ...o, [r.id]: p }));
                           }}
@@ -122,7 +120,7 @@ export function ActivityRail({ lang, onClose }: { lang: Lang; onClose: () => voi
                           {paused[r.id] ? <Play size={12} aria-hidden /> : <Pause size={12} aria-hidden />}
                         </button>
                       )}
-                      <button className="ax-iconbtn" onClick={() => { feat("cancel"); invoke("cancel_run", { runid: r.id }).catch(() => {}); }} title={s.cancel} aria-label={s.cancel}>
+                      <button className="ax-iconbtn" onClick={() => { invoke("cancel_run", { runid: r.id }).catch(() => {}); }} title={s.cancel} aria-label={s.cancel}>
                         <Square size={12} aria-hidden />
                       </button>
                     </span>

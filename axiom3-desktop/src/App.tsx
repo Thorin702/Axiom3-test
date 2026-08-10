@@ -10,7 +10,6 @@ import { ClaimDossier } from "./components/ClaimDossier";
 import { ArtifactProvenance } from "./components/ArtifactProvenance";
 import { ArtifactInspector } from "./components/ArtifactInspector";
 import { ReviewerPanel } from "./components/ReviewerPanel";
-import { Login, type Auth } from "./components/Login";
 import { AgentSteps } from "./components/AgentSteps";
 import { ThreadActivity } from "./components/ThreadActivity";
 import { RoundHistory } from "./components/RoundHistory";
@@ -30,12 +29,11 @@ import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { ActivityRail } from "./components/ActivityRail";
 import { Splash } from "./components/Splash";
 import { AppBanner } from "./components/AppBanner";
-import { feat } from "./lib/telemetry";
 import {
   Download, ListFilter, X, Languages, Settings, Upload, ChevronLeft, Plus, ArrowUp,
   Sparkles, Database, Search, GitBranch, Gauge, TerminalSquare, Paperclip,
   Bell, PanelRight, PanelLeft, FolderOpen, RotateCcw, WrapText, Check,
-  MoreHorizontal, Pencil, Info, Pause, Play, LogOut, type LucideIcon,
+  MoreHorizontal, Pencil, Info, Pause, Play, type LucideIcon,
 } from "lucide-react";
 
 // Composer modes (the icon-button popover, Claude-style). Each maps to backend behaviour:
@@ -246,59 +244,6 @@ function App() {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [appVer, setAppVer] = useState(""); // app version from tauri.conf (single source), shown in the sidebar
   useEffect(() => { getVersion().then(setAppVer).catch(() => {}); }, []);
-  // ── Account login + license-expiry gate ──────────────────────────────────────────────────
-  // `auth` = the signed-in account (with its validity date) | null (show login) | "checking".
-  const [auth, setAuth] = useState<Auth | null | "checking">("checking");
-  const [authMsg, setAuthMsg] = useState<string | null>(null); // reason shown on the login screen
-  useEffect(() => {
-    let alive = true;
-    type AuthResp = { ok: boolean; account?: string; expiry?: string; error?: string; offline?: boolean };
-    const today = () => new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD, local
-    const call = (cmd: string, fallback: AuthResp) => invoke<AuthResp>(cmd).catch((): AuthResp => fallback);
-    // On launch: read the stored session fast, then confirm with the server.
-    (async () => {
-      const s = await call("account_session", { ok: false });
-      if (!alive) return;
-      if (!s.ok) { setAuth(null); return; }
-      // local expiry guard (also covers offline)
-      if (s.expiry && s.expiry < today()) { setAuth(null); setAuthMsg("账号使用期已到期,请联系管理员延期"); return; }
-      const v = await call("account_validate", { ok: true, offline: true, account: s.account, expiry: s.expiry });
-      if (!alive) return;
-      if (v.ok) { setAuth({ account: v.account || s.account || "", expiry: v.expiry ?? s.expiry ?? null }); invoke("telemetry", { event: "launch" }).catch(() => {}); }
-      else { setAuth(null); setAuthMsg(v.error || "登录已失效,请重新登录"); }
-    })();
-    // Re-validate periodically: catches expiry crossing + single-device kick while the app is open.
-    const iv = setInterval(async () => {
-      const v = await call("account_validate", { ok: true, offline: true });
-      if (!alive) return;
-      if (!v.ok) { setAuth(null); setAuthMsg(v.error || "登录已失效,请重新登录"); return; }
-      if (v.expiry && v.expiry < today()) { setAuth(null); setAuthMsg("账号使用期已到期,请联系管理员延期"); return; }
-      if (v.account) setAuth((cur) => (cur && cur !== "checking" ? { account: v.account || cur.account, expiry: v.expiry ?? cur.expiry } : cur));
-    }, 10 * 60 * 1000);
-    return () => { alive = false; clearInterval(iv); };
-  }, []);
-  async function doLogout() {
-    await invoke("account_logout").catch(() => {});
-    setAccountMenu(false);
-    setAuthMsg(null);
-    setAuth(null);
-  }
-  // ── In-app announcement popup (set from the admin backend) ──
-  const [notice, setNotice] = useState<{ id: number; text: string; level: string } | null>(null);
-  useEffect(() => {
-    if (!auth || auth === "checking") return;
-    invoke<{ id: number; text?: string; level?: string }>("fetch_notice")
-      .then((n) => {
-        const seen = Number(localStorage.getItem("axiom3.noticeSeen") || 0);
-        if (n && n.id && n.id > seen && n.text) setNotice({ id: n.id, text: n.text, level: n.level || "info" });
-      })
-      .catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [auth]);
-  const dismissNotice = () => {
-    if (notice) localStorage.setItem("axiom3.noticeSeen", String(notice.id));
-    setNotice(null);
-  };
   // Models actually connected right now — the ONLY ones offered as reviewer-model options in settings.
   const [connectedModels, setConnectedModels] = useState<string[]>([]);
   useEffect(() => {
@@ -706,12 +651,6 @@ function App() {
     };
   }, []);
 
-  // Sync the telemetry opt-out to the backend at boot — the Rust side defaults ON, so a saved opt-out
-  // (or an on-prem build) must be applied before any event could fire.
-  useEffect(() => {
-    invoke("set_telemetry", { on: localStorage.getItem("axiom3.telemetry") !== "off" }).catch(() => {});
-  }, []);
-
   function note(line: string) {
     setToast(line);
     window.clearTimeout(noteTimer.current);
@@ -752,7 +691,6 @@ function App() {
   function forkSession(tk: Task) {
     if (!tk.goal) return;
     if (!confirmReplaceDraft()) return;
-    feat("fork"); // after the guards — backing out of the confirm dialog is not a fork
     setForkOrigin(tk.id);
     setNav("tasks");
     setView("home");
@@ -867,7 +805,6 @@ function App() {
     if (!dir) return;
     // Counted HERE and not in `newTask()`: that one is also called programmatically by the
     // project-directory gate (a user who merely submitted text), which would inflate this badly.
-    feat("new_task");
     setProjectDir(dir);
     localStorage.setItem("axiom3.projectDir", dir);
     setCodeWs(dir); // the agent works in the project directory
@@ -1207,7 +1144,6 @@ function App() {
   }
 
   async function cancelCheck() {
-    feat("cancel");
     await invoke("cancel_check");
   }
 
@@ -1253,7 +1189,7 @@ function App() {
       const ok = await run(() => invoke("save_report_html", { path, html }));
       // Counted at the LANDING point, not when the menu item was clicked: an export that the user
       // backed out of in the save dialog is not an export.
-      if (ok !== undefined) { feat(isDoc ? "export_word" : "export_html"); note(`${lang === "zh" ? "已导出" : "Exported"}: ${path.split(/[/\\]/).pop()}`); }
+      if (ok !== undefined) { note(`${lang === "zh" ? "已导出" : "Exported"}: ${path.split(/[/\\]/).pop()}`); }
     }
   }
 
@@ -1393,7 +1329,6 @@ function App() {
   function continueTask(tk: Task) {
     const g = (tk.goal ?? "").trim();
     if (!g) return;
-    feat("continue");
     if (tk.type === "research") runCoding(g, true, tk.id, true);
     else if (tk.type === "workflow") runWorkflow(g, tk.id);
     else runCoding(g, true, tk.id); // code / analysis
@@ -1548,8 +1483,8 @@ function App() {
                         onClick={() => {
                           // One toggle, two interactions — report the branch actually taken, or
                           // resuming would be counted as pausing.
-                          if (isPaused) { feat("resume_run"); invoke("resume_run", { runid: rid }).catch(() => {}); setPausedRids((s) => { const n = new Set(s); n.delete(rid); return n; }); }
-                          else { feat("pause"); invoke("pause_run", { runid: rid }).catch(() => {}); setPausedRids((s) => new Set(s).add(rid)); }
+                          if (isPaused) { invoke("resume_run", { runid: rid }).catch(() => {}); setPausedRids((s) => { const n = new Set(s); n.delete(rid); return n; }); }
+                          else { invoke("pause_run", { runid: rid }).catch(() => {}); setPausedRids((s) => new Set(s).add(rid)); }
                         }}
                         title={isPaused ? (lang === "zh" ? "继续" : "Resume") : (lang === "zh" ? "暂停" : "Pause")}
                         aria-label={isPaused ? "resume" : "pause"}
@@ -1794,30 +1729,9 @@ function App() {
     );
   }
 
-  // ── Login gate: the workbench is not shown until an APPROVED, IN-DATE account is signed in ──
-  if (auth === "checking") return <div className="ax-authgate" aria-busy />;
-  if (auth === null) return <Login lang={lang} msg={authMsg} onLogin={(a) => { setAuthMsg(null); setAuth(a); invoke("telemetry", { event: "launch" }).catch(() => {}); }} />;
-
-  // Human-readable validity label for the sidebar footer (with a "剩 N 天" nudge near expiry).
-  const acctExpiry = (() => {
-    if (!auth.expiry) return lang === "zh" ? "长期有效" : "No expiry";
-    const days = Math.ceil((new Date(auth.expiry + "T23:59:59").getTime() - Date.now()) / 86400000);
-    const base = (lang === "zh" ? "使用期至 " : "Valid to ") + auth.expiry;
-    return days >= 0 && days <= 7 ? base + (lang === "zh" ? ` · 剩 ${days} 天` : ` · ${days}d left`) : base;
-  })();
-
   return (
     <>
       {booting && <Splash onDone={() => setBooting(false)} />}
-      {notice && (
-        <div className="ax-notice-scrim" onClick={dismissNotice}>
-          <div className={`ax-notice ax-notice--${notice.level}`} onClick={(e) => e.stopPropagation()}>
-            <div className="ax-notice__head">📢 {lang === "zh" ? "公告" : "Announcement"}</div>
-            <div className="ax-notice__body">{notice.text}</div>
-            <button className="ax-notice__btn" onClick={dismissNotice}>{lang === "zh" ? "知道了" : "Got it"}</button>
-          </div>
-        </div>
-      )}
       {!onboarded && <OnboardingWizard lang={lang} onDone={() => setOnboarded(true)} />}
       {settingsOpen && <SettingsModal lang={lang} onLang={setLang} initialCat={settingsCat} onClose={() => setSettingsOpen(false)} />}
       {paletteOpen && (
@@ -2012,16 +1926,16 @@ function App() {
           ))}
         </div>
 
-        {/* Bottom-left account menu (Claude-style): the single home for Settings / Language /
-            Help — no duplicate settings/account buttons elsewhere. Opens upward. */}
+        {/* Bottom-left menu (Claude-style): the single home for Settings / Language /
+            Help — no duplicate settings buttons elsewhere. Opens upward. */}
         <div className="ax-side-foot">
           <div className="ax-acct ax-acct--foot">
             <button className={`ax-acct__btn ${accountMenu ? "is-active" : ""}`} onClick={() => setAccountMenu((o) => !o)} aria-haspopup="menu" aria-expanded={accountMenu}>
-              <span className="ax-acct__avatar">{auth.account.charAt(0).toUpperCase() || "A"}</span>
+              <span className="ax-acct__avatar">A</span>
               {!sidebarCollapsed && (
                 <span className="ax-acct__label">
-                  <b>{auth.account}</b>
-                  <span>{acctExpiry}</span>
+                  <b>Axiom3</b>
+                  <span>{lang === "zh" ? "开源免费 · 本地运行" : "Open & free · runs locally"}</span>
                 </span>
               )}
             </button>
@@ -2038,12 +1952,9 @@ function App() {
                   <button className="ax-menu__item" role="menuitem" onClick={() => { setSettingsCat("about"); setSettingsOpen(true); setAccountMenu(false); }}>
                     <Info size={14} aria-hidden /> {lang === "zh" ? "帮助与关于" : "Help & about"}
                   </button>
-                  <button className="ax-menu__item ax-menu__item--danger" role="menuitem" onClick={doLogout}>
-                    <LogOut size={14} aria-hidden /> {lang === "zh" ? "退出登录" : "Sign out"}
-                  </button>
                   <div className="ax-menu__foot">
-                    <span className="ax-acct__avatar ax-acct__avatar--sm">{auth.account.charAt(0).toUpperCase() || "A"}</span>
-                    {auth.account}{appVer && ` · v${appVer}`}
+                    <span className="ax-acct__avatar ax-acct__avatar--sm">A</span>
+                    Axiom3{appVer && ` · v${appVer}`}
                   </div>
                 </div>
               </>
@@ -2229,7 +2140,7 @@ function App() {
                           <ThreadActivity
                             run={liveRun}
                             lang={lang}
-                            onCancel={tk.status === "running" ? () => { feat("cancel"); return invoke("cancel_run", { runid: tk.liveRunId ?? tk.id }); } : undefined}
+                            onCancel={tk.status === "running" ? () => invoke("cancel_run", { runid: tk.liveRunId ?? tk.id }) : undefined}
                           />
                         ) : tk.steps && tk.steps.length > 0 ? (
                           <div className="ax-agents" style={{ marginTop: 12 }}>
@@ -2378,7 +2289,7 @@ function App() {
               note && note.trim() && setToast(lang === "zh" ? "已按批注改写并生成新版本" : "Revised and saved as a new version");
             }}
             expanded={artifactExpanded}
-            onToggleExpand={() => { if (!artifactExpanded) feat("expand_artifact"); setArtifactExpanded((e) => !e); }}
+            onToggleExpand={() => setArtifactExpanded((e) => !e)}
             onClose={() => {
               setRailOpen(false);
               setArtifactExpanded(false);

@@ -2940,9 +2940,6 @@ pub fn run_active(state: tauri::State<'_, AppState>) -> bool {
 #[tauri::command]
 pub fn force_quit(app: tauri::AppHandle, state: tauri::State<'_, AppState>) {
     state.arm_force_quit();
-    // Record the confirmed quit BEFORE exiting — a telemetry event fired here would never make it
-    // off the machine (the process is about to die), so it is persisted and reported next launch.
-    crate::telemetry::mark_quit_confirmed(&app);
     app.exit(0);
 }
 
@@ -3269,25 +3266,8 @@ pub async fn coding_run(
     // but with no budget pressure and a literature/web-first, deep-cited-report steer.
     let is_research = research.unwrap_or(false);
     let is_analyze = analyze.unwrap_or(false) || is_research;
-    let telem_start = std::time::Instant::now();
     // Resolve provider/connection + model, mode-aware: research/analysis prefer a thinking model.
     let (provider, model_id) = resolve_model(&app, provider, model, false, if is_research { "research" } else if is_analyze { "analysis" } else { "auto" })?;
-    // Telemetry: task launched (content-free) — the denominator for completion/failure rates + the
-    // mode/model/compute mix. Fields are all bounded enums; never the topic.
-    let telem_mode = if is_research { crate::telemetry::Mode::Research } else if is_analyze { crate::telemetry::Mode::Analysis } else { crate::telemetry::Mode::Code };
-    crate::telemetry::track(&app, crate::telemetry::Ev::TaskStarted {
-        mode: telem_mode,
-        compute: if compute.as_deref() == Some("cloud") { crate::telemetry::Compute::Cloud } else { crate::telemetry::Compute::Local },
-        model_family: crate::telemetry::ModelFamily::from_model_id(&model_id),
-        has_attachments: attachments.as_ref().map(|a| !a.is_empty()).unwrap_or(false),
-    });
-    // From here on the run is COUNTED as started, so it owes a terminal event. Everything below —
-    // dir creation, sandbox, a 15-minute sci-stack seed, kernel boot — can bail out with `?` long
-    // before a report exists, and those bail-outs used to vanish entirely (hence a server-side
-    // status distribution that was 100% "ok" despite real failures). The guard reports them on
-    // drop, so this holds for error paths that don't exist yet. `.blame()` buckets the message
-    // (never stores it); `.at()` records how far we got.
-    let tg = crate::telemetry::RunGuard::new(&app, telem_mode);
     // Workspace isolation. RESEARCH always runs in a PRIVATE per-run scratch dir — never the
     // user's shared default project folder. Research is literature/web-first and only needs a
     // throwaway compute scratch; if it shared the persistent projectDir, one run's fetched PDBs
@@ -3305,9 +3285,9 @@ pub async fn coding_run(
         if w.is_empty() { None } else { std::path::Path::new(w).canonicalize().ok().filter(|p| p.is_dir()) }
     };
     let workspace = if is_research || (workspace.trim().is_empty() && is_analyze) {
-        let base = app.path().app_data_dir().map_err(|e| tg.blame(&e.to_string()))?;
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
         let dir = base.join("analysis").join(safe_run_component(&runid));
-        std::fs::create_dir_all(&dir).map_err(|e| tg.blame(&e.to_string()))?;
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         dir.to_string_lossy().into_owned()
     } else {
         workspace
@@ -3315,7 +3295,7 @@ pub async fn coding_run(
     // Fail-closed: validate + canonicalize the workspace before anything runs. Write +
     // build/test are enabled ONLY when the user explicitly opted in (writable).
     let mode = if writable.unwrap_or(false) { SandboxMode::ReadWrite } else { SandboxMode::ReadOnly };
-    let sandbox = Sandbox::with_mode(&workspace, mode).map_err(|e| tg.blame(&e.to_string()))?;
+    let sandbox = Sandbox::with_mode(&workspace, mode).map_err(|e| e.to_string())?;
     // Copy any attached data files into the workspace so the analysis kernel (cwd = the
     // workspace) can read them directly, and tell the agent what's available.
     let mut data_note = String::new();
@@ -3429,8 +3409,7 @@ pub async fn coding_run(
     // agree. Figures it computes are captured into the artifact. A dedicated kernel per
     // run keeps it isolated from the user's notebook.
     let kernel = if analyze.unwrap_or(false) {
-        tg.at(crate::telemetry::Stage::SciStack);
-        let base = app.path().app_data_dir().map_err(|e| tg.blame(&e.to_string()))?;
+        let base = app.path().app_data_dir().map_err(|e| e.to_string())?;
         // Seed the scientific stack into the managed venv BEFORE starting the kernel — the
         // agent's prompt promises numpy/pandas/… are installed and it cannot pip-install under
         // the sandbox allowlist. Idempotent + fast once seeded; blocking pip → spawn_blocking.
@@ -3440,20 +3419,19 @@ pub async fn coding_run(
         let seed = tauri::async_runtime::spawn_blocking(move || seed_sci_stack(&base));
         let py = tokio::time::timeout(std::time::Duration::from_secs(900), seed)
             .await
-            .map_err(|_| tg.blame("科学环境初始化超时(>15 分钟) · sci-stack seeding timed out"))?
-            .map_err(|e| tg.blame(&e.to_string()))?
-            .map_err(|e| tg.blame(&e.to_string()))?;
+            .map_err(|_| "科学环境初始化超时(>15 分钟) · sci-stack seeding timed out".to_string())?
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
         // Start the kernel OFF the async runtime (a blocking spawn/handshake shouldn't stall a
         // tokio worker) and under its own timeout, so a wedged kernel start fails fast.
         let py_s = py.to_string_lossy().into_owned();
         let root = sandbox.root().to_path_buf();
-        tg.at(crate::telemetry::Stage::KernelStart);
         let start = tauri::async_runtime::spawn_blocking(move || PyKernel::start(&py_s, &root));
         let k = tokio::time::timeout(std::time::Duration::from_secs(120), start)
             .await
-            .map_err(|_| tg.blame("Python 内核启动超时 · kernel start timed out"))?
-            .map_err(|e| tg.blame(&e.to_string()))?
-            .map_err(|e| tg.blame(&e.to_string()))?;
+            .map_err(|_| "Python 内核启动超时 · kernel start timed out".to_string())?
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
         Some(Arc::new(k))
     } else {
         None
@@ -3481,9 +3459,7 @@ pub async fn coding_run(
     }
     let _guard = state
         .begin_run(&runid, cancel.clone(), pause.clone())
-        .ok_or_else(|| tg.blame("a run with this id is already in flight"))?;
-    // Past setup — anything that fails from here is the agent loop itself, not the environment.
-    tg.at(crate::telemetry::Stage::Orchestrate);
+        .ok_or_else(|| "a run with this id is already in flight".to_string())?;
 
     let sink: Arc<dyn EventSink> = Arc::new(TauriSink { app: app.clone() });
     let em = SeqEmitter::new(sink, runid.clone());
@@ -3701,10 +3677,6 @@ pub async fn coding_run(
     })
     .await;
 
-    // The agent loop is over; what remains is report assembly, salvage, the reviewer and the
-    // deliverable write. A failure past this point means we HAD findings and still shipped nothing —
-    // a materially different (and worse) bug than failing to start, so it gets its own stage.
-    tg.at(crate::telemetry::Stage::Finalize);
     let outcome = match result.status.as_str() {
         "done" => "ok",
         "cancelled" => "cancelled",
@@ -3858,40 +3830,6 @@ pub async fn coding_run(
         agents_ok: if final_status == "done" { 1 } else { 0 },
         agents_err: if final_status != "done" && final_status != "cancelled" { 1 } else { 0 },
         error: None,
-    });
-    // Privacy-safe telemetry: bounded interaction metadata only — never the topic/content (telemetry::Ev
-    // has no free-text field). These are exactly the health signals that flag a regression automatically.
-    // Hand the terminal event over to `TaskFinished` — the guard must not also report an abort.
-    tg.settled();
-    crate::telemetry::track(&app, crate::telemetry::Ev::TaskFinished {
-        mode: telem_mode,
-        status: crate::telemetry::TaskStatus::from_run_status(&final_status),
-        dur_s: telem_start.elapsed().as_secs(),
-        steps: result.steps as u32,
-        figures: result.figures.len() as u32,
-        sources: result.sources.len() as u32,
-        // Count [Sn] source markers only (digit-anchored) — NOT any "[S…" substring, so
-        // report prose like [START]/[SI]/[Section 2]/[Supplementary] doesn't inflate the metric.
-        citations: synthesis
-            .match_indices("[S")
-            .filter(|(i, _)| synthesis.as_bytes().get(i + 2).is_some_and(u8::is_ascii_digit))
-            .count() as u32,
-        salvage: final_status == "no_report",
-        review: review.as_ref().map(|r| !r.trim().is_empty()).unwrap_or(false),
-        // Shortfalls, read off the banners the shipped report already carries. Deliberately derived
-        // from the SAME constants the report is built from, so the metric can never disagree with
-        // what the user was told — and can never silently zero out if the wording is edited.
-        no_sources: synthesis.contains(axiom_orchestrate::coding::MARK_NO_SOURCES),
-        downgraded: synthesis.contains(axiom_orchestrate::coding::MARK_NO_CONJECTURE),
-        conj_incomplete: synthesis.contains(axiom_orchestrate::coding::MARK_CONJ_INCOMPLETE),
-        derived_unmet: synthesis.contains(axiom_orchestrate::coding::MARK_DERIVED_UNMET),
-        // Must use the SAME predicate as the figure gate, not `result.figures.is_empty()`. Those two
-        // count different things: `result.figures` is only what matplotlib computed, so a report that
-        // drew its figures as native blocks (```mermaid, ```prisma, …) was reported as missing them,
-        // while a run that made one throwaway plot the report never showed was reported as fine. The
-        // metric was wrong in both directions.
-        fig_missing: axiom_orchestrate::coding::goal_demands_figure(&goal)
-            && !axiom_orchestrate::coding::has_any_figure(&synthesis, result.figures.len()),
     });
     Ok(CodingRunResult { status: final_status, synthesis, steps: result.steps, trace, review, sources: result.sources })
 }

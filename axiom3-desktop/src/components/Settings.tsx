@@ -38,7 +38,6 @@ export function Settings({ lang, onLang, initialCat, onClose }: { lang: Lang; on
   const [cat, setCat] = useState<Cat>((CATS.some((c) => c.key === initialCat) ? initialCat : "general") as Cat);
   const [theme, setTheme] = useState<Theme>((localStorage.getItem("axiom3.theme") as Theme) || "system");
   const [lit, setLit] = useState(localStorage.getItem("axiom3.lit") !== "off");
-  const [telem, setTelem] = useState(localStorage.getItem("axiom3.telemetry") !== "off");
   const [fleetMax, setFleetMax] = useState(localStorage.getItem("axiom3.fleetmax") || "");
   const [version, setVersion] = useState("");
   // Model connections (#4): base URL + API key + model per row — reaches any OpenAI-compatible API.
@@ -86,11 +85,6 @@ export function Settings({ lang, onLang, initialCat, onClose }: { lang: Lang; on
   function chooseTheme(th: Theme) {
     setTheme(th);
     applyTheme(th);
-  }
-  function setTelemetry(on: boolean) {
-    setTelem(on);
-    localStorage.setItem("axiom3.telemetry", on ? "on" : "off");
-    invoke("set_telemetry", { on }).catch(() => {});
   }
   function setLiterature(on: boolean) {
     setLit(on);
@@ -314,10 +308,6 @@ export function Settings({ lang, onLang, initialCat, onClose }: { lang: Lang; on
                 <div className="ax-set-row">
                   <span>{t(lang, "set_fleetmax")}</span>
                   <input className="ax-input" value={fleetMax} onChange={(e) => saveFleetMax(e.currentTarget.value.replace(/[^0-9]/g, ""))} placeholder="24" style={{ width: 80 }} inputMode="numeric" />
-                </div>
-                <div className="ax-set-row">
-                  <span>{zh ? "匿名使用遥测" : "Anonymous usage telemetry"}<br /><span className="ax-hint">{zh ? "只回传交互元数据(模式/状态/耗时/是否出图等),帮我们发现卡顿与失败。绝不上传课题、数据或报告内容。" : "Sends only interaction metadata (mode/status/duration/…) so we can spot failures. Never your topics, data, or reports."}</span></span>
-                  <button className={`ax-toggle ${telem ? "on" : ""}`} onClick={() => setTelemetry(!telem)}>{t(lang, telem ? "on" : "off")}</button>
                 </div>
               </div>
             )}

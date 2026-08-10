@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "axiom3-desktop"
-version = "1.49.0"
+version = "1.51.0"
 dependencies = [
  "anyhow",
  "axiom-core",
@@ -696,11 +696,8 @@ dependencies = [
  "axiom-secrets",
  "axiom-store",
  "axiom-vector",
- "base64 0.22.1",
  "blake3",
- "chrono",
  "reqwest 0.12.28",
- "ring",
  "serde",
  "serde_json",
  "tauri",

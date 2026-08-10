@@ -1,6 +1,4 @@
-mod auth;
 mod deliverables;
-mod telemetry;
 mod workbench;
 
 use workbench::AppState;
@@ -91,10 +89,6 @@ pub fn run() {
             // them without re-entry (env still wins, so `KEY=… pnpm tauri dev` overrides).
             // Done here (not before the builder) so the app data dir — hence the configured
             // secret store — is resolvable.
-            // FIRST: apply the persisted telemetry opt-out and arm the crash marker. Must precede
-            // anything that could emit — the opt-out has to be in force before the first event, and
-            // the marker has to be read before this session overwrites it.
-            telemetry::boot(app.handle());
             workbench::load_provider_keys_into_env(app.handle());
             // Register the user's OpenAI-compatible model connections into the runtime dispatch
             // table so runs can reach them by label.
@@ -146,13 +140,6 @@ pub fn run() {
             deliverables::deliverable_load,
             deliverables::deliverable_delete,
             deliverables::deliverable_rename,
-            auth::account_login,
-            auth::account_session,
-            auth::account_validate,
-            auth::account_logout,
-            telemetry::telemetry,
-            telemetry::fetch_notice,
-            telemetry::set_telemetry,
             workbench::run_active,
             workbench::force_quit,
         ])
@@ -162,8 +149,8 @@ pub fn run() {
         // run is live and the user hasn't confirmed via `force_quit`, veto the exit and ask the UI. The
         // `force_quit` command arms `force_quit_armed()` before calling `app.exit(0)`, so the bypass lets
         // the process actually quit.
-        .run(|app_handle, event| match event {
-            tauri::RunEvent::ExitRequested { api, .. } => {
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
                 use tauri::{Emitter, Manager};
                 let state = app_handle.state::<AppState>();
                 if state.is_busy() && !state.force_quit_armed() {
@@ -171,10 +158,5 @@ pub fn run() {
                     let _ = app_handle.emit("exit-blocked", ());
                 }
             }
-            // The app is really going down, through the front door. Clear the run marker so the next
-            // launch does NOT report a crash. Deliberately on `Exit` and not `ExitRequested` — the
-            // latter can be vetoed above, and a vetoed exit must not clear the marker.
-            tauri::RunEvent::Exit => telemetry::mark_clean_exit(app_handle),
-            _ => {}
         });
 }
